@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { assembleCard, cardToDraft, findStagedLorebookEntryIndices } from './card-exporter';
 import { createEmptyDraft, createEmptyLorebookEntry, createEmptyCharacter } from '../constants/defaults';
 import type { WizardDraft, LorebookEntry } from '../constants/defaults';
+import { generateLiveChatHtml } from './live-chat-templates';
 
 function makeDraft(overrides: Partial<WizardDraft> = {}): WizardDraft {
   return { ...createEmptyDraft(), ...overrides };
@@ -78,6 +79,31 @@ describe('assembleCard', () => {
     });
     const card = assembleCard(draft);
     expect(card.data.first_mes).toContain('<StatusPlaceHolderImpl/>');
+  });
+
+  it('直播间面板会注入独立占位符并导出界面/AI双正则', () => {
+    const html = generateLiveChatHtml({ themeId: 'terminal', initialComments: ['测试评论'] });
+    const draft = makeDraft({
+      cardName: '直播测试',
+      firstMessage: '开播。',
+      liveStreamChat: {
+        enabled: true,
+        html,
+        themeId: 'terminal',
+        title: '测试直播间',
+        maxVisible: 10,
+        initialComments: ['测试评论'],
+      },
+    });
+    const card = assembleCard(draft);
+    expect(card.data.first_mes).toContain('<LiveStreamChatImpl/>');
+    const scripts = ((card.data.extensions as unknown as Record<string, unknown>).regex_scripts as Array<Record<string, unknown>>);
+    const render = scripts.find((s) => s.scriptName === '直播间界面');
+    const hide = scripts.find((s) => s.scriptName === '对AI隐藏直播间');
+    expect(render?.findRegex).toBe('<LiveStreamChatImpl/>');
+    expect(String(render?.replaceString)).not.toMatch(/^```html/i);
+    expect(String(render?.replaceString)).toContain('lc-root');
+    expect(hide?.promptOnly).toBe(true);
   });
 
   it('first_mes 在 MVU 未启用时不包含状态栏占位符', () => {

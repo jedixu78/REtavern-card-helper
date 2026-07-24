@@ -384,7 +384,9 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
   // 2 个正则脚本：把 <LiveStreamChatImpl/> 占位符替换为面板 HTML（界面显示），
   // 并从 AI prompt 中移除占位符。
   if (liveChatEnabled && draft.liveStreamChat) {
-    const liveChatHtml = draft.liveStreamChat.html;
+    const liveChatHtml = draft.liveStreamChat.html
+      .replace(/^```html\s*/i, '')
+      .replace(/\s*```\s*$/i, '');
     // 直播间界面 — 替换占位符为面板 HTML（仅界面显示，AI 不可见）
     regexScripts.push({
       id: 'e1a2b3c4-5678-9abc-def0-1234567890ab',
@@ -1029,7 +1031,9 @@ function reconstructLiveStreamChat(
   const regexScripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Array<Record<string, unknown>>) : [];
   const liveChatScript = regexScripts.find((s) => s.scriptName === '直播间界面');
   if (!liveChatScript) return undefined;
-  const html = (liveChatScript.replaceString as string) || '';
+  const html = ((liveChatScript.replaceString as string) || '')
+    .replace(/^```html\s*/i, '')
+    .replace(/\s*```\s*$/i, '');
   if (!html.trim()) return undefined;
 
   // 从扩展字段读取配置元数据（新版导出包含此字段）
