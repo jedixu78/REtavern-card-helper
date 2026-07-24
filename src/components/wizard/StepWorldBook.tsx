@@ -622,33 +622,19 @@ export function StepWorldBook({
           In skeleton mode: tell the user their setup flows to step 4.
           In detail mode: summarize what was set up in step 2, or warn if empty. */}
       {mode === 'skeleton' ? (
-        <div
-          className="mb-4 rounded-xl border p-3 flex items-start gap-3"
-          style={{ backgroundColor: themeAlpha('success', 8), borderColor: themeAlpha('success', 25) }}
-        >
-          <span className="text-base shrink-0" aria-hidden>🦴</span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <p className="text-xs font-semibold" style={{ color: C.success }}>{t('worldBook.skeletonFlowTitle')}</p>
-                <p className="text-[11px] mt-0.5" style={{ color: 'color-mix(in srgb, var(--color-status-success) 70%, transparent)' }}>
-                  {t('worldBook.skeletonFlowHint')}
-                </p>
-              </div>
-              {onJumpToStep && (entries.length > 0 || effectiveWorldRules.trim()) && (
-                <button
-                  type="button"
-                  onClick={() => onJumpToStep(4)}
-                  className="shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors"
-                  style={{ borderColor: themeAlpha('success', 40), backgroundColor: themeAlpha('success', 12), color: C.success }}
-                  title={t('worldBook.jumpToDetailTooltip')}
-                >
-                  {t('worldBook.jumpToDetail')} →
-                </button>
-              )}
-            </div>
+        onJumpToStep && (entries.length > 0 || effectiveWorldRules.trim()) ? (
+          <div className="mb-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => onJumpToStep(4)}
+              className="shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors"
+              style={{ borderColor: themeAlpha('success', 40), backgroundColor: themeAlpha('success', 12), color: C.success }}
+              title={t('worldBook.jumpToDetailTooltip')}
+            >
+              {t('worldBook.jumpToDetail')} →
+            </button>
           </div>
-        </div>
+        ) : null
       ) : (
         <div
           className="mb-4 rounded-xl border p-3 flex items-start gap-3"

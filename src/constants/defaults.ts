@@ -226,6 +226,30 @@ export interface MvuConfig {
   statusBarHtml: string;
   /** Status bar style preset id */
   statusBarStyle: string;
+  /** Whether to show decorative emoji/symbols in the status bar (default false = clean Chinese-friendly display) */
+  statusBarShowIcons?: boolean;
+  /** Status bar customization options (theme, title, avatar, collapse) */
+  statusBarOptions?: StatusBarOptions;
+}
+
+/** Status bar customization options used by StepStagedMode and status-bar-templates */
+export interface StatusBarOptions {
+  /** Theme id (terminal/parchment/glass/paper) */
+  themeId?: string;
+  /** Status bar header title */
+  title?: string;
+  /** Whether to show avatar in header (default true for parchment, false for terminal) */
+  showAvatar?: boolean;
+  /** Whether to collapse all sections by default */
+  collapseAll?: boolean;
+  /** Overall opacity (0.7~1) */
+  opacity?: number;
+  /** Information density */
+  density?: 'compact' | 'comfortable';
+  /** Enable value transition animations */
+  animated?: boolean;
+  /** Show decorative section icons */
+  showIcons?: boolean;
 }
 
 /** 分阶段模式：单个角色一个阶段轴的剖析结果 */
@@ -262,12 +286,39 @@ export interface StagedModeStage {
 export interface StagedModeConfig {
   /** 是否启用分阶段模式 */
   enabled: boolean;
-  /** 剧情 标签/模板：'pure-love' | 'ntr' | 'dual-route' */
-  templateId: 'pure-love' | 'ntr' | 'dual-route';
+  /** 剧情模板 id（见 staged-templates.ts 的 STAGED_TEMPLATES，如 'pure-love'/'ntr'/'dual-route'/'cultivation' 等） */
+  templateId: string;
   /** 调度条目命名前缀（如 "林雅宁分阶段人设"），默认 "分阶段人设" */
   dispatcherPrefix: string;
   /** AI 剖析出的角色阶段框架列表 */
   characters: StagedModeCharacter[];
+}
+
+/**
+ * 直播间评论面板配置（独立于 MVU，纯正则驱动）。
+ *
+ * 架构：
+ *   - 注入层：占位符 `<LiveStreamChatImpl/>` 由 card-exporter 追加到 first_mes
+ *   - 渲染层：运行时 JS 立即渲染内置初始评论（无需任何外部依赖）
+ *   - 增强层（可选）：若 MVU 运行时可用，订阅 VARIABLE_UPDATE_ENDED 事件
+ *             读取 `stat_data.直播间.评论` 实现动态更新
+ *
+ * 通过 regex_scripts 替换占位符为面板 HTML（markdownOnly），
+ * 并从 AI prompt 中移除占位符（promptOnly）。
+ */
+export interface LiveStreamChatConfig {
+  /** 是否启用直播间评论面板 */
+  enabled: boolean;
+  /** 面板 HTML 文档（由 generateLiveChatHtml 生成，含 <style> + <script> + <body>） */
+  html: string;
+  /** 跟随状态栏主题 id（terminal/parchment/glass/paper） */
+  themeId?: string;
+  /** 面板标题（默认 "直播间"） */
+  title?: string;
+  /** 初始评论数显示上限（超出滚动，默认 10） */
+  maxVisible?: number;
+  /** 内置初始评论（每条一行，开播时立即渲染，无需 MVU） */
+  initialComments?: string[];
 }
 
 /**
@@ -346,6 +397,8 @@ export interface WizardDraft {
   useMvuExport?: boolean;
   /** 分阶段模式配置（步骤6，可选启用） */
   stagedMode?: StagedModeConfig;
+  /** 直播间评论面板配置（步骤8，独立于 MVU，纯正则驱动） */
+  liveStreamChat?: LiveStreamChatConfig;
 }
 
 /** Empty character template for Step 3 of the wizard */
@@ -449,7 +502,7 @@ export const LOREBOOK_ROLE_OPTIONS = [
  * Bump this whenever the draft shape changes incompatibly so that old cached
  * drafts are discarded on app restart.
  */
-export const WIZARD_DRAFT_VERSION = 5;
+export const WIZARD_DRAFT_VERSION = 6;
 
 /**
  * Empty wizard draft state.
@@ -479,6 +532,8 @@ export function createEmptyDraft(): WizardDraft {
       updateRulesYamlContent: '',
       statusBarHtml: '',
       statusBarStyle: 'compact-panel',
+      statusBarShowIcons: false,
+      statusBarOptions: {},
     },
     useMvuExport: false,
 
@@ -488,6 +543,16 @@ export function createEmptyDraft(): WizardDraft {
       templateId: 'pure-love',
       dispatcherPrefix: '分阶段人设',
       characters: [],
+    },
+
+    // Step 8: Live Stream Chat Panel (optional, off by default, independent of MVU)
+    liveStreamChat: {
+      enabled: false,
+      html: '',
+      themeId: 'terminal',
+      title: '直播间',
+      maxVisible: 10,
+      initialComments: [],
     },
 
     // Step 7: First message
@@ -531,6 +596,7 @@ export function createEmptyMvuConfig(): MvuConfig {
     updateRulesYamlContent: '',
     statusBarHtml: '',
     statusBarStyle: 'compact-panel',
+    statusBarShowIcons: false,
   };
 }
 
@@ -543,5 +609,6 @@ export const WIZARD_STEPS = [
   { id: 5, label: 'MVU变量', required: false },
   { id: 6, label: '分阶段模式', required: false },
   { id: 7, label: '开场白', required: true },
-  { id: 8, label: '美化导出', required: false },
+  { id: 8, label: '直播包装', required: false },
+  { id: 9, label: '美化导出', required: false },
 ] as const;

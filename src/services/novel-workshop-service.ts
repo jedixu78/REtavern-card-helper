@@ -17,11 +17,13 @@ import type {
   GateMode,
   NarrativeMode,
   CategoryId,
+  VariableBlueprint,
 } from '../components/novel-workshop/types';
 import {
   DEFAULT_STAGE_ORDER,
   MERGE_BATCH_SIZE,
 } from '../components/novel-workshop/types';
+import { sanitizeSegment } from '../components/novel-workshop/utils';
 
 export interface ExtractConfig {
   gateMode: GateMode;
@@ -289,6 +291,62 @@ export function emptyPackage(): NovelPackage {
   };
 }
 
+const VALID_VARIABLE_TYPES = new Set<VariableBlueprint['type']>(['string', 'number', 'boolean', 'enum']);
+
+/**
+ * Normalize a raw AI-extracted variable into a v3-compliant VariableBlueprint.
+ * Guards against: missing/invalid path, invalid type, missing description,
+ * and enum without options. Returns null to drop irrecoverable entries.
+ */
+function normalizeVariableBlueprint(raw: unknown): VariableBlueprint | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+
+  const rawPath = typeof r.path === 'string' ? r.path.trim() : '';
+  const path = rawPath.split('.').map((seg) => sanitizeSegment(seg)).filter(Boolean).join('.');
+  if (!path) return null;
+
+  const rawType = typeof r.type === 'string' ? r.type : '';
+  const type: VariableBlueprint['type'] = VALID_VARIABLE_TYPES.has(rawType as VariableBlueprint['type'])
+    ? (rawType as VariableBlueprint['type'])
+    : 'string';
+
+  const description = typeof r.description === 'string' && r.description.trim()
+    ? r.description.trim()
+    : path;
+
+  let options: string[] | undefined;
+  if (type === 'enum') {
+    const opts = Array.isArray(r.options)
+      ? r.options.map((o) => String(o).trim()).filter(Boolean)
+      : [];
+    options = opts.length ? opts : ['未分类'];
+  }
+
+  let defaultValue: unknown;
+  if (type === 'boolean') {
+    defaultValue = r.default === true || r.default === 'true';
+  } else if (type === 'number') {
+    const n = Number(r.default);
+    defaultValue = Number.isFinite(n) ? n : 0;
+  } else if (type === 'enum') {
+    const d = typeof r.default === 'string' ? r.default : '';
+    defaultValue = (options as string[]).includes(d) ? d : (options as string[])[0];
+  } else {
+    defaultValue = typeof r.default === 'string' ? r.default : '';
+  }
+
+  const bp: VariableBlueprint = { path, type, description };
+  bp.default = defaultValue;
+  if (options) bp.options = options;
+  if (type === 'number') {
+    if (typeof r.min === 'number') bp.min = r.min;
+    if (typeof r.max === 'number') bp.max = r.max;
+  }
+  if (Array.isArray(r.check)) bp.check = r.check.map((c) => String(c));
+  return bp;
+}
+
 function normalizePackage(raw: unknown): NovelPackage {
   const r = (raw || {}) as Record<string, unknown>;
   return {
@@ -300,7 +358,11 @@ function normalizePackage(raw: unknown): NovelPackage {
         : [...DEFAULT_STAGE_ORDER],
     reveal_flags: (Array.isArray(r.reveal_flags) ? r.reveal_flags : Array.isArray(r.revealFlags) ? r.revealFlags : []) as NovelPackage['reveal_flags'],
     entity_index: (Array.isArray(r.entity_index) ? r.entity_index : Array.isArray(r.entityIndex) ? r.entityIndex : []) as NovelPackage['entity_index'],
-    variables: (Array.isArray(r.variables) ? r.variables : []) as NovelPackage['variables'],
+    variables: Array.isArray(r.variables)
+      ? (r.variables as unknown[])
+          .map(normalizeVariableBlueprint)
+          .filter((v): v is VariableBlueprint => v !== null)
+      : [],
     entries: (Array.isArray(r.entries) ? r.entries : []) as NovelPackage['entries'],
   };
 }
@@ -338,7 +400,8 @@ export function mergePackagesLocally(packages: NovelPackage[]): NovelPackage {
     }
 
     for (const v of pkg.variables || []) {
-      if (v.path && !seenVars.has(v.path)) seenVars.set(v.path, v);
+      const nv = normalizeVariableBlueprint(v);
+      if (nv && nv.path && !seenVars.has(nv.path)) seenVars.set(nv.path, nv);
     }
   }
 

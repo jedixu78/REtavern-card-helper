@@ -2,7 +2,7 @@
  * StepStagedMode - 分阶段模式（步骤6，可选启用）
  *
  * 参考卡「高考冲刺100天」的写卡流程：
- *   1. 选剧情标签（纯爱 / NTR / 双路线）
+ *   1. 选剧情模板（按大类→子模板两层选择：恋爱型/成长突破型/冒险剧情型/黑化堕落型/悬疑推理型）
  *   2. AI 读已有世界书 + MVU 变量 + 用户要求，为每个适合的角色剖析阶段框架
  *      （选阶段轴变量、划阈值区间、给每个阶段写人设/剧情注解）
  *   3. 用户可修改阈值、对单个阶段重 roll 注解
@@ -12,8 +12,9 @@
  * 调度条目用 if/else if + getWorldInfo() 互斥拉取子条目，
  * 变量达到阈值开启对应阶段世界书，关闭过去阶段的世界书。
  */
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Button } from '../shared/Button';
+import { Modal } from '../shared/Modal';
 import { TextInput } from '../shared/TextInput';
 import { TextArea } from '../shared/TextArea';
 import { useToast } from '../shared/Toast';
@@ -31,29 +32,41 @@ import type {
   StagedModeCharacter,
   StagedModeStage,
   MvuConfig,
+  StatusBarOptions,
   LorebookEntry,
 } from '../../constants/defaults';
-import { STAGED_COMPATIBLE_TEMPLATE_IDS } from './mvu-templates';
+// StatusBarOptions is now exported from defaults.ts (re-declared there to match this usage)
+import { createEmptyMvuConfig } from '../../constants/defaults';
+import {
+  getStagedTemplateById,
+  mergeStagedTemplate,
+  STAGED_TEMPLATE_CATEGORIES,
+  getTemplatesByCategory,
+} from './staged-templates';
+import {
+  STATUS_BAR_TEMPLATES,
+  STATUS_BAR_THEMES,
+  generateStatusBarHtml,
+} from '../../services/status-bar-templates';
+import { MultiCharTemplateModal } from './MultiCharTemplateModal';
 
 interface StepStagedModeProps {
   stagedMode: StagedModeConfig;
   onChange: (config: StagedModeConfig) => void;
   cardName: string;
   mvu?: MvuConfig;
+  /** 分阶段步骤内部填充 MVU 变量配置（选中模板时调用，取代独立的 MVU 变量步骤） */
+  onMvuChange?: (mvu: MvuConfig) => void;
   lorebookEntries: LorebookEntry[];
   onApplyEntries: (entries: LorebookEntry[]) => void;
+  /** 多角色套模板时，将各角色阶段轴写入 stagedMode.characters（原第5步回调，现归属分阶段步骤） */
+  onApplyStageAxes?: (axes: Array<{ characterName: string; axisPath: string }>, templateId: string) => void;
   nsfw?: boolean;
   onNsfwChange?: (nsfw: boolean) => void;
 }
 
-const TEMPLATE_OPTIONS = [
-  { id: 'pure-love' as const, name: '甜宠纯爱', icon: '💕', desc: '情感天平 0~100 单向递增' },
-  { id: 'ntr' as const, name: '虐恋NTR', icon: '🖤', desc: '情感天平 0~100 单向递增' },
-  { id: 'dual-route' as const, name: '可纯爱可NTR', icon: '🔀', desc: '情感天平 -100~100 双向' },
-];
-
 export function StepStagedMode({
-  stagedMode, onChange, cardName, mvu, lorebookEntries, onApplyEntries, nsfw = false, onNsfwChange,
+  stagedMode, onChange, cardName, mvu, onMvuChange, lorebookEntries, onApplyEntries, onApplyStageAxes, nsfw = false, onNsfwChange,
 }: StepStagedModeProps) {
   const { t } = useTranslation();
   const { analyzeStages, rerollStageAnnotation, generateStageEntries, rerollStage } = useAIGenerate();
@@ -71,6 +84,36 @@ export function StepStagedMode({
   const [rerollGuidance, setRerollGuidance] = useState<Record<string, string>>({});
   const [charGuidance, setCharGuidance] = useState<Record<number, string>>({});
   const [openCharacterGroups, setOpenCharacterGroups] = useState<Set<number>>(new Set());
+  const [showMultiCharModal, setShowMultiCharModal] = useState(false);
+  const [showStatusBarPreview, setShowStatusBarPreview] = useState(false);
+  const [previewState, setPreviewState] = useState<'normal' | 'app' | 'notice' | 'settings'>('normal');
+  const previewFrameRef = useRef<HTMLIFrameElement>(null);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>(() => {
+    const tpl = getStagedTemplateById(stagedMode.templateId as string);
+    return tpl?.categoryId ?? 'romance';
+  });
+
+  // 当 templateId 外部变化时，同步大类选择
+  useEffect(() => {
+    const tpl = getStagedTemplateById(stagedMode.templateId as string);
+    if (tpl && tpl.categoryId !== selectedCategoryId) {
+      setSelectedCategoryId(tpl.categoryId);
+    }
+    // 故意只依赖 templateId，避免切大类时反向覆盖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stagedMode.templateId]);
+
+  /** 切换大类：若当前 templateId 不属于该大类，自动选中该大类第一个模板 */
+  const handleSelectCategory = (categoryId: string) => {
+    setSelectedCategoryId(categoryId);
+    const catTemplates = getTemplatesByCategory(categoryId);
+    if (catTemplates.length > 0) {
+      const current = getStagedTemplateById(stagedMode.templateId as string);
+      if (!current || current.categoryId !== categoryId) {
+        selectTemplate(catTemplates[0].id, !stagedMode.enabled);
+      }
+    }
+  };
 
   // ── 构造 MVU 变量上下文 ──────────────────────────────────
   const mvuVariablesContext = useMemo(() => {
@@ -104,6 +147,74 @@ export function StepStagedMode({
 
   // ── 启用/禁用 ─────────────────────────────────────────────
   const toggleEnabled = () => onChange({ ...stagedMode, enabled: !stagedMode.enabled });
+
+  // ── 选择分阶段模板：合并阶段轴变量进已有 MVU 配置（保留第5步定义的变量）──
+  const selectTemplate = (templateId: string, enable = false) => {
+    const template = getStagedTemplateById(templateId);
+    if (template && onMvuChange) {
+        // 分阶段模板只负责阶段轴变量；状态栏由 MVU 变量步骤统一管理，避免两条流程互相覆盖。
+        const merged = mergeStagedTemplate(mvu ?? createEmptyMvuConfig(), template);
+        onMvuChange(merged);
+      }
+    onChange({ ...stagedMode, templateId: templateId as StagedModeConfig['templateId'], enabled: enable ? true : stagedMode.enabled });
+  };
+
+  // ── 状态栏配置更新：切换模板/主题/选项并重生成 HTML ──
+  const updateStatusBar = (patch: { style?: string; options?: Partial<StatusBarOptions>; html?: string }) => {
+    if (!onMvuChange) return;
+    const base = mvu ?? createEmptyMvuConfig();
+    const style = patch.style ?? base.statusBarStyle ?? 'none';
+    const options = { ...(base.statusBarOptions ?? {}), ...(patch.options ?? {}) };
+    let html = patch.html ?? base.statusBarHtml ?? '';
+    if (style && style !== 'none' && style !== 'ai-custom') {
+      html = generateStatusBarHtml(style, base.schemaSections, options);
+    } else if (style === 'none') {
+      html = '';
+    }
+    onMvuChange({ ...base, statusBarStyle: style, statusBarOptions: options, statusBarHtml: html });
+  };
+
+  // ── 状态栏预览：独立窗口使用模拟状态覆盖实时刷新 ──
+  const previewValues = useMemo(() => {
+    const values: Record<string, unknown> = {};
+    const vars = (mvu?.schemaSections ?? []).flatMap((s) => s.variables);
+    vars.forEach((v, index) => {
+      let value = v.initialValue;
+      if (previewState === 'app' && v.range) {
+        value = v.range.min + (v.range.max - v.range.min) * (index % 2 === 0 ? 0.72 : 0.38);
+      } else if (previewState === 'settings' && v.zodType === 'z.boolean()') {
+        value = true;
+      } else if (previewState === 'settings' && v.zodType.startsWith('z.enum(') && v.enumValues?.length) {
+        value = v.enumValues[v.enumValues.length - 1];
+      }
+      values[`stat_data.${v.path}`] = value;
+    });
+    return values;
+  }, [mvu?.schemaSections, previewState]);
+
+  const previewNotice = previewState === 'notice'
+    ? '新通知'
+    : previewState === 'app'
+      ? '应用切换'
+      : previewState === 'settings'
+        ? '设置已更新'
+        : '';
+
+  const statusBarSrcDoc = useMemo(() => {
+    const style = mvu?.statusBarStyle ?? 'none';
+    if (style === 'none') return '';
+    if (style === 'ai-custom') {
+      const html = mvu?.statusBarHtml ?? '';
+      return html.trim().replace(/^```html\s*/i, '').replace(/```\s*$/i, '');
+    }
+    const options = {
+      ...(mvu?.statusBarOptions ?? {}),
+      previewValues,
+      previewNotice,
+    };
+    return generateStatusBarHtml(style, mvu?.schemaSections ?? [], options)
+      .trim().replace(/^```html\s*/i, '').replace(/```\s*$/i, '');
+  }, [mvu?.statusBarStyle, mvu?.statusBarHtml, mvu?.statusBarOptions, mvu?.schemaSections, previewValues, previewNotice]);
 
   const toggleCharacterGroup = (charIdx: number) => {
     setOpenCharacterGroups(prev => {
@@ -295,31 +406,53 @@ export function StepStagedMode({
 
   // ── 渲染：未启用 ──────────────────────────────────────────
   if (!stagedMode.enabled) {
-    const mvuDisabled = !mvu?.enabled;
-    const templateId = mvu?.beginnerTemplateId;
-    const templateCompatible = mvu?.mode === 'expert'
-      ? true
-      : !!templateId && (STAGED_COMPATIBLE_TEMPLATE_IDS as readonly string[]).includes(templateId);
     return (
       <div className="space-y-4">
-        <div className="text-center py-16 border border-dashed border-[var(--color-border-default)] rounded-xl">
-          <p className="text-[var(--color-text-secondary)] mb-4">{t('stagedMode.introDisabled')}</p>
-          {mvuDisabled ? (
-            <>
-              <p className="text-sm text-[var(--color-status-warning)] mb-6">{t('stagedMode.mvuDisabledHint')}</p>
-              <Button disabled>✨ {t('stagedMode.enable')}</Button>
-            </>
-          ) : !templateCompatible ? (
-            <>
-              <p className="text-sm text-[var(--color-status-warning)] mb-6">{t('stagedMode.templateMismatchHint')}</p>
-              <Button disabled>✨ {t('stagedMode.enable')}</Button>
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-[var(--color-text-muted)] mb-6">{t('stagedMode.introHint')}</p>
-              <Button onClick={toggleEnabled}>✨ {t('stagedMode.enable')}</Button>
-            </>
-          )}
+        <div className="text-center py-10 border border-dashed border-[var(--color-border-default)] rounded-xl">
+          <p className="text-[var(--color-text-secondary)] mb-2">{t('stagedMode.introDisabled')}</p>
+          <p className="text-sm text-[var(--color-text-muted)]">{t('stagedMode.introHint')}</p>
+        </div>
+        {/* 选择剧情模板即启用（自包含：内部生成所需 MVU 变量） */}
+        <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-border-default)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-surface-raised)_20%,transparent)] p-4">
+          <h3 className="text-sm font-bold text-[var(--text-color)] mb-3">📋 选择剧情模板以启用分阶段模式</h3>
+          {/* 大类选择 */}
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {STAGED_TEMPLATE_CATEGORIES.map((cat) => {
+              const isActive = selectedCategoryId === cat.id;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => handleSelectCategory(cat.id)}
+                  title={cat.description}
+                  className={`rounded-md border px-2.5 py-1 text-[11px] transition ${
+                    isActive
+                      ? 'border-[var(--color-primary)] text-[var(--text-color)] bg-[color-mix(in_srgb,var(--color-primary)_30%,transparent)]'
+                      : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] bg-[color-mix(in_srgb,var(--color-surface-raised)_30%,transparent)] hover:border-[color-mix(in_srgb,var(--color-border-default)_80%,transparent)]'
+                  }`}
+                >
+                  {cat.icon} {cat.name}
+                </button>
+              );
+            })}
+          </div>
+          {/* 子模板选择（当前大类下） */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {getTemplatesByCategory(selectedCategoryId).map((tmpl) => {
+              const token = tmpl.colorToken;
+              return (
+                <button
+                  key={tmpl.id}
+                  onClick={() => selectTemplate(tmpl.id, true)}
+                  className={`rounded-xl border p-3 text-left transition-all hover:border-[color-mix(in_srgb,var(--color-status-${token})_50%,transparent)] border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)]`}
+                >
+                  <div className="text-2xl mb-1">{tmpl.icon}</div>
+                  <div className="text-sm font-medium text-[var(--text-color)]">{tmpl.name}</div>
+                  <div className="text-[10px] text-[var(--color-text-muted)] mt-0.5">{tmpl.description}</div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
     );
@@ -328,18 +461,8 @@ export function StepStagedMode({
   const hasAnalyzed = stagedMode.characters.length > 0;
   const allHaveContent = hasAnalyzed && stagedMode.characters.every((c) => c.stages.every((s) => s.content));
 
-  const enabledTemplateId = mvu?.beginnerTemplateId;
-  const enabledTemplateCompatible = mvu?.mode === 'expert'
-    ? true
-    : !enabledTemplateId || (STAGED_COMPATIBLE_TEMPLATE_IDS as readonly string[]).includes(enabledTemplateId);
-
   return (
     <div className="space-y-4">
-      {!enabledTemplateCompatible && (
-        <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-status-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-status-warning)_20%,transparent)] p-3 text-sm text-[var(--color-status-warning)]">
-          {t('stagedMode.templateMismatchHint')}
-        </div>
-      )}
       {/* 头部：禁用按钮 + NSFW 开关 */}
       <div className="mobile-stack-header flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -363,23 +486,49 @@ export function StepStagedMode({
 
       {/* Step 1: 标签选择 + 用户要求 + AI 剖析 */}
       <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-border-default)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-surface-raised)_20%,transparent)] p-4">
-        <h3 className="text-sm font-bold text-[var(--text-color)] mb-3">📋 {t('stagedMode.step1Title')}</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
-          {TEMPLATE_OPTIONS.map((opt) => {
-            const templateToken = opt.id === 'pure-love' ? 'success' : opt.id === 'ntr' ? 'danger' : 'warning';
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h3 className="text-sm font-bold text-[var(--text-color)]">📋 {t('stagedMode.step1Title')}</h3>
+          <Button variant="ghost" size="sm" onClick={() => setShowMultiCharModal(true)}>👥 多角色套模板</Button>
+        </div>
+        {/* 大类选择 */}
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {STAGED_TEMPLATE_CATEGORIES.map((cat) => {
+            const isActive = selectedCategoryId === cat.id;
             return (
               <button
-                key={opt.id}
-                onClick={() => onChange({ ...stagedMode, templateId: opt.id })}
-                className={`rounded-xl border p-3 text-left transition-all hover:border-[color-mix(in_srgb,var(--color-status-${templateToken})_50%,transparent)] ${
-                  stagedMode.templateId === opt.id
-                    ? `border-[var(--color-status-${templateToken})] bg-[color-mix(in_srgb,var(--color-status-${templateToken})_30%,transparent)]`
+                key={cat.id}
+                type="button"
+                onClick={() => handleSelectCategory(cat.id)}
+                title={cat.description}
+                className={`rounded-md border px-2.5 py-1 text-[11px] transition ${
+                  isActive
+                    ? 'border-[var(--color-primary)] text-[var(--text-color)] bg-[color-mix(in_srgb,var(--color-primary)_30%,transparent)]'
+                    : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] bg-[color-mix(in_srgb,var(--color-surface-raised)_30%,transparent)] hover:border-[color-mix(in_srgb,var(--color-border-default)_80%,transparent)]'
+                }`}
+              >
+                {cat.icon} {cat.name}
+              </button>
+            );
+          })}
+        </div>
+        {/* 子模板选择（当前大类下） */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+          {getTemplatesByCategory(selectedCategoryId).map((tmpl) => {
+            const token = tmpl.colorToken;
+            const isSelected = stagedMode.templateId === tmpl.id;
+            return (
+              <button
+                key={tmpl.id}
+                onClick={() => selectTemplate(tmpl.id)}
+                className={`rounded-xl border p-3 text-left transition-all hover:border-[color-mix(in_srgb,var(--color-status-${token})_50%,transparent)] ${
+                  isSelected
+                    ? `border-[var(--color-status-${token})] bg-[color-mix(in_srgb,var(--color-status-${token})_30%,transparent)]`
                     : 'border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)]'
                 }`}
               >
-                <div className="text-2xl mb-1">{opt.icon}</div>
-                <div className="text-sm font-medium text-[var(--text-color)]">{opt.name}</div>
-                <div className="text-[10px] text-[var(--color-text-muted)] mt-0.5">{opt.desc}</div>
+                <div className="text-2xl mb-1">{tmpl.icon}</div>
+                <div className="text-sm font-medium text-[var(--text-color)]">{tmpl.name}</div>
+                <div className="text-[10px] text-[var(--color-text-muted)] mt-0.5">{tmpl.description}</div>
               </button>
             );
           })}
@@ -544,6 +693,248 @@ export function StepStagedMode({
           <Button variant="primary" onClick={handleApply}>📦 {t('stagedMode.applyButton')}</Button>
         </div>
       )}
+
+      {/* Step 4: 状态栏模板（可复用模板系统） */}
+      <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-primary)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-primary)_12%,transparent)] p-4">
+        <h3 className="text-sm font-bold text-[var(--color-primary)] mb-1">🎨 状态栏模板（可选）</h3>
+        <p className="text-xs text-[var(--color-text-secondary)] mb-3">
+          基于参考卡逆向的可复用模板系统：schema 反射自动选型 + CSS 变量主题 + JS 运行时动态更新。
+        </p>
+
+        {/* 模板选择 */}
+        <label className="text-xs font-medium text-[var(--color-text-secondary)] mb-1.5 block">模板类型</label>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+          <button
+            onClick={() => updateStatusBar({ style: 'none' })}
+            className={`rounded-lg border p-2 text-center transition-all ${
+              (mvu?.statusBarStyle ?? 'none') === 'none'
+                ? 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_30%,transparent)]'
+                : 'border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)]'
+            }`}
+          >
+            <div className="text-lg">🚫</div>
+            <div className="text-[11px] text-[var(--color-text-secondary)] mt-0.5">无状态栏</div>
+          </button>
+          {STATUS_BAR_TEMPLATES.map(tmpl => (
+            <button
+              key={tmpl.id}
+              onClick={() => updateStatusBar({ style: tmpl.id, options: { themeId: mvu?.statusBarOptions?.themeId || tmpl.defaultTheme } })}
+              title={tmpl.description}
+              className={`rounded-lg border p-2 text-center transition-all ${
+                mvu?.statusBarStyle === tmpl.id
+                  ? 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_30%,transparent)]'
+                  : 'border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)]'
+              }`}
+            >
+              <div className="text-lg">{tmpl.icon}</div>
+              <div className="text-[11px] text-[var(--color-text-secondary)] mt-0.5">{tmpl.name}</div>
+            </button>
+          ))}
+          <button
+            onClick={() => updateStatusBar({ style: 'ai-custom' })}
+            className={`rounded-lg border p-2 text-center transition-all ${
+              mvu?.statusBarStyle === 'ai-custom'
+                ? 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_30%,transparent)]'
+                : 'border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)]'
+            }`}
+          >
+            <div className="text-lg">🤖</div>
+            <div className="text-[11px] text-[var(--color-text-secondary)] mt-0.5">AI/手动</div>
+          </button>
+        </div>
+
+        {/* 内置模板的主题与选项 */}
+        {mvu?.statusBarStyle && mvu.statusBarStyle !== 'none' && mvu.statusBarStyle !== 'ai-custom' && (
+          <div className="space-y-3 mb-3">
+            <div>
+              <label className="text-xs font-medium text-[var(--color-text-secondary)] mb-1.5 block">主题风格</label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {STATUS_BAR_THEMES.map(theme => (
+                  <button
+                    key={theme.id}
+                    onClick={() => updateStatusBar({ options: { themeId: theme.id } })}
+                    title={theme.description}
+                    className={`rounded-lg border p-2 text-center transition-all ${
+                      (mvu.statusBarOptions?.themeId || STATUS_BAR_TEMPLATES.find(t => t.id === mvu.statusBarStyle)?.defaultTheme) === theme.id
+                        ? 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_30%,transparent)]'
+                        : 'border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)]'
+                    }`}
+                  >
+                    <div className="text-lg">{theme.icon}</div>
+                    <div className="text-[11px] text-[var(--color-text-secondary)] mt-0.5">{theme.name}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-[var(--color-text-secondary)] mb-1 block">状态栏标题</label>
+              <TextInput
+                value={mvu.statusBarOptions?.title ?? ''}
+                onChange={(e) => updateStatusBar({ options: { title: e.target.value } })}
+                placeholder="例如：角色状态"
+              />
+            </div>
+            <div className="flex flex-wrap gap-4">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  aria-label="显示头像徽章"
+                  checked={mvu.statusBarOptions?.showAvatar ?? true}
+                  onChange={(e) => updateStatusBar({ options: { showAvatar: e.target.checked } })}
+                  className="accent-[var(--color-primary)] w-3.5 h-3.5"
+                />
+                <span className="text-xs text-[var(--color-text-secondary)]">显示头像徽章</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  aria-label="默认折叠分区"
+                  checked={mvu.statusBarOptions?.collapseAll ?? false}
+                  onChange={(e) => updateStatusBar({ options: { collapseAll: e.target.checked } })}
+                  className="accent-[var(--color-primary)] w-3.5 h-3.5"
+                />
+                <span className="text-xs text-[var(--color-text-secondary)]">默认折叠分区</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <span className="text-xs text-[var(--color-text-secondary)]">透明度</span>
+                <input
+                  type="range"
+                  min="0.7"
+                  max="1"
+                  step="0.05"
+                  value={mvu.statusBarOptions?.opacity ?? 1}
+                  onChange={(e) => updateStatusBar({ options: { opacity: Number(e.target.value) } })}
+                  className="w-24 accent-[var(--color-primary)]"
+                  aria-label="状态栏透明度"
+                />
+                <span className="text-[10px] text-[var(--color-text-muted)] w-8">{Math.round((mvu.statusBarOptions?.opacity ?? 1) * 100)}%</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <span className="text-xs text-[var(--color-text-secondary)]">密度</span>
+                <select
+                  value={mvu.statusBarOptions?.density ?? 'compact'}
+                  onChange={(e) => updateStatusBar({ options: { density: e.target.value as StatusBarOptions['density'] } })}
+                  className="rounded border border-[var(--color-border-default)] bg-[var(--color-surface-raised)] px-1.5 py-1 text-[11px] text-[var(--text-color)]"
+                  aria-label="状态栏信息密度"
+                >
+                  <option value="compact">紧凑</option>
+                  <option value="comfortable">舒适</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={mvu.statusBarOptions?.animated ?? true}
+                  onChange={(e) => updateStatusBar({ options: { animated: e.target.checked } })}
+                  className="accent-[var(--color-primary)] w-3.5 h-3.5"
+                  aria-label="启用状态栏动画"
+                />
+                <span className="text-xs text-[var(--color-text-secondary)]">动画过渡</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={mvu.statusBarOptions?.showIcons ?? true}
+                  onChange={(e) => updateStatusBar({ options: { showIcons: e.target.checked } })}
+                  className="accent-[var(--color-primary)] w-3.5 h-3.5"
+                  aria-label="显示状态栏图标"
+                />
+                <span className="text-xs text-[var(--color-text-secondary)]">显示图标</span>
+              </label>
+            </div>
+          </div>
+        )}
+
+        {/* AI/手动自定义 HTML */}
+        {mvu?.statusBarStyle === 'ai-custom' && (
+          <div className="mb-3">
+            <label className="text-xs font-medium text-[var(--color-text-secondary)] mb-1 block">自定义状态栏 HTML（含 &lt;script&gt; 的完整文档，用变量宏或 getAllVariables 读取）</label>
+            <TextArea
+              value={mvu.statusBarHtml ?? ''}
+              onChange={(e) => updateStatusBar({ style: 'ai-custom', html: e.target.value })}
+              rows={6}
+              placeholder={'```html\n<!doctype html>\n...\n```'}
+              className="font-mono text-xs"
+            />
+          </div>
+        )}
+
+        {/* 独立实时预览入口 */}
+        {statusBarSrcDoc && (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-[color-mix(in_srgb,var(--color-primary)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-surface-raised)_45%,transparent)] px-3 py-2">
+            <div>
+              <p className="text-xs font-medium text-[var(--text-color)]">状态栏实时预览</p>
+              <p className="text-[10px] text-[var(--color-text-muted)]">样式配置会即时同步；可演示应用切换、通知与设置变更。</p>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => setShowStatusBarPreview(true)}>打开预览窗口</Button>
+          </div>
+        )}
+      </div>
+
+      <Modal
+        isOpen={showStatusBarPreview}
+        onClose={() => setShowStatusBarPreview(false)}
+        title="状态栏实时预览"
+        maxWidth="max-w-3xl"
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            预览与当前配置实时同步。切换下方状态可模拟状态栏在应用切换、通知接收和系统设置变更时的表现。
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {([
+              ['normal', '正常状态'],
+              ['app', '应用切换'],
+              ['notice', '通知接收'],
+              ['settings', '设置变更'],
+            ] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setPreviewState(id)}
+                className={`rounded-md border px-3 py-1.5 text-xs transition ${
+                  previewState === id
+                    ? 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_25%,transparent)] text-[var(--text-color)]'
+                    : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-primary)]'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="rounded-xl border border-[var(--color-border-default)] bg-[#151515] p-3 overflow-auto min-h-[300px]">
+            {statusBarSrcDoc ? (
+              <iframe
+                ref={previewFrameRef}
+                title="状态栏独立实时预览"
+                srcDoc={statusBarSrcDoc}
+                style={{ width: '100%', minHeight: '330px', border: 'none', background: 'transparent' }}
+                sandbox="allow-scripts"
+              />
+            ) : (
+              <p className="p-6 text-center text-sm text-[var(--color-text-muted)]">请先选择一个内置状态栏模板。</p>
+            )}
+          </div>
+          <div className="flex justify-end">
+            <Button variant="ghost" size="sm" onClick={() => setShowStatusBarPreview(false)}>关闭预览</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* 多角色套模板弹窗（自第5步迁入） */}
+      <MultiCharTemplateModal
+        isOpen={showMultiCharModal}
+        onClose={() => setShowMultiCharModal(false)}
+        onApplyMvu={(mvuCfg) => onMvuChange?.({
+          ...mvuCfg,
+          statusBarHtml: mvu?.statusBarHtml ?? mvuCfg.statusBarHtml,
+          statusBarStyle: mvu?.statusBarStyle ?? mvuCfg.statusBarStyle,
+          statusBarOptions: mvu?.statusBarOptions ?? mvuCfg.statusBarOptions,
+        })}
+        onApplyStageAxes={onApplyStageAxes}
+        cardName={cardName}
+        lorebookEntries={lorebookEntries}
+      />
     </div>
   );
 }

@@ -1,0 +1,569 @@
+/**
+ * BeginnerModePanel — MVU 新手模式面板
+ *
+ * "壳"架构：提供结构框架与 UI，玩家通过 API 调用填充内容。
+ * 流程：选择模板 → 预览变量结构 → AI 一键生成/逐类生成 → 应用到 MvuConfig
+ */
+import { useState, useCallback, useMemo } from 'react';
+import { Button } from '../shared/Button';
+import { Modal } from '../shared/Modal';
+import { TextInput } from '../shared/TextInput';
+import type { MvuConfig, StatusBarOptions } from '../../constants/defaults';
+import {
+  STATUS_BAR_TEMPLATES,
+  STATUS_BAR_THEMES,
+  generateStatusBarHtml,
+  getStatusBarPresetByTemplateId,
+} from '../../services/status-bar-templates';
+import {
+  BEGINNER_TEMPLATES,
+  applyBeginnerTemplate,
+  buildTemplateAIBlueprint,
+  type BeginnerTemplate,
+  type TemplateSectionBlueprint,
+} from '../../constants/beginner-templates';
+import { callAIWithPromptStreaming } from '../../services/ai-service';
+import { parseAIJson, stripMarkdownFences } from '../../constants/prompts';
+
+// ════════════════════════════════════════════════════════════════════════════
+// 类型
+// ════════════════════════════════════════════════════════════════════════════
+
+interface BeginnerModePanelProps {
+  mvu: MvuConfig;
+  onChange: (mvu: MvuConfig) => void;
+  cardName: string;
+}
+
+type GenerationStatus = 'idle' | 'loading' | 'streaming' | 'done' | 'error';
+
+interface SectionGenState {
+  status: GenerationStatus;
+  streamText: string;
+  error: string;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 样式常量
+// ════════════════════════════════════════════════════════════════════════════
+
+const cardCls = 'rounded-xl border border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] p-3';
+const inputCls = 'w-full rounded-lg border border-[var(--input-border)] bg-[var(--color-surface-raised)] px-2.5 py-1.5 text-sm text-[var(--text-color)] focus:border-[var(--color-border-focus)] focus:outline-none';
+
+// ════════════════════════════════════════════════════════════════════════════
+// 主组件
+// ════════════════════════════════════════════════════════════════════════════
+
+export function BeginnerModePanel({ mvu, onChange, cardName }: BeginnerModePanelProps) {
+  // 查找模板：旧 staged-template id（pure-love/ntr/dual-route）不在新模板表中，需回退到选择界面
+  const foundTemplate = mvu.beginnerTemplateId
+    ? BEGINNER_TEMPLATES.find(t => t.id === mvu.beginnerTemplateId) ?? null
+    : null;
+  const [selectedTemplate, setSelectedTemplate] = useState<BeginnerTemplate | null>(foundTemplate);
+  const [applied, setApplied] = useState(!!foundTemplate && mvu.schemaSections.length > 0);
+  const [globalGenStatus, setGlobalGenStatus] = useState<GenerationStatus>('idle');
+  const [globalStreamText, setGlobalStreamText] = useState('');
+  const [globalError, setGlobalError] = useState('');
+  const [sectionStates, setSectionStates] = useState<Record<string, SectionGenState>>({});
+  const [userRequirement, setUserRequirement] = useState('');
+  const [showStatusBarPreview, setShowStatusBarPreview] = useState(false);
+  const [previewState, setPreviewState] = useState<'normal' | 'app' | 'notice' | 'settings'>('normal');
+
+  const updateStatusBar = useCallback((patch: Partial<StatusBarOptions> & { style?: string }) => {
+    const style = patch.style ?? mvu.statusBarStyle ?? 'none';
+    const options = { ...(mvu.statusBarOptions ?? {}), ...patch };
+    delete (options as Partial<StatusBarOptions> & { style?: string }).style;
+    const html = style !== 'none' && style !== 'ai-custom'
+      ? generateStatusBarHtml(style, mvu.schemaSections, options)
+      : style === 'none' ? '' : mvu.statusBarHtml;
+    onChange({ ...mvu, statusBarStyle: style, statusBarOptions: options, statusBarHtml: html });
+  }, [mvu, onChange]);
+
+  const previewValues = useMemo(() => {
+    const values: Record<string, unknown> = {};
+    mvu.schemaSections.flatMap((s) => s.variables).forEach((v, index) => {
+      let value = v.initialValue;
+      if (previewState === 'app' && v.range) value = v.range.min + (v.range.max - v.range.min) * (index % 2 === 0 ? 0.72 : 0.38);
+      if (previewState === 'settings' && v.zodType === 'z.boolean()') value = true;
+      if (previewState === 'settings' && v.zodType.startsWith('z.enum(') && v.enumValues?.length) value = v.enumValues[v.enumValues.length - 1];
+      values[`stat_data.${v.path}`] = value;
+    });
+    return values;
+  }, [mvu.schemaSections, previewState]);
+
+  const previewSrcDoc = useMemo(() => {
+    const style = mvu.statusBarStyle ?? 'none';
+    if (style === 'none') return '';
+    if (style === 'ai-custom') return (mvu.statusBarHtml ?? '').replace(/^```html\s*/i, '').replace(/```\s*$/i, '');
+    const notice = previewState === 'notice' ? '新通知' : previewState === 'app' ? '应用切换' : previewState === 'settings' ? '设置已更新' : '';
+    return generateStatusBarHtml(style, mvu.schemaSections, { ...(mvu.statusBarOptions ?? {}), previewValues, previewNotice: notice })
+      .replace(/^```html\s*/i, '').replace(/```\s*$/i, '');
+  }, [mvu.statusBarStyle, mvu.statusBarHtml, mvu.statusBarOptions, mvu.schemaSections, previewState, previewValues]);
+
+  // ── 选择模板 ──────────────────────────────────────────────
+  const handleSelectTemplate = useCallback((template: BeginnerTemplate) => {
+    setSelectedTemplate(template);
+    setApplied(false);
+    setSectionStates({});
+    setGlobalGenStatus('idle');
+    setGlobalStreamText('');
+    setGlobalError('');
+  }, []);
+
+  // ── 应用模板（仅结构，不生成内容）──────────────────────────
+  const handleApplyTemplate = useCallback(() => {
+    if (!selectedTemplate) return;
+    const newMvu = applyBeginnerTemplate(selectedTemplate, mvu);
+    const preset = getStatusBarPresetByTemplateId(selectedTemplate.id);
+    if (preset) {
+      const options = {
+        ...(newMvu.statusBarOptions ?? {}),
+        themeId: newMvu.statusBarOptions?.themeId ?? preset.themeId,
+        title: newMvu.statusBarOptions?.title ?? preset.title,
+      };
+      newMvu.statusBarStyle = preset.statusTemplateId;
+      newMvu.statusBarOptions = options;
+      newMvu.statusBarHtml = generateStatusBarHtml(preset.statusTemplateId, newMvu.schemaSections, options);
+    }
+    onChange(newMvu);
+    setApplied(true);
+  }, [selectedTemplate, mvu, onChange]);
+
+  // ── AI 一键生成全部变量内容 ────────────────────────────────
+  const handleGenerateAll = useCallback(async () => {
+    if (!selectedTemplate) return;
+    setGlobalGenStatus('streaming');
+    setGlobalStreamText('');
+    setGlobalError('');
+
+    const blueprint = buildTemplateAIBlueprint(selectedTemplate);
+    const system = buildBeginnerGenSystem(selectedTemplate);
+    const user = buildBeginnerGenUser(cardName, blueprint, userRequirement);
+
+    try {
+      const fullText = await callAIWithPromptStreaming(system, user, (_chunk, full) => {
+        setGlobalStreamText(full);
+      }, { temperature: 0.8, presetMode: 'force' });
+      setGlobalStreamText(fullText);
+      setGlobalGenStatus('done');
+
+      // 尝试解析并填充到变量
+      applyGeneratedContent(fullText, selectedTemplate, mvu, onChange);
+    } catch (err) {
+      setGlobalGenStatus('error');
+      setGlobalError(err instanceof Error ? err.message : '生成失败，请重试');
+    }
+  }, [selectedTemplate, cardName, userRequirement, mvu, onChange]);
+
+  // ── AI 逐分区生成 ─────────────────────────────────────────
+  const handleGenerateSection = useCallback(async (section: TemplateSectionBlueprint) => {
+    if (!selectedTemplate) return;
+    setSectionStates(prev => ({ ...prev, [section.name]: { status: 'streaming', streamText: '', error: '' } }));
+
+    const system = buildSectionGenSystem(selectedTemplate, section);
+    const user = buildSectionGenUser(cardName, section, userRequirement);
+
+    try {
+      const fullText = await callAIWithPromptStreaming(system, user, (_chunk, full) => {
+        setSectionStates(prev => ({ ...prev, [section.name]: { ...prev[section.name], streamText: full } }));
+      }, { temperature: 0.8, presetMode: 'force' });
+      setSectionStates(prev => ({ ...prev, [section.name]: { status: 'done', streamText: fullText, error: '' } }));
+
+      // 解析并填充该分区
+      applySectionContent(fullText, section, selectedTemplate, mvu, onChange);
+    } catch (err) {
+      setSectionStates(prev => ({
+        ...prev,
+        [section.name]: { status: 'error', streamText: '', error: err instanceof Error ? err.message : '生成失败' },
+      }));
+    }
+  }, [selectedTemplate, cardName, userRequirement, mvu, onChange]);
+
+  // ── 渲染 ─────────────────────────────────────────────────
+  // 安全回退：applied=true 但 selectedTemplate 为空时（旧模板 id 残留），仍显示选择界面
+  const showTemplateSelection = !applied || !selectedTemplate;
+
+  return (
+    <div className="space-y-5">
+      {/* 模板选择区 */}
+      {showTemplateSelection && (
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-sm font-bold text-[var(--text-color)] mb-1">选择主题模板</h3>
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              选择一个风格模板，系统将自动创建对应的变量结构。之后可用 AI 一键填充内容。
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {BEGINNER_TEMPLATES.map(template => {
+              const isSelected = selectedTemplate?.id === template.id;
+              return (
+                <button
+                  key={template.id}
+                  onClick={() => handleSelectTemplate(template)}
+                  className={`text-left rounded-xl border-2 p-4 transition-all duration-200 ${
+                    isSelected
+                      ? 'border-[var(--color-primary)] shadow-[0_0_12px_color-mix(in_srgb,var(--color-primary)_25%,transparent)]'
+                      : 'border-[color-mix(in_srgb,var(--color-border-default)_60%,transparent)] hover:border-[color-mix(in_srgb,var(--color-primary)_50%,transparent)]'
+                  }`}
+                  style={{ background: isSelected ? template.themeGradient : undefined }}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-2xl">{template.icon}</span>
+                    <span className="text-sm font-bold text-[var(--text-color)]">{template.name}</span>
+                    {isSelected && <span className="ml-auto text-xs px-1.5 py-0.5 rounded bg-[var(--color-primary)] text-white">已选</span>}
+                  </div>
+                  <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">{template.description}</p>
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {template.tags.map(tag => (
+                      <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded-full bg-[color-mix(in_srgb,var(--color-primary)_12%,transparent)] text-[var(--color-primary)]">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                  {/* 变量预览 */}
+                  <div className="mt-3 pt-2 border-t border-[color-mix(in_srgb,var(--color-border-default)_30%,transparent)]">
+                    <div className="flex flex-wrap gap-1.5">
+                      {template.sections.map(s => (
+                        <span key={s.name} className="text-[10px] px-1.5 py-0.5 rounded bg-[color-mix(in_srgb,var(--color-surface-raised)_80%,transparent)] text-[var(--color-text-muted)] border border-[color-mix(in_srgb,var(--color-border-default)_30%,transparent)]">
+                          {s.icon} {s.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* 应用按钮 */}
+          {selectedTemplate && (
+            <div className="flex items-center gap-3 pt-2">
+              <Button variant="primary" size="sm" onClick={handleApplyTemplate}>
+                应用「{selectedTemplate.name}」模板
+              </Button>
+              <span className="text-xs text-[var(--color-text-muted)]">
+                将创建 {selectedTemplate.sections.reduce((n, s) => n + s.variables.length, 0)} 个变量
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 已应用模板 → 显示变量结构 + AI 生成 */}
+      {applied && selectedTemplate && (
+        <div className="space-y-4">
+          {/* 模板头部 */}
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">{selectedTemplate.icon}</span>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-bold text-[var(--text-color)]">{selectedTemplate.name}</h3>
+              <p className="text-xs text-[var(--color-text-secondary)]">{selectedTemplate.description}</p>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => { setApplied(false); setSelectedTemplate(null); }}>
+              切换模板
+            </Button>
+          </div>
+
+          {/* 状态栏配置：MVU 变量步骤即可完成，无需进入分阶段模式 */}
+          <div className={cardCls}>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <div>
+                <h4 className="text-xs font-bold text-[var(--text-color)]">实时状态栏</h4>
+                <p className="text-[10px] text-[var(--color-text-muted)]">直接使用当前 MVU 变量生成状态栏，并支持实时预览。</p>
+              </div>
+              {previewSrcDoc && <Button variant="secondary" size="sm" onClick={() => setShowStatusBarPreview(true)}>打开预览</Button>}
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+              <button type="button" onClick={() => updateStatusBar({ style: 'none' })} className={`rounded-lg border p-2 text-xs ${(!mvu.statusBarStyle || mvu.statusBarStyle === 'none') ? 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_20%,transparent)]' : 'border-[var(--color-border-default)]'}`}>关闭状态栏</button>
+              {STATUS_BAR_TEMPLATES.map((template) => (
+                <button key={template.id} type="button" title={template.description} onClick={() => updateStatusBar({ style: template.id, themeId: mvu.statusBarOptions?.themeId ?? template.defaultTheme })} className={`rounded-lg border p-2 text-xs ${mvu.statusBarStyle === template.id ? 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_20%,transparent)]' : 'border-[var(--color-border-default)]'}`}>
+                  {template.icon} {template.name}
+                </button>
+              ))}
+            </div>
+            {mvu.statusBarStyle && mvu.statusBarStyle !== 'none' && mvu.statusBarStyle !== 'ai-custom' && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  {STATUS_BAR_THEMES.map((theme) => (
+                    <button key={theme.id} type="button" title={theme.description} onClick={() => updateStatusBar({ themeId: theme.id })} className={`rounded-md border px-2 py-1 text-[11px] ${mvu.statusBarOptions?.themeId === theme.id ? 'border-[var(--color-primary)] text-[var(--text-color)]' : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)]'}`}>
+                      {theme.icon} {theme.name}
+                    </button>
+                  ))}
+                </div>
+                <TextInput value={mvu.statusBarOptions?.title ?? ''} onChange={(e) => updateStatusBar({ title: e.target.value })} placeholder="状态栏标题（可选）" className={inputCls} />
+                <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--color-text-secondary)]">
+                  <label className="flex items-center gap-1.5"><input type="checkbox" checked={mvu.statusBarOptions?.showAvatar ?? true} onChange={(e) => updateStatusBar({ showAvatar: e.target.checked })} />头像</label>
+                  <label className="flex items-center gap-1.5"><input type="checkbox" checked={mvu.statusBarOptions?.animated ?? true} onChange={(e) => updateStatusBar({ animated: e.target.checked })} />动画</label>
+                  <label className="flex items-center gap-1.5"><input type="checkbox" checked={mvu.statusBarOptions?.showIcons ?? true} onChange={(e) => updateStatusBar({ showIcons: e.target.checked })} />图标</label>
+                  <label className="flex items-center gap-1.5">透明度<input type="range" min="0.7" max="1" step="0.05" value={mvu.statusBarOptions?.opacity ?? 1} onChange={(e) => updateStatusBar({ opacity: Number(e.target.value) })} /></label>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 创作需求输入 */}
+          <div className={cardCls}>
+            <label className="text-xs font-medium text-[var(--color-text-secondary)] mb-1.5 block">
+              创作需求（可选）— 告诉 AI 你想要什么样的内容
+            </label>
+            <TextInput
+              value={userRequirement}
+              onChange={(e) => setUserRequirement(e.target.value)}
+              className={inputCls}
+              placeholder={`如：一个亦正亦邪的剑客，师从魔教但心存善念…`}
+            />
+          </div>
+
+          {/* AI 一键生成全部 */}
+          <div className={cardCls}>
+            <div className="flex items-center gap-3">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleGenerateAll}
+                disabled={globalGenStatus === 'streaming' || globalGenStatus === 'loading'}
+              >
+                {globalGenStatus === 'streaming' ? '⏳ 生成中…' : '✨ AI 一键生成全部变量内容'}
+              </Button>
+              <span className="text-xs text-[var(--color-text-muted)]">
+                根据模板结构 + 卡片名称，AI 自动填充所有变量初始值
+              </span>
+            </div>
+
+            {/* 全局生成流式输出 */}
+            {globalGenStatus === 'streaming' && globalStreamText && (
+              <div className="mt-3 rounded-lg bg-[color-mix(in_srgb,var(--input-bg)_50%,transparent)] border border-[color-mix(in_srgb,var(--color-border-default)_30%,transparent)] p-3 max-h-48 overflow-y-auto">
+                <pre className="text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono leading-relaxed">{globalStreamText}</pre>
+              </div>
+            )}
+            {globalGenStatus === 'done' && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
+                <span>✓</span> 生成完成，变量内容已自动填充
+              </div>
+            )}
+            {globalGenStatus === 'error' && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-red-500">
+                <span>✗</span> {globalError}
+                <Button variant="ghost" size="sm" onClick={handleGenerateAll}>重试</Button>
+              </div>
+            )}
+          </div>
+
+          {/* 分区变量预览 + 逐区生成 */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold text-[var(--color-text-secondary)] uppercase tracking-wide">变量结构预览</h4>
+            {selectedTemplate.sections.map(section => {
+              const state = sectionStates[section.name];
+              return (
+                <div key={section.name} className={cardCls}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-base">{section.icon}</span>
+                    <span className="text-sm font-semibold text-[var(--text-color)]">{section.name}</span>
+                    <span className="text-xs text-[var(--color-text-muted)]">{section.description}</span>
+                    <div className="flex-1" />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => handleGenerateSection(section)}
+                      disabled={state?.status === 'streaming'}
+                    >
+                      {state?.status === 'streaming' ? '生成中…' : '🤖 生成此区'}
+                    </Button>
+                  </div>
+
+                  {/* 变量列表 */}
+                  <div className="space-y-1">
+                    {section.variables.map(v => (
+                      <div key={v.path} className="flex items-center gap-2 text-xs py-1 px-2 rounded bg-[color-mix(in_srgb,var(--input-bg)_25%,transparent)]">
+                        <span className="font-mono text-[var(--color-primary)]">{v.path}</span>
+                        <span className="text-[var(--color-text-muted)]">—</span>
+                        <span className="text-[var(--color-text-secondary)]">{v.label}</span>
+                        {v.aiGeneratable && (
+                          <span className="ml-auto text-[10px] px-1 py-0.5 rounded bg-[color-mix(in_srgb,var(--color-primary)_10%,transparent)] text-[var(--color-primary)]">
+                            AI
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* 分区生成流式输出 */}
+                  {state?.status === 'streaming' && state.streamText && (
+                    <div className="mt-2 rounded-lg bg-[color-mix(in_srgb,var(--input-bg)_50%,transparent)] border border-[color-mix(in_srgb,var(--color-border-default)_30%,transparent)] p-2 max-h-32 overflow-y-auto">
+                      <pre className="text-[11px] text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono leading-relaxed">{state.streamText}</pre>
+                    </div>
+                  )}
+                  {state?.status === 'done' && (
+                    <div className="mt-1.5 text-xs text-green-600 dark:text-green-400">✓ 已生成并填充</div>
+                  )}
+                  {state?.status === 'error' && (
+                    <div className="mt-1.5 flex items-center gap-2 text-xs text-red-500">
+                      ✗ {state.error}
+                      <Button variant="ghost" size="sm" onClick={() => handleGenerateSection(section)}>重试</Button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 当前变量实际值预览 */}
+          <div className={cardCls}>
+            <h4 className="text-xs font-bold text-[var(--color-text-secondary)] mb-2">当前变量值（可手动修改）</h4>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {mvu.schemaSections.map((section, sIdx) => (
+                <div key={sIdx}>
+                  <div className="text-xs font-semibold text-[var(--text-color)] mb-1">{section.name}</div>
+                  {section.variables.map((v, vIdx) => (
+                    <div key={vIdx} className="flex items-center gap-2 text-xs py-0.5">
+                      <span className="font-mono text-[var(--color-text-muted)] w-28 shrink-0 truncate">{v.path}</span>
+                      <span className="text-[var(--color-text-secondary)] flex-1 truncate">
+                        {typeof v.initialValue === 'object' ? JSON.stringify(v.initialValue) : String(v.initialValue ?? '（空）')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Modal isOpen={showStatusBarPreview} onClose={() => setShowStatusBarPreview(false)} title="状态栏实时预览" maxWidth="max-w-3xl">
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--color-text-secondary)]">预览与 MVU 变量步骤的状态栏配置实时同步，可切换不同状态查看视觉表现。</p>
+          <div className="flex flex-wrap gap-2">
+            {([
+              ['normal', '正常状态'],
+              ['app', '应用切换'],
+              ['notice', '通知接收'],
+              ['settings', '设置变更'],
+            ] as const).map(([id, label]) => (
+              <button key={id} type="button" onClick={() => setPreviewState(id)} className={`rounded-md border px-3 py-1.5 text-xs ${previewState === id ? 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_25%,transparent)] text-[var(--text-color)]' : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)]'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="rounded-xl border border-[var(--color-border-default)] bg-[#151515] p-3 overflow-auto min-h-[300px]">
+            {previewSrcDoc ? (
+              <iframe title="MVU 状态栏实时预览" srcDoc={previewSrcDoc} style={{ width: '100%', minHeight: '330px', border: 'none', background: 'transparent' }} sandbox="allow-scripts" />
+            ) : (
+              <p className="p-6 text-center text-sm text-[var(--color-text-muted)]">请先选择一个状态栏模板。</p>
+            )}
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// AI 提示词构建
+// ════════════════════════════════════════════════════════════════════════════
+
+function buildBeginnerGenSystem(template: BeginnerTemplate): string {
+  return `你是一位专业的 SillyTavern 角色卡 MVU 变量系统内容生成器。
+你的任务是为「${template.name}」风格的角色卡生成所有变量的初始内容。
+
+要求：
+1. 严格输出 JSON 格式，键为变量路径，值为对应内容
+2. 内容必须贴合「${template.name}」风格（${template.description}）
+3. 字符串变量直接给值；数值变量给合理初始值；record 变量给对象
+4. 内容要有创意和细节，不要泛泛而谈
+5. 所有文本使用中文
+6. 输出纯 JSON，不要 markdown 代码块标记
+
+输出格式示例：
+{
+  "简介.姓名": "叶孤城",
+  "简介.称号": "天外飞仙",
+  "秘籍.列表": {"天外飞仙剑法": {"品阶": "天", "进度": "第七层", "效果": "剑气纵横三万里"}},
+  "属性.武力": 75
+}`;
+}
+
+function buildBeginnerGenUser(cardName: string, blueprint: string, requirement: string): string {
+  let user = `卡片名称：${cardName}\n\n需要生成的变量蓝图：\n${blueprint}`;
+  if (requirement.trim()) {
+    user += `\n\n用户创作需求：${requirement.trim()}`;
+  }
+  user += '\n\n请根据以上信息，生成所有变量的初始内容，输出纯 JSON。';
+  return user;
+}
+
+function buildSectionGenSystem(template: BeginnerTemplate, section: TemplateSectionBlueprint): string {
+  return `你是一位专业的 SillyTavern 角色卡内容生成器，专精「${template.name}」风格。
+现在需要为「${section.name}」分区生成变量内容。
+
+要求：
+1. 严格输出 JSON 格式，键为变量路径，值为对应内容
+2. 内容贴合「${template.name}」风格
+3. 有创意、有细节、有画面感
+4. 所有文本使用中文
+5. 输出纯 JSON
+
+该分区包含的变量：
+${section.variables.map(v => `- ${v.path}（${v.label}）：${v.generationHint}`).join('\n')}`;
+}
+
+function buildSectionGenUser(cardName: string, section: TemplateSectionBlueprint, requirement: string): string {
+  let user = `卡片名称：${cardName}\n分区：${section.name}（${section.description}）`;
+  if (requirement.trim()) {
+    user += `\n用户创作需求：${requirement.trim()}`;
+  }
+  user += '\n\n请生成该分区所有变量的内容，输出纯 JSON。';
+  return user;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 解析 AI 输出并填充到 MvuConfig
+// ════════════════════════════════════════════════════════════════════════════
+
+function applyGeneratedContent(
+  rawText: string,
+  _template: BeginnerTemplate,
+  mvu: MvuConfig,
+  onChange: (mvu: MvuConfig) => void,
+) {
+  const cleaned = stripMarkdownFences(rawText);
+  const parsed = parseAIJson(cleaned) as Record<string, unknown> | null;
+  if (!parsed || typeof parsed !== 'object') return;
+
+  const newSections = mvu.schemaSections.map(section => ({
+    ...section,
+    variables: section.variables.map(v => {
+      const value = parsed[v.path];
+      if (value === undefined) return v;
+      return { ...v, initialValue: value };
+    }),
+  }));
+
+  onChange({ ...mvu, schemaSections: newSections });
+}
+
+function applySectionContent(
+  rawText: string,
+  section: TemplateSectionBlueprint,
+  _template: BeginnerTemplate,
+  mvu: MvuConfig,
+  onChange: (mvu: MvuConfig) => void,
+) {
+  const cleaned = stripMarkdownFences(rawText);
+  const parsed = parseAIJson(cleaned) as Record<string, unknown> | null;
+  if (!parsed || typeof parsed !== 'object') return;
+
+  const sectionVarPaths = new Set(section.variables.map(v => v.path));
+  const newSections = mvu.schemaSections.map(s => ({
+    ...s,
+    variables: s.variables.map(v => {
+      if (!sectionVarPaths.has(v.path)) return v;
+      const value = parsed[v.path];
+      if (value === undefined) return v;
+      return { ...v, initialValue: value };
+    }),
+  }));
+
+  onChange({ ...mvu, schemaSections: newSections });
+}

@@ -11,7 +11,7 @@
  *   5. 在预览中可修改变量路径、描述、初始值、范围
  *   6. 应用到 MVU 配置
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Modal } from '../shared/Modal';
 import { Button } from '../shared/Button';
 import { useToast } from '../shared/Toast';
@@ -27,178 +27,15 @@ import {
   parseRangeString,
 } from '../../services/mvu-builder';
 import type { MvuConfig, MvuSchemaSection, MvuVariable, MvuUpdateRule, MvuPrefix, LorebookEntry } from '../../constants/defaults';
-
-/** 多角色模板选项 */
-const TEMPLATE_OPTIONS = [
-  { id: 'pure-love', name: '甜宠纯爱', icon: '💕' },
-  { id: 'ntr', name: '虐恋NTR', icon: '🖤' },
-  { id: 'dual-route', name: '可纯爱可NTR', icon: '🔀' },
-] as const;
-
-/** 多角色模板结构化定义（用于「一键套用模板」和构建 AI 蓝图） */
-interface MultiCharTemplate {
-  id: string;
-  name: string;
-  icon: string;
-  /** 阶段轴变量的默认名称，用户可在预览中修改 */
-  defaultAxisName: string;
-  /** 构建某个角色的变量分区 */
-  buildSection: (charName: string) => MvuSchemaSection;
-  /** 构建某个角色的更新规则 */
-  buildRules: (charName: string) => MvuUpdateRule[];
-  statusBarTitle: string;
-  statusBarVars: string[];
-}
-
-const MULTI_CHAR_TEMPLATES: MultiCharTemplate[] = [
-  {
-    id: 'pure-love',
-    name: '甜宠纯爱',
-    icon: '💕',
-    defaultAxisName: '情感天平',
-    buildSection: (charName: string): MvuSchemaSection => ({
-      name: charName,
-      variables: [
-        {
-          path: `${charName}.情感天平`,
-          zodType: 'z.coerce.number()',
-          description: '对主角的情感倾向：0=初识，100=深爱，单调递增（只升不降）',
-          prefix: '',
-          initialValue: 0,
-          range: { min: 0, max: 100 },
-          categories: [
-            { range: '>= 90', label: '深爱' },
-            { range: '>= 75', label: '恋人' },
-            { range: '>= 60', label: '暧昧' },
-            { range: '>= 40', label: '朋友' },
-            { range: '>= 20', label: '认识' },
-            { range: '>= 0', label: '陌生人' },
-          ],
-        },
-      ],
-    }),
-    buildRules: (charName: string): MvuUpdateRule[] => [
-      {
-        path: `${charName}.情感天平`,
-        type: 'number',
-        range: '0~100',
-        check: [
-          '正面互动 +(3~8)，特殊事件（送礼/告白） +(10~20)',
-          '只增不减，单调递增，达到阈值自动推进阶段',
-        ],
-      },
-    ],
-    statusBarTitle: '💕 纯爱情感',
-    statusBarVars: ['{charName}.情感天平'],
-  },
-  {
-    id: 'ntr',
-    name: '虐恋NTR',
-    icon: '🖤',
-    defaultAxisName: '情感天平',
-    buildSection: (charName: string): MvuSchemaSection => ({
-      name: charName,
-      variables: [
-        {
-          path: `${charName}.情感天平`,
-          zodType: 'z.coerce.number()',
-          description: '情感堕落程度：0=纯洁，100=沉沦，单调递增（只增不减）',
-          prefix: '',
-          initialValue: 0,
-          range: { min: 0, max: 100 },
-          categories: [
-            { range: '>= 95', label: '毁灭' },
-            { range: '>= 70', label: '沉沦' },
-            { range: '>= 40', label: '沦陷' },
-            { range: '>= 20', label: '动摇' },
-            { range: '>= 0', label: '压抑' },
-          ],
-        },
-      ],
-    }),
-    buildRules: (charName: string): MvuUpdateRule[] => [
-      {
-        path: `${charName}.情感天平`,
-        type: 'number',
-        range: '0~100',
-        check: [
-          '被动事件/胁迫 +(5~15)，主动堕落 +(3~8)',
-          '只增不减，单调递增，达到阈值自动推进阶段',
-        ],
-      },
-    ],
-    statusBarTitle: '🖤 堕落情感',
-    statusBarVars: ['{charName}.情感天平'],
-  },
-  {
-    id: 'dual-route',
-    name: '可纯爱可NTR',
-    icon: '🔀',
-    defaultAxisName: '情感天平',
-    buildSection: (charName: string): MvuSchemaSection => ({
-      name: charName,
-      variables: [
-        {
-          path: `${charName}.情感天平`,
-          zodType: 'z.coerce.number()',
-          description: '情感倾向核心变量：>0 偏向纯爱主角，<0 偏向 NTR 第三者，0 附近为缓冲带',
-          prefix: '',
-          initialValue: 0,
-          range: { min: -100, max: 100 },
-          categories: [
-            { range: '>= 100', label: '纯爱·至死不渝' },
-            { range: '>= 80', label: '纯爱·深爱' },
-            { range: '>= 50', label: '纯爱·恋人' },
-            { range: '>= 20', label: '纯爱·暧昧' },
-            { range: '>= -20', label: '中立·缓冲带' },
-            { range: '>= -50', label: 'NTR·动摇' },
-            { range: '>= -80', label: 'NTR·沦陷' },
-            { range: '>= -100', label: 'NTR·沉沦' },
-          ],
-        },
-        {
-          path: `${charName}.恶堕事件玩家方`,
-          zodType: 'z.boolean()',
-          description: '隐藏标记：玩家方触发恶堕事件（如主角背叛/伤害女主/主动把她推向他人等），一次性大幅拉低情感天平后锁定，防止重复触发',
-          prefix: '$',
-          initialValue: false,
-        },
-        {
-          path: `${charName}.被强制恶堕`,
-          zodType: 'z.boolean()',
-          description: '隐藏标记：女主被胁迫/强制发生恶堕事件（如被下药、被威胁、被强迫等），一次性大幅拉低情感天平后锁定，防止重复触发',
-          prefix: '$',
-          initialValue: false,
-        },
-      ],
-    }),
-    buildRules: (charName: string): MvuUpdateRule[] => [
-      {
-        path: `${charName}.情感天平`,
-        type: 'number',
-        range: '-100~100',
-        check: [
-          '纯爱侧：主角真诚关心/保护/尊重/亲密/共同回忆，或女主主动靠近 → +3~15',
-          'NTR侧（敌人受益的"正面"互动）：主角帮情敌/向威胁屈服/牺牲女主利益/让女主单独面对威胁/敌人 → -5~20',
-          'NTR侧（主角负面行为）：主角欺骗/背叛/冷落/主动伤害/暴力 → -5~20',
-          '缓冲带：当前值在 -20~20 时，日常互动只 ±1~3；只有明确指向纯爱或NTR的情节才允许 ±5~15 跨区',
-          `特殊事件：若「玩家方触发恶堕事件（背叛/伤害/主动推向他人）」且 ${charName}.恶堕事件玩家方=false，则一次性 -30~-50 并将 ${charName}.恶堕事件玩家方 设为 true`,
-          `特殊事件：若「女主被胁迫/强制发生恶堕事件」且 ${charName}.被强制恶堕=false，则一次性 -30~-50 并将 ${charName}.被强制恶堕 设为 true`,
-        ],
-      },
-      {
-        path: `${charName}.恶堕事件玩家方`,
-        check: ['初始 false', '仅在「玩家方触发恶堕事件」时设为 true，一次性事件不可恢复'],
-      },
-      {
-        path: `${charName}.被强制恶堕`,
-        check: ['初始 false', '仅在「女主被强制恶堕」时设为 true，一次性事件不可恢复'],
-      },
-    ],
-    statusBarTitle: '🔀 情感天平',
-    statusBarVars: ['{charName}.情感天平'],
-  },
-];
+import {
+  STAGED_TEMPLATE_CATEGORIES,
+  getTemplatesByCategory,
+  getStagedTemplateById,
+  buildSectionForChar,
+  buildRulesForChar,
+  buildTemplateBlueprint as buildTemplateBlueprintFromData,
+  type BeginnerTemplate,
+} from './staged-templates';
 
 /** 语义化颜色常量 */
 const C = {
@@ -214,37 +51,6 @@ const C = {
 } as const;
 const surfaceA = (n: number) => `color-mix(in srgb, ${C.surface} ${n}%, transparent)`;
 const borderA = (n: number) => `color-mix(in srgb, ${C.border} ${n}%, transparent)`;
-
-/** 模板蓝图：描述变量结构（供 AI 参考），与结构化模板保持一致 */
-function buildTemplateBlueprint(templateId: string): string {
-  if (templateId === 'pure-love') {
-    return `变量结构（只允许单一「情感天平」变量，阶段轴用数值阈值型，参考「高考冲刺100天」的情感天平模式）：
-- 角色.情感天平 (number 0~100, 初始0)：对主角的情感倾向，0=初识，100=深爱，单调递增（只升不降）。这是【阶段轴变量】，通过 categories 阈值分段实现 6 个阶段：
-  - categories: [{"range":">= 90","label":"深爱"},{"range":">= 75","label":"恋人"},{"range":">= 60","label":"暧昧"},{"range":">= 40","label":"朋友"},{"range":">= 20","label":"认识"},{"range":">= 0","label":"陌生人"}]
-更新规则要点：情感天平每次+1~3，达到阈值自动推进阶段；阶段只升不降。禁止生成好感度、信任度、心情、回忆点等其他变量。`;
-  }
-  if (templateId === 'ntr') {
-    return `变量结构（只允许单一「情感天平」变量，阶段轴用数值阈值型，参考「高考冲刺100天」的情感天平模式）：
-- 角色.情感天平 (number 0~100, 初始0)：情感堕落程度，0=纯洁，100=沉沦，单调递增（只增不减）。这是【阶段轴变量】，通过 categories 阈值分段实现 5 个阶段：
-  - categories: [{"range":">= 95","label":"毁灭"},{"range":">= 70","label":"沉沦"},{"range":">= 40","label":"沦陷"},{"range":">= 20","label":"动摇"},{"range":">= 0","label":"压抑"}]
-更新规则要点：情感天平每次+1~3，达到阈值自动推进阶段；只增不减。禁止生成堕落度、心理防线、羞耻感、第三者介入等其他变量。`;
-  }
-  // dual-route：双向情感天平
-  return `变量结构（只允许一个可见「情感天平」变量，阶段轴用双向数值阈值型，参考「高考冲刺100天」的「情感天平」模式）：
-- 角色.情感天平 (number -100~100, 初始0)：情感倾向核心变量。这是【唯一可见变量】和【阶段轴变量】，通过 categories 阈值分段实现 8 个阶段（负向=NTR，正向=纯爱，0附近为缓冲带）：
-  - categories: [{"range":">= 100","label":"纯爱·至死不渝"},{"range":">= 80","label":"纯爱·深爱"},{"range":">= 50","label":"纯爱·恋人"},{"range":">= 20","label":"纯爱·暧昧"},{"range":">= -20","label":"中立·缓冲带"},{"range":">= -50","label":"NTR·动摇"},{"range":">= -80","label":"NTR·沦陷"},{"range":">= -100","label":"NTR·沉沦"}]
-- 角色.恶堕事件玩家方 (boolean, $前缀隐藏, 初始false)：玩家方触发恶堕事件（背叛/伤害/主动推向他人）的一次性标记，触发后设为true防止重复大跌
-- 角色.被强制恶堕 (boolean, $前缀隐藏, 初始false)：女主被胁迫/强制发生恶堕事件的一次性标记，触发后设为true防止重复大跌
-更新规则要点：
-  - 纯爱侧：主角真诚关心/保护/尊重/亲密/共同回忆，或女主主动靠近 → +3~15
-  - NTR侧（敌人受益的"正面"互动）：主角帮情敌/向威胁屈服/牺牲女主利益/让女主单独面对威胁/敌人 → -5~20
-  - NTR侧（主角负面行为）：主角欺骗/背叛/冷落/主动伤害/暴力 → -5~20
-  - 缓冲带：当前值在 -20~20 时，日常互动只 ±1~3；只有明确指向纯爱或NTR的情节才允许 ±5~15 跨区
-  - 特殊事件：若「玩家方触发恶堕事件（背叛/伤害/主动推向他人）」且 角色.恶堕事件玩家方=false，则一次性 -30~-50 并将 角色.恶堕事件玩家方 设为 true
-  - 特殊事件：若「女主被胁迫/强制发生恶堕事件」且 角色.被强制恶堕=false，则一次性 -30~-50 并将 角色.被强制恶堕 设为 true
-  - 隐藏标记只由上述特殊事件设置，日常互动不修改
-禁止生成好感度、堕落度、路线锁等其他可见变量。`;
-}
 
 interface DetectedCharacter {
   name: string;
@@ -271,7 +77,7 @@ interface MultiCharTemplateModalProps {
 function computeStageAxes(
   sections: MvuSchemaSection[],
   chars: Array<{ name: string }>,
-  defaultAxisName: string,
+  axisVariableName: string,
 ): Array<{ characterName: string; axisPath: string }> {
   return chars.map((c) => {
     const section = sections.find((s) => s.name === c.name);
@@ -280,25 +86,31 @@ function computeStageAxes(
     ) || section?.variables.find((v) =>
       v.zodType.startsWith('z.enum(') && (v.path.includes('阶段') || v.path.includes('路线') || v.path.includes('堕落')),
     );
-    return { characterName: c.name, axisPath: stageVar?.path || `${c.name}.${defaultAxisName}` };
+    return { characterName: c.name, axisPath: stageVar?.path || `${c.name}.${axisVariableName}` };
   });
 }
 
 /** 用 sections + rules 重新组装 MvuConfig，并同步生成衍生内容 */
-function rebuildMvu(sections: MvuSchemaSection[], updateRules: MvuUpdateRule[], templateId: string): MvuConfig {
+function rebuildMvu(sections: MvuSchemaSection[], updateRules: MvuUpdateRule[], templateId: string, base?: MvuConfig): MvuConfig {
+  const preserved = base ?? {
+    enabled: true,
+    mode: 'beginner' as const,
+    ejsConfigs: [],
+    statusBarHtml: '',
+    statusBarStyle: 'none',
+  };
   return {
+    ...preserved,
     enabled: true,
     mode: 'beginner',
     beginnerTemplateId: templateId,
     schemaSections: sections,
     updateRules,
-    ejsConfigs: [],
+    ejsConfigs: preserved.ejsConfigs ?? [],
     ejsPreprocessContent: buildEjsPreprocess([], sections),
     schemaTsContent: buildSchemaTs(sections),
     initvarYamlContent: buildInitvarYaml(sections),
     updateRulesYamlContent: buildUpdateRulesYaml(updateRules),
-    statusBarHtml: '',
-    statusBarStyle: 'minimal-dark',
   };
 }
 
@@ -310,6 +122,7 @@ export function MultiCharTemplateModal({
   const { addToast } = useToast();
 
   const [templateId, setTemplateId] = useState<string>('pure-love');
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('romance');
   const [step, setStep] = useState<'select' | 'detect' | 'preview'>('select');
   const [detecting, setDetecting] = useState(false);
   const [detectStatus, setDetectStatus] = useState<AIProgressStatus>('idle');
@@ -319,8 +132,15 @@ export function MultiCharTemplateModal({
   const [previewMvu, setPreviewMvu] = useState<MvuConfig | null>(null);
   const [previewAxes, setPreviewAxes] = useState<Array<{ characterName: string; axisPath: string }>>([]);
 
-  const template = MULTI_CHAR_TEMPLATES.find((t) => t.id === templateId);
-  const templateName = TEMPLATE_OPTIONS.find((t) => t.id === templateId)?.name || '';
+  const template = getStagedTemplateById(templateId) as BeginnerTemplate | undefined;
+  const templateName = template?.name || '';
+
+  // 模态框打开时，同步大类到当前 templateId 所属大类（处理重开后 templateId 残留的情况）
+  useEffect(() => {
+    if (isOpen && template && template.categoryId !== selectedCategoryId) {
+      setSelectedCategoryId(template.categoryId);
+    }
+  }, [isOpen]); // 故意只依赖 isOpen，避免切换大类时反向覆盖
 
   /** 构造已有世界书上下文（comment + content 截断） */
   const existingWorldbookContext = (() => {
@@ -369,12 +189,12 @@ export function MultiCharTemplateModal({
     }
     if (!template) return;
 
-    const sections: MvuSchemaSection[] = selected.map((c) => template.buildSection(c.name));
-    const updateRules: MvuUpdateRule[] = selected.flatMap((c) => template.buildRules(c.name));
+    const sections: MvuSchemaSection[] = selected.map((c) => buildSectionForChar(template, c.name));
+    const updateRules: MvuUpdateRule[] = selected.flatMap((c) => buildRulesForChar(template, c.name));
     const mvu = rebuildMvu(sections, updateRules, templateId);
 
     setPreviewMvu(mvu);
-    setPreviewAxes(computeStageAxes(sections, selected, template.defaultAxisName));
+    setPreviewAxes(computeStageAxes(sections, selected, template.axisVariableName));
     setStep('preview');
     addToast('success', t('multiCharTemplate.copyTemplateDone'));
   };
@@ -389,7 +209,12 @@ export function MultiCharTemplateModal({
     setGenerating(true);
     setGenStatus('generating');
     try {
-      const blueprint = buildTemplateBlueprint(templateId);
+      if (!template) {
+        addToast('error', t('multiCharTemplate.generateFailed'));
+        setGenStatus('error');
+        return;
+      }
+      const blueprint = buildTemplateBlueprintFromData(template);
       const result = await generateMultiCharVariables(
         cardName, templateId, templateName, blueprint,
         selected.map((c) => ({ name: c.name, summary: c.summary })),
@@ -455,7 +280,7 @@ export function MultiCharTemplateModal({
       }));
       const mvu = rebuildMvu(sections, updateRules, templateId);
       setPreviewMvu(mvu);
-      setPreviewAxes(computeStageAxes(sections, selected, template?.defaultAxisName || '情感天平'));
+      setPreviewAxes(computeStageAxes(sections, selected, template?.axisVariableName || '情感天平'));
       setStep('preview');
       setGenStatus('done');
       addToast('success', t('multiCharTemplate.generateDone'));
@@ -499,7 +324,7 @@ export function MultiCharTemplateModal({
     }
 
     setPreviewMvu(rebuildMvu(newSections, newRules, templateId));
-    setPreviewAxes(computeStageAxes(newSections, characters.filter((c) => c.selected), template?.defaultAxisName || '情感天平'));
+    setPreviewAxes(computeStageAxes(newSections, characters.filter((c) => c.selected), template?.axisVariableName || '情感天平'));
   };
 
   /** 预览阶段：修改某个变量 */
@@ -523,7 +348,7 @@ export function MultiCharTemplateModal({
     }
 
     setPreviewMvu(rebuildMvu(newSections, newRules, templateId));
-    setPreviewAxes(computeStageAxes(newSections, characters.filter((c) => c.selected), template?.defaultAxisName || '情感天平'));
+    setPreviewAxes(computeStageAxes(newSections, characters.filter((c) => c.selected), template?.axisVariableName || '情感天平'));
   };
 
   /** 预览阶段：删除某个变量 */
@@ -536,7 +361,7 @@ export function MultiCharTemplateModal({
     });
     const newRules = previewMvu.updateRules.filter((r) => r.path !== removed.path);
     setPreviewMvu(rebuildMvu(newSections, newRules, templateId));
-    setPreviewAxes(computeStageAxes(newSections, characters.filter((c) => c.selected), template?.defaultAxisName || '情感天平'));
+    setPreviewAxes(computeStageAxes(newSections, characters.filter((c) => c.selected), template?.axisVariableName || '情感天平'));
   };
 
   /** 应用到 MVU 配置 */
@@ -568,21 +393,55 @@ export function MultiCharTemplateModal({
         {/* Step 1: 选模板 + AI 识别角色 */}
         <div className="rounded-lg border p-3 space-y-3" style={{ borderColor: borderA(50) }}>
           <p className="text-xs font-medium" style={{ color: C.text }}>{t('multiCharTemplate.step1Title')}</p>
-          <div className="grid grid-cols-3 gap-2">
-            {TEMPLATE_OPTIONS.map((opt) => (
+          {/* 大类选择 */}
+          <div className="flex flex-wrap gap-1.5">
+            {STAGED_TEMPLATE_CATEGORIES.map((cat) => {
+              const isActive = selectedCategoryId === cat.id;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => {
+                  setSelectedCategoryId(cat.id);
+                  // 若当前 templateId 不属于该大类，自动选中该大类第一个模板
+                  const catTemplates = getTemplatesByCategory(cat.id);
+                  if (catTemplates.length > 0 && !catTemplates.find(t => t.id === templateId)) {
+                    setTemplateId(catTemplates[0].id);
+                  }
+                }}
+                  className={`rounded-md border px-2.5 py-1 text-[11px] transition ${
+                    isActive
+                      ? 'border-[var(--color-primary)] text-[var(--text-color)]'
+                      : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[color-mix(in_srgb,var(--color-border-default)_80%,transparent)]'
+                  }`}
+                  style={{ backgroundColor: isActive ? themeAlpha('primary', 30) : surfaceA(30) }}
+                  title={cat.description}
+                >
+                  {cat.icon} {cat.name}
+                </button>
+              );
+            })}
+          </div>
+          {/* 子模板选择（当前大类下） */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {getTemplatesByCategory(selectedCategoryId).map((tmpl) => (
               <button
-                key={opt.id}
+                key={tmpl.id}
                 type="button"
-                onClick={() => setTemplateId(opt.id)}
-                className={`rounded-lg border p-3 text-center transition ${
-                  templateId === opt.id
+                onClick={() => setTemplateId(tmpl.id)}
+                className={`rounded-lg border p-2.5 text-left transition ${
+                  templateId === tmpl.id
                     ? 'border-[var(--color-primary)] text-[var(--text-color)]'
                     : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[color-mix(in_srgb,var(--color-border-default)_80%,transparent)]'
                 }`}
-                style={{ backgroundColor: templateId === opt.id ? themeAlpha('primary', 30) : surfaceA(30) }}
+                style={{ backgroundColor: templateId === tmpl.id ? themeAlpha('primary', 30) : surfaceA(30) }}
+                title={tmpl.description}
               >
-                <div className="text-xl">{opt.icon}</div>
-                <div className="text-xs mt-1">{opt.name}</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-lg">{tmpl.icon}</span>
+                  <span className="text-xs font-medium">{tmpl.name}</span>
+                </div>
+                <p className="text-[10px] mt-1" style={{ color: C.muted }}>{tmpl.description}</p>
               </button>
             ))}
           </div>

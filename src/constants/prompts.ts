@@ -18,6 +18,7 @@
  */
 
 import type { Language } from '../i18n/translations';
+import { getStagedTemplateById, getTemplateLabel } from '../components/wizard/staged-templates';
 
 /**
  * Character generation prompt (Step 3).
@@ -625,103 +626,6 @@ ${fullText.length > 1000 ? fullText.slice(0, 500) + '\n...(中间省略)...\n' +
 });
 
 /**
- * Beginner mode MVU generation prompt.
- * Generates a complete MVU variable system from natural language description.
- * AI outputs structured variable definitions, update rules, and status bar config.
- */
-export const MVU_BEGINNER_GENERATE_PROMPT = (
-  cardName: string,
-  characterSummaries: string,
-  userDescription: string,
-  templateId: string = '',
-  _lang: Language = 'zh',
-) => ({
-  system: `你是一个 SillyTavern 角色卡的 MVU 变量系统生成器。根据用户描述的角色和场景，生成一套简洁的变量追踪系统。` + (templateId ? `
-
-## 当前已选模板
-用户已在第一步选择了「${templateId}」模板。AI 生成变量时必须参考该模板的预设结构，确保变量与该模板强关联，尤其要兼容后续可能启用的「分阶段世界书」系统。
-
-### 模板变量要求
-- 甜宠纯爱（pure-love）：**只允许生成单一「关系.情感天平」变量**（0~100，0=初识，100=深爱），作为纯爱阶段轴，方向为单向递增（>=）。禁止生成好感度、信任度、心情、回忆点等其他变量。
-- 虐恋 NTR（ntr）：**只允许生成单一「关系.情感天平」变量**（0~100，0=纯洁，100=沉沦），作为堕落阶段轴，方向为单向递增（>=）。禁止生成堕落度、心理防线、羞耻感、第三者介入等其他变量。
-- 可纯爱可 NTR（dual-route）：**只允许生成一个可见变量「关系.情感天平」**（-100~100），0 附近为缓冲带（-20~20）。正向事件（>=）触发纯爱阶段，负向事件（<=）触发 NTR 阶段。允许额外生成 1~2 个隐藏布尔标记（"$" 前缀）：「关系.恶堕事件玩家方」「关系.被强制恶堕」，用于一次性特殊事件的防重复触发。禁止生成路线锁、抉择进度、第三者介入等其他可见变量。
-- 甜宠纯爱和虐恋 NTR 模板变量总数为 1 个；dual-route 模板为 1 个可见变量 + 最多 2 个隐藏标记。
-
-如果用户描述与模板方向明显相悖，仍以模板方向为准生成变量；若描述没提到具体变量，直接按上述要求生成。
-` : '') + `
-
-## 输出格式
-你必须输出一个 JSON 对象（只输出 JSON，不要 markdown 代码块包裹），包含以下字段：
-
-{
-  "sections": [
-    {
-      "name": "分区名称（如"角色"、"世界"、"主角"）",
-      "variables": [
-        {
-          "path": "变量路径（如"角色.好感度"，用点分隔层级）",
-          "type": "number | string | enum",
-          "description": "变量用途说明",
-          "initialValue": "初始值（number 给数字、string/enum 给字符串）",
-          "rangeMin": 0,
-          "rangeMax": 100,
-          "enumValues": ["值1", "值2"]
-        }
-      ]
-    }
-  ],
-  "updateRules": [
-    {
-      "path": "变量路径（必须与 schema 中某个变量路径完全一致）",
-      "type": "number | string",
-      "range": "0~100",
-      "check": ["更新条件说明1", "更新条件说明2"]
-    }
-  ],
-  "statusBar": {
-    "title": "状态栏标题（含 emoji 装饰）",
-    "showVariables": ["要显示的变量完整路径1", "路径2"],
-    "styleHint": "风格关键词，如：暗色极简 / 赛博霓虹 / 粉色二次元 / 游戏HUD / 浅色毛玻璃 / 古风卷轴"
-  }
-}
-
-## 字段规则
-- number 类型：必须给出 rangeMin 和 rangeMax（通常 0~100），initialValue 为数字
-- enum 类型：必须给出 enumValues 数组（2~6 个选项），initialValue 必须是 enumValues 之一
-- string 类型：不需要 rangeMin/rangeMax/enumValues
-- rangeMin/rangeMax 可以省略，省略时默认 0~100
-- updateRules 中每个 path 必须能在 sections 中找到对应变量
-- statusBar.showVariables 中的路径必须能在 sections 中找到对应变量
-
-## 变量设计原则
-- 变量数量控制在 3-8 个，不要太多
-- 优先使用常见变量：好感度、情绪、当前场景、关系阶段、时间
-- 变量名用中文，自明即可（如"好感度"、"当前场景"）
-- 数值类型用 0~100 范围
-- 枚举类型只用于有限选项（如"白天/黑夜"、"友好/冷淡/敌对"）
-- 自明变量（名称本身就说明如何更新）不需要 check 规则
-- 路径用 "分区.变量名" 的形式，分区名用名词（角色/世界/主角/环境/关系 等）
-
-## 状态栏设计
-- 状态栏是给玩家看的，放在屏幕角落
-- 标题带 emoji 装饰，简洁有辨识度
-- showVariables 包含最重要的变量（通常 2-5 个）
-- styleHint 用关键词描述风格，从给定选项中选择最贴合场景的一个
-
-## 语言
-使用简体中文`,
-  user: `卡片名称：${cardName}
-
-## 角色信息
-${characterSummaries}
-
-## 用户描述
-${userDescription || '请根据角色信息自动设计合适的变量系统'}
-
-请生成 MVU 变量系统 JSON：`,
-});
-
-/**
  * Staged lorebook prompt (Step 6 - 分阶段世界书).
  * Generates per-stage content for a stage-axis variable (enum or numeric).
  * Output: JSON array of { stageName, content }.
@@ -1134,13 +1038,16 @@ export const MULTI_CHAR_DETECT_PROMPT = (
   templateId: string,
   templateName: string,
   _lang: Language = 'zh',
-) => ({
-  system: `你是 SillyTavern 世界书分析师。任务：读取下面的已有世界书条目，识别出其中的"角色"条目（人名/人称/人设），排除掉场景/道具/设定/规则条目。
+) => {
+  const tpl = getStagedTemplateById(templateId);
+  const suitabilityHint = tpl?.characterSuitabilityHint ?? '需要可发展剧情的角色';
+  return {
+    system: `你是 SillyTavern 世界书分析师。任务：读取下面的已有世界书条目，识别出其中的"角色"条目（人名/人称/人设），排除掉场景/道具/设定/规则条目。
 
 ## 判定规则
 - 角色条目：描述某个具体人物的设定（姓名、外貌、性格、身份、关系等）
 - 非角色条目：场景描述、世界设定、道具、规则、时间线、系统说明等
-- 适合性：判断该角色是否适合套用「${templateName}」模板（${templateId === 'ntr' ? '需要可堕落/可被介入的角色' : templateId === 'pure-love' ? '需要可发展感情的角色' : '需要可发展剧情的角色'}）
+- 适合性：判断该角色是否适合套用「${templateName}」模板（${suitabilityHint}）
 
 ## 输出格式
 只输出 JSON 数组，不加 markdown 代码块，不加解释：
@@ -1149,11 +1056,12 @@ export const MULTI_CHAR_DETECT_PROMPT = (
   ...
 ]
 suitable 为 boolean。若全部不适合，返回空数组 []。`,
-  user: `分析「${cardName}」的世界书，识别适合套用「${templateName}」模板的角色。
+    user: `分析「${cardName}」的世界书，识别适合套用「${templateName}」模板的角色。
 
 ## 已有世界书条目
 ${existingWorldbookContext || '(无世界书)'}`,
-});
+  };
+};
 
 /**
  * Multi-char template prompt - Step 2: 多角色套模板生成变量.
@@ -1163,13 +1071,23 @@ ${existingWorldbookContext || '(无世界书)'}`,
  */
 export const MULTI_CHAR_TEMPLATE_PROMPT = (
   cardName: string,
-  _templateId: string,
+  templateId: string,
   templateName: string,
   templateBlueprint: string,
   characters: Array<{ name: string; summary: string }>,
   _lang: Language = 'zh',
-) => ({
-  system: `你是 SillyTavern MVU 变量系统架构师。任务：对每个给定角色，套用「${templateName}」模板蓝图，生成以"角色名前缀"命名的独立变量组。
+) => {
+  const tpl = getStagedTemplateById(templateId);
+  const axisVarName = tpl?.axisVariableName ?? '情感天平';
+  const firstCharName = characters[0]?.name || '角色';
+  // 检测模板是否含隐藏标记（$ 前缀变量）
+  const hiddenFlags = tpl?.sections[0]?.variables.filter(v => v.prefix === '$') ?? [];
+  const hasHiddenFlags = hiddenFlags.length > 0;
+  const hiddenFlagsRule = hasHiddenFlags
+    ? `- 该模板包含隐藏标记（path 以 "$" 开头，初始 false，仅用于一次性事件防重复）：每个角色都需生成对应的隐藏标记，标记名与模板蓝图一致，只是前缀替换为角色名\n- 隐藏标记的 updateRule：初始 false，仅在对应特殊事件触发时设为 true，日常互动不修改`
+    : '- 该模板不含隐藏标记，每个角色只生成阶段轴变量即可';
+  return {
+    system: `你是 SillyTavern MVU 变量系统架构师。任务：对每个给定角色，套用「${templateName}」模板蓝图，生成以"角色名前缀"命名的独立变量组。
 
 ## 模板蓝图（${templateName}）
 ${templateBlueprint}
@@ -1178,7 +1096,7 @@ ${templateBlueprint}
 ${characters.map((c, i) => `${i + 1}. ${c.name}：${c.summary}`).join('\n')}
 
 ## 命名规则（必须遵循）
-- 每个角色的变量路径必须以该角色名开头作为前缀，如「${characters[0]?.name || '角色'}.情感天平」
+- 每个角色的变量路径必须以该角色名开头作为前缀，如「${firstCharName}.${axisVarName}」
 - 严禁使用通用前缀"角色"或"关系"，必须替换为具体角色名
 - 不同角色的变量必须独立，不共享
 - 同一模板下不同角色的变量结构保持一致（同样的变量名，只是前缀不同）
@@ -1188,21 +1106,21 @@ ${characters.map((c, i) => `${i + 1}. ${c.name}：${c.summary}`).join('\n')}
 {
   "sections": [
     {
-      "name": "${characters[0]?.name || '角色'}",
+      "name": "${firstCharName}",
       "variables": [
-        { "path": "${characters[0]?.name || '角色'}.情感天平", "type": "number", "description": "...", "initialValue": 0, "rangeMin": 0, "rangeMax": 100, "categories": [{"range": ">= 90", "label": "深爱"}, {"range": ">= 75", "label": "恋人"}, {"range": ">= 60", "label": "暧昧"}, {"range": ">= 40", "label": "朋友"}, {"range": ">= 20", "label": "认识"}, {"range": ">= 0", "label": "陌生人"}] },
+        { "path": "${firstCharName}.${axisVarName}", "type": "number", "description": "...", "initialValue": 0, "rangeMin": 0, "rangeMax": 100, "categories": [{"range": ">= 90", "label": "..."}, ...] },
         ...
       ]
     },
     ...（每个角色一个 section，section.name = 角色名）
   ],
   "updateRules": [
-    { "path": "${characters[0]?.name || '角色'}.情感天平", "type": "number", "range": "0~100", "check": ["..."] },
+    { "path": "${firstCharName}.${axisVarName}", "type": "number", "range": "0~100", "check": ["..."] },
     ...
   ],
   "statusBar": {
-    "title": "状态栏标题（含 emoji）",
-    "showVariables": ["${characters[0]?.name || '角色'}.情感天平", ...],
+    "title": "状态栏标题（纯中文，不含 emoji）",
+    "showVariables": ["${firstCharName}.${axisVarName}", ...],
     "styleHint": "风格关键词"
   }
 }
@@ -1210,23 +1128,17 @@ ${characters.map((c, i) => `${i + 1}. ${c.name}：${c.summary}`).join('\n')}
 ## 规则
 - 严格按模板蓝图的变量结构生成，只是把通用前缀替换为角色名
 - 阶段轴变量必须用 number 类型 + categories 字段：categories 是阈值分段数组，每段含 {"range": ">= 阈值" 或 "<= 阈值", "label": "阶段名"}，顺序从高到低（或从极端到初始）
-- updateRules 的 check 规则中要把"角色"替换为对应角色名
-- dual-route（可纯爱可NTR）模板：每个角色的唯一可见变量是「角色名.情感天平」（-100~100），0附近 -20~20 为缓冲带；允许额外生成 1~2 个隐藏布尔标记（path 以 "$" 开头）：「角色名.恶堕事件玩家方」「角色名.被强制恶堕」，初始 false，仅用于一次性特殊事件防重复
-- 隐藏标记的 updateRule：初始 false，仅在对应特殊事件触发时设为 true，日常互动不修改
+- updateRules 的 check 规则中要把模板蓝图里的分区名替换为对应角色名
+${hiddenFlagsRule}
 - statusBar.showVariables 只显示可见变量，隐藏标记（"$"前缀）不显示；每个角色显示最关键的 1-2 个可见变量
 - 若角色超过 3 个，状态栏只显示前 3 个角色的关键变量`,
-  user: `为「${cardName}」的 ${characters.length} 个角色套用「${templateName}」模板，生成多角色变量组。`,
-});
+    user: `为「${cardName}」的 ${characters.length} 个角色套用「${templateName}」模板，生成多角色变量组。`,
+  };
+};
 
 // ──────────────────────────────────────────────────────────────────────────
 // 分阶段模式（StepStagedMode）提示模板
 // ──────────────────────────────────────────────────────────────────────────
-
-const STAGED_TEMPLATE_LABELS: Record<string, string> = {
-  'pure-love': '纯爱（情感天平 0~100 单向递增）',
-  'ntr': 'NTR（情感天平 0~100 单向递增）',
-  'dual-route': '双路线（情感天平 -100~100，正值走纯爱，负值走NTR）',
-};
 
 /**
  * 阶段框架剖析：AI 读取已有世界书 + MVU 变量 + 用户要求，
@@ -1239,8 +1151,14 @@ export const STAGED_ANALYZE_PROMPT = (
   mvuVariablesContext: string,
   userRequirement: string,
   _lang: Language = 'zh',
-) => ({
-  system: `你是一位擅长拆解角色弧光的创作者。现在请你读下面的世界书和 MVU 变量，找出适合「${STAGED_TEMPLATE_LABELS[templateId] || templateId}」这条线的角色，然后为每个角色搭一个"阶段轴"框架。
+) => {
+  const tpl = getStagedTemplateById(templateId);
+  const label = getTemplateLabel(templateId);
+  const suitabilityHint = tpl?.characterSuitabilityHint ?? '需要可发展剧情的角色';
+  const analyzeHint = tpl?.analyzeHint ?? '阶段轴必须是模板预设的 number 类型变量，方向与模板一致。';
+  const specialRules = tpl?.specialRulesHint;
+  return {
+    system: `你是一位擅长拆解角色弧光的创作者。现在请你读下面的世界书和 MVU 变量，找出适合「${label}」这条线的角色，然后为每个角色搭一个"阶段轴"框架。
 
 ## 你要输出什么
 对每个合适角色，给出：
@@ -1251,29 +1169,17 @@ export const STAGED_ANALYZE_PROMPT = (
 ## 怎么识别角色
 - 含具体人名 + 人设 + 与主角关系 = 角色。
 - 只写场景/道具/世界观 = 跳过。
-- 角色要适合当前标签：
-  - 纯爱线：能与主角发展浪漫/亲密情感的角色。
-  - NTR 线：与主角有情感羁绊且存在被夺走/堕落可能性的角色。
-  - 双路线：同时满足以上两种潜力的角色。
-
-## 双路线默认设定（重要）
-- 默认状态下，女主**没有被对手攻略过**，也没有与对方发生过亲密关系。
-- 正向（纯爱）阶段只写女主与主角之间的情感推进，**不要预设女主是“公交车”、曾是敌方玩物、有过NTR历史等背景**。
-- 负向（NTR）阶段可以写对手试图介入、女主逐渐动摇或被攻陷的过程，但要从当前阶段开始写，不要默认过去已经发生。
-- 只有用户引导词明确要求时，才允许给女主加上“曾被攻略”“曾是玩物”等历史设定。
-
+- 角色要适合当前模板：${suitabilityHint}。
+${specialRules ? `\n## 特殊规则\n${specialRules}\n` : ''}
 ## 根据模板选阶段轴（变量必须契合）
-当前模板为「${STAGED_TEMPLATE_LABELS[templateId] || templateId}」，选择阶段轴时请严格匹配模板预设变量，不要乱用其他模板变量：
-- 纯爱模板（pure-love）：阶段轴必须是「关系.情感天平」（0~100），方向为递增（>=）。
-- NTR 模板（ntr）：阶段轴必须是「关系.情感天平」（0~100），方向为递增（>=）。
-- 双路线模板（dual-route）：阶段轴必须是单一 -100~100 的「关系.情感天平」（或多角色模式下的「角色名.情感天平」），0 附近 -20~20 为缓冲带/中立，正值方向触发纯爱阶段，负值方向触发 NTR 阶段。
-- 三个模板都只使用「情感天平」这一个变量作为阶段轴，不要选取或创建其他变量作为阶段轴。隐藏事件标记（如「关系.恶堕事件玩家方」）只用于一次性事件防重，不作为阶段轴。
+当前模板为「${label}」，选择阶段轴时请严格匹配模板预设变量，不要乱用其他模板变量：
+${analyzeHint}
+- 隐藏事件标记（$ 前缀）只用于一次性事件防重，不作为阶段轴。
 
 ## 阶段怎么切
 - 阶段轴变量必须是 number 类型，用 ">=" 或 "<=" 阈值分段。
 - 4-9 个阶段，覆盖从初始到极端的完整变化。
-- 双路线模板用 -100~100 双向轴：负向走 NTR，正向走纯爱，-20~20 为缓冲带/中立，避免日常小波动反复横跳。
-- 纯爱模板用 0~100 单向递增；NTR 模板用 0~100 单向递增。
+- 当前模板范围：${tpl?.axisRange ?? '0~100'}，方向：${tpl?.axisDirection ?? '>='}。
 - 阈值区间要连续、不重叠、覆盖全范围。
 - condition 格式：">= 阈值" 或 "<= 阈值"，不要外层括号。
 
@@ -1306,8 +1212,8 @@ export const STAGED_ANALYZE_PROMPT = (
     }
   ]
 }`,
-  user: `卡片名：「${cardName}」
-剧情标签：${STAGED_TEMPLATE_LABELS[templateId] || templateId}
+    user: `卡片名：「${cardName}」
+剧情标签：${label}
 
 【已有世界书条目】
 ${existingWorldbookContext || '（无）'}
@@ -1319,7 +1225,8 @@ ${mvuVariablesContext || '（无，请提醒用户先在 MVU 步骤定义变量�
 ${userRequirement || '（无特殊要求，按模板默认弧光剖析）'}
 
 请为适合这条线的每个角色搭出阶段框架。`,
-});
+  };
+};
 
 /**
  * 单个阶段注解重 roll：为指定角色的某个阶段重新生成人设/剧情注解。
@@ -1335,8 +1242,10 @@ export const STAGE_REROLL_ANNOTATION_PROMPT = (
   _existingWorldbookContext: string,
   guidance: string,
   _lang: Language = 'zh',
-) => ({
-  system: `你是一位擅长抓角色状态的创作者。请为「${characterName}」的「${stageName}」阶段重新写一句注解。
+) => {
+  const label = getTemplateLabel(templateId);
+  return {
+    system: `你是一位擅长抓角色状态的创作者。请为「${characterName}」的「${stageName}」阶段重新写一句注解。
 
 ## 角色
 ${characterName}：${characterSummary}
@@ -1345,8 +1254,8 @@ ${characterName}：${characterSummary}
 - 阶段轴变量：${axisPath}
 - 阶段名：${stageName}
 - 触发条件：${stageCondition}
-- 剧情标签：${STAGED_TEMPLATE_LABELS[templateId] || templateId}。
-- 注解方向必须与当前模板「${STAGED_TEMPLATE_LABELS[templateId] || templateId}」保持一致：纯爱模板写情感推进，NTR 模板写堕落/防线崩塌，双路线模板按阶段所在轴写纯爱或 NTR 倾向。
+- 剧情标签：${label}。
+- 注解方向必须与当前模板保持一致，按阶段轴变量的增减方向写对应的状态变化。
 
 ## 怎么写
 - 20-40 字，一句完整的话。
@@ -1356,8 +1265,9 @@ ${characterName}：${characterSummary}
 ${guidance ? `- 用户引导：${guidance}` : ''}
 
 只输出注解文本本身，不要引号、不要 markdown、不要解释。`,
-  user: `卡片「${cardName}」，重 roll「${characterName}」的「${stageName}」阶段注解。`,
-});
+    user: `卡片「${cardName}」，重 roll「${characterName}」的「${stageName}」阶段注解。`,
+  };
+};
 
 /**
  * 阶段世界书生成：为每个角色的每个阶段生成详细的人设/剧情子条目内容，
@@ -1374,35 +1284,27 @@ export const STAGE_ENTRY_GENERATE_PROMPT = (
   nsfw: boolean,
   guidance: string,
   _lang: Language = 'zh',
-) => ({
-  system: `你是一位擅长为角色卡写阶段人设的创作者。现在为「${characterName}」的每个阶段写一份"AI 演员能直接拿来演"的子条目，调度条目会用 getWorldInfo() 按需拉取。
+) => {
+  const label = getTemplateLabel(templateId);
+  const tpl = getStagedTemplateById(templateId);
+  const stageContentHint = tpl?.stageContentHint ?? '阶段内容要与阶段轴变量的方向保持一致，不能写出与变量方向相反的人设。';
+  const specialRules = tpl?.specialRulesHint;
+  return {
+    system: `你是一位擅长为角色卡写阶段人设的创作者。现在为「${characterName}」的每个阶段写一份"AI 演员能直接拿来演"的子条目，调度条目会用 getWorldInfo() 按需拉取。
 
 ## 角色
 ${characterName}：${characterSummary}
 
 ## 阶段轴
-变量：${axisPath}，剧情标签：${STAGED_TEMPLATE_LABELS[templateId] || templateId}
+变量：${axisPath}，剧情标签：${label}
 
 ## 阶段列表
 ${stages.map((s, i) => `${i + 1}. ${s.name}（${s.condition}）：${s.annotation}`).join('\n')}
 
 ## 路线默认与变量契合
-当前模板为「${STAGED_TEMPLATE_LABELS[templateId] || templateId}」，每个阶段的内容必须与阶段轴变量保持一致，不能写出与变量方向相反的人设：
-${templateId === 'pure-love'
-  ? `- 纯爱模板使用单一 0~100「情感天平」作为阶段轴（单向递增）：阶段内容要写女主与主角之间的情感推进，天平值越高（阶段越靠后）关系越亲密、越专一。
-- 不要预设女主有 NTR 历史、曾是敌方玩物或“公交车”等背景，除非用户引导词明确要求。`
-  : templateId === 'ntr'
-  ? `- NTR 模板使用单一 0~100「情感天平」作为阶段轴（单向递增）：阶段内容要写女主心理防线逐步崩塌、与第三者关系逐渐加深的过程，天平值越高堕落越深。
-- 可以从当前阶段开始写对手试图介入、女主逐渐动摇或被攻陷，但不要默认女主过去就已经是玩物（除非用户引导词明确要求）。`
-  : `- 双路线模板使用单一 -100~100「情感天平」作为阶段轴：阶段条件为 ">=" 时写纯爱侧（对主角好感递增），阶段条件为 ">=" 且阈值在负区时写 NTR 侧（向第三者/堕落滑落）。
-- -20~20 为缓冲带/中立阶段：情感未定，日常互动不会大幅摆动，只有明确指向纯爱或NTR的情节才会跨区。
-- 纯爱侧：主角真诚关心、保护、尊重、亲密、共同回忆，或女主主动靠近 → 天平正向增长。
-- NTR侧（敌人受益的"正面"互动）：主角帮情敌还债/向威胁屈服/牺牲女主利益/让女主单独面对威胁/敌人 → 天平负向滑落。
-- NTR侧（主角负面行为）：主角欺骗/背叛/冷落/主动伤害/暴力 → 天平负向滑落。
-- 特殊事件：当剧情出现「玩家方触发恶堕事件（背叛/伤害/主动推向他人）」或「女主被胁迫/强制发生恶堕事件」时，天平会一次性大幅下跌（-30~-50）。"NTR·沦陷"及以后阶段可视为已发生重大转折，但要从当前阶段开始写，不要默认过去已经发生。
-- 默认女主**没有被对手攻略过**，也没有与对方发生过亲密关系。
-- 正向/纯爱阶段只写女主与主角之间的情感推进，**禁止默认女主是“公交车”、曾是敌方玩物、有过NTR历史等背景**。
-- 只有用户引导词明确要求时，才允许加入“曾被攻略”“曾是玩物”等历史设定。`}
+当前模板为「${label}」，每个阶段的内容必须与阶段轴变量保持一致，不能写出与变量方向相反的人设：
+${stageContentHint}
+${specialRules ? `\n${specialRules}` : ''}
 
 ## 每个阶段的内容结构（键值对 + 自然段混合，作为 content 字段的字符串值，尽量覆盖）
 - 心理动态：用具体念头、反复出现的想法、身体感受来表现，不要写"她感到悲伤"这种结论。2-4 条。
@@ -1430,7 +1332,7 @@ ${templateId === 'pure-love'
 - 价值升华：最终明白了、终于懂得了、这一刻她意识到
 
 ${guidance ? `## 用户引导（必须遵循）\n${guidance}\n` : ''}## 内容边界
-- ${nsfw ? '允许成人内容。NTR/堕落向阶段可以从动机和具体行为入手写露骨描写，不要标签式概括。' : '禁止成人向露骨内容。亲密关系用暗示、留白、边界感处理。'}
+- ${nsfw ? '允许成人内容。堕落/黑化向阶段可以从动机和具体行为入手写露骨描写，不要标签式概括。' : '禁止成人向露骨内容。亲密关系用暗示、留白、边界感处理。'}
 
 ## 输出格式
 只输出一个 JSON 对象，不要 markdown 代码块，不要解释：
@@ -1441,6 +1343,7 @@ ${guidance ? `## 用户引导（必须遵循）\n${guidance}\n` : ''}## 内容�
   ]
 }
 entries 数组顺序与输入阶段列表一致。`,
-  user: `为「${cardName}」的「${characterName}」写 ${stages.length} 个阶段的子条目内容。`,
-});
+    user: `为「${cardName}」的「${characterName}」写 ${stages.length} 个阶段的子条目内容。`,
+  };
+};
 

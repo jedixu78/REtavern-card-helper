@@ -210,6 +210,7 @@ export const translations = {
       stepMvu: 'MVU变量',
       stepStagedMode: '分阶段模式',
       stepFirstMessage: '开场白',
+      stepLiveStreamChat: '直播包装',
       stepExport: '美化导出',
       // Step 2: 世界书骨架 (V5 8-step flow)
       stepWorldSkeleton: '世界书骨架',
@@ -250,6 +251,7 @@ export const translations = {
       clearCurrentStepConfirm: '确定要清空当前步骤填写的内容吗？此操作不可恢复。',
       clearCurrentStepSuccess: '当前步骤已清空',
       stepIndicator: '步骤 {{current}} / {{total}}',
+      navigation: '步骤导航',
       titleCreate: '创建角色卡',
       titleEdit: '编辑角色卡',
       subtitleCreate: '按步骤创建新的酒馆 AI 角色卡。',
@@ -422,8 +424,6 @@ export const translations = {
       emptyEntriesTitle: '还没有世界书条目。',
       emptyEntriesHint: '手动添加条目或使用 AI 批量生成。',
       // ── Skeleton ↔ Detail continuity (step 2 ↔ step 4) ──
-      skeletonFlowTitle: '将传递到第 4 步「世界书细节」',
-      skeletonFlowHint: '本步骤建立的骨架条目、主题方向与世界观规则会自动同步到第 4 步，无需重新输入；进入第 4 步后可基于骨架逐条扩展为完整设定。',
       skeletonContinuityTitle: '骨架延续 · 来自第 2 步「世界书骨架」',
       skeletonMissingHint: '尚未建立骨架数据。建议先返回第 2 步生成骨架条目或填写世界观规则，第 4 步会基于骨架逐条扩展，避免重复输入与风格漂移。',
       skeletonStatEntries: '📦 骨架 {{count}} 条',
@@ -509,10 +509,10 @@ export const translations = {
     stagedMode: {
       title: '分阶段模式',
       intro: 'AI 读取已有世界书+变量，为每个角色剖析阶段轴与阈值，生成调度条目（变量控制开关，达到阈值开启对应阶段世界书）。',
-      introDisabled: '分阶段模式：为多角色卡生成阶段轴调度世界书（默认关闭）',
-      introHint: '启用后，AI 会根据剧情标签结合已有世界书与变量，为每个角色剖析阶段框架并生成阶段世界书条目。',
+      introDisabled: '分阶段模式：按剧情模板生成阶段轴调度世界书，变量达到阈值自动切换阶段（默认关闭）',
+      introHint: '启用后，AI 会根据所选剧情模板结合已有世界书与变量，为角色剖析阶段框架并生成阶段世界书条目。单角色或多角色均可使用。',
       mvuDisabledHint: '分阶段世界书依赖 MVU 系统，MVU 系统未启用的情况下无法使用分阶段世界书，请跳过这个步骤。',
-      templateMismatchHint: '当前 MVU 模板未适配分阶段世界书。请先返回「MVU变量」步骤，选择「甜宠纯爱」「虐恋NTR」或「可纯爱可NTR」模板。',
+      templateMismatchHint: '当前 MVU 模板未适配分阶段世界书。请先返回「MVU变量」步骤，选择分阶段模式支持的模板（恋爱型/成长突破型/冒险剧情型/黑化堕落型/悬疑推理型）。',
       enable: '启用分阶段模式',
       disable: '禁用分阶段模式',
       needMvu: '请先在「MVU变量」步骤定义变量（至少一个 number 类型变量作为阶段轴）',
@@ -556,7 +556,7 @@ export const translations = {
     multiCharTemplate: {
       title: '多角色套模板',
       entryButton: '多角色套模板',
-      intro: '适合多角色卡：选择剧情方向模板（纯爱/NTR/双路线）→ AI 读取世界书识别所有角色 → 勾选确认 → AI 给每个角色套用模板生成「角色名前缀」变量组，并预览各角色的阶段轴。',
+      intro: '适合多角色卡：选择剧情模板（恋爱型/成长突破型/冒险剧情型/黑化堕落型/悬疑推理型）→ AI 读取世界书识别所有角色 → 勾选确认 → AI 给每个角色套用模板生成「角色名前缀」变量组，并预览各角色的阶段轴。',
       step1Title: '第一步：选择模板',
       step2Title: '第二步：确认角色（AI 已识别）',
       step3Title: '第三步：预览生成结果',
@@ -689,9 +689,6 @@ export const translations = {
     firstMessage: {
       title: '开场白',
       subtitle: '角色在对话开始时发出的第一条消息。可用 {{user}} 作为用户占位符，角色直接使用设定名称。',
-      writingRequirementsButton: '📝 写作要求',
-      writingRequirementsActive: '📝 写作要求 ✅',
-      collapseRequirements: '收起要求',
       aiGenerate: 'AI 生成',
       generating: '生成中...',
       retrying: '重试中 ({{current}}/{{max}})...',

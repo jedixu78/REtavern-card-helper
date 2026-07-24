@@ -10,6 +10,17 @@ import { generateId, createEmptyLorebookEntry } from '../constants/defaults';
 import { parseAIJson } from '../constants/prompts';
 import { editableLorebookEntries } from './card-exporter';
 
+// ════════════════════════════════════════════════════════════════════════════
+// 原始 JSON 补丁系统
+// ────────────────────────────────────────────────────────────────────────────
+// 设计原则（用户强约束方案）：
+//   1. 导入的卡片本质上是一个 JSON 文件，作为"底版"原样保留
+//   2. AI 只能通过 proposedChanges 提出修改（替换/删减/新增）
+//   3. 所有修改必须经过用户确认后才应用到原始 JSON
+//   4. AI 不得修改未涉及的相关依赖，其他字段一律原样保留
+//   5. 导出时直接导出"原始 JSON + 已确认 patches"，不走 cardToDraft → assembleCard 的有损往返
+// ════════════════════════════════════════════════════════════════════════════
+
 export type CardChatEditableField =
   | 'cardName'
   | 'tags'
@@ -20,7 +31,8 @@ export type CardChatEditableField =
   | 'creator_notes'
   | 'characters'
   | 'lorebookEntries'
-  | 'mvu.statusBarHtml';
+  | 'mvu.statusBarHtml'
+  | 'liveStreamChat.html';
 
 export interface ProposedChange {
   field: CardChatEditableField;
@@ -66,6 +78,7 @@ const FIELD_LABELS: Record<CardChatEditableField, string> = {
   characters: '角色设定',
   lorebookEntries: '世界书条目',
   'mvu.statusBarHtml': '状态栏 HTML',
+  'liveStreamChat.html': '直播间面板 HTML',
 };
 
 export function fieldLabel(field: CardChatEditableField): string {
@@ -129,6 +142,11 @@ function draftSnapshot(draft: WizardDraft): string {
     lines.push(`\n## MVU 状态栏 HTML（可修改）`);
     lines.push(`mvu.statusBarHtml: ${JSON.stringify(truncate(draft.mvu.statusBarHtml || '', 2000))}`);
   }
+  if (draft.liveStreamChat?.enabled) {
+    lines.push(`\n## 直播间评论面板（已启用，可修改 HTML）`);
+    lines.push(`liveStreamChat.html: ${JSON.stringify(truncate(draft.liveStreamChat.html || '', 2000))}`);
+    lines.push(`注：直播面板通过 stat_data.直播间.评论 数组渲染弹幕，占位符 <LiveStreamChatImpl/> 由正则脚本替换为面板 HTML。`);
+  }
 
   return lines.join('\n');
 }
@@ -140,12 +158,16 @@ export function buildCardChatPrompt(
 ): { system: string; user: string } {
   const system = `你是一位资深的 SillyTavern 角色卡编辑专家。创作者会把他导入的角色卡数据发给你，并请你帮忙修改。
 
+## 核心原则（强约束）
+导入的卡片本质上是一个 JSON 文件，作为"底版"原样保留。你只能通过返回 proposedChanges 提出修改（替换/删减/新增），所有修改必须经过创作者确认后才会应用。
+**你不得修改未涉及的相关依赖，其他不相关的一律不管，原样保留。** 卡片中的 MVU 脚本、正则脚本、extensions、ST 运行时字段等只有在用户明确要求修改对应字段时才允许变动。
+
 ## 当前角色卡数据
 ${draftSnapshot(draft)}
 
 ## 工作规则
 1. 普通建议、诊断、灵感类回复用中文 markdown 输出，直接给出可执行的修改思路。
-2. 当创作者明确要求修改（例如“把 NTR 剧情改成纯爱”、“改一下开场白”、“增加一条世界书条目”）时，必须只返回如下 JSON，不要加 markdown 代码块，不要加解释文字：
+2. 当创作者明确要求修改（例如"把 NTR 剧情改成纯爱"、"改一下开场白"、"增加一条世界书条目"）时，必须只返回如下 JSON，不要加 markdown 代码块，不要加解释文字：
 
 {
   "proposedChanges": [
@@ -157,6 +179,7 @@ ${draftSnapshot(draft)}
     { "field": "post_history_instructions", "value": "新历史后指令" },
     { "field": "creator_notes", "value": "新创作者备注" },
     { "field": "mvu.statusBarHtml", "value": "新状态栏HTML" },
+    { "field": "liveStreamChat.html", "value": "新直播间面板HTML" },
     { "field": "characters", "action": "replace", "id": "角色id", "description": "新角色描述" },
     { "field": "characters", "action": "add", "name": "新角色名", "description": "新角色描述" },
     { "field": "lorebookEntries", "action": "replace", "comment": "原条目comment", "content": "新内容", "keys": ["触发词"] },
@@ -165,10 +188,11 @@ ${draftSnapshot(draft)}
   ]
 }
 
-3. 你只能修改用户明确要求的字段，禁止改动未提及的字段。
+3. **强约束：你只能修改用户明确要求的字段，禁止改动未提及的字段。** 未涉及的相关依赖（MVU 脚本、正则、extensions 等）一律原样保留。
 4. 修改必须保持人设一致，禁止自相矛盾。
 5. 对于 lorebookEntries，必须通过 comment 字段匹配原条目；新增条目的 comment 必须唯一。
-6. 如果用户要求涉及 NSFW/纯爱/NTR 等剧情走向切换，要同步调整 firstMessage、scenario、system_prompt、角色描述和相关世界书条目，确保整体一致。`;
+6. 如果用户要求涉及 NSFW/纯爱/NTR 等剧情走向切换，只调整用户明确提及的字段及直接相关的内容（如 firstMessage、scenario、角色描述、相关世界书条目），不得擅自修改未提及的 MVU 脚本、正则或其他依赖。
+7. 你的 proposedChanges 只包含"差异"——只列出需要改动的字段，不要把未改动的字段也列出来。`;
 
   const user = history.length > 0
     ? `请继续基于上面的卡片数据和之前的对话，处理以下需求：\n\n${userMessage}`
@@ -196,7 +220,7 @@ export function parseCardChatEdits(text: string): CardChatProposals | null {
 
     if (field === 'cardName' || field === 'firstMessage' || field === 'scenario' ||
         field === 'system_prompt' || field === 'post_history_instructions' || field === 'creator_notes' ||
-        field === 'mvu.statusBarHtml') {
+        field === 'mvu.statusBarHtml' || field === 'liveStreamChat.html') {
       if (typeof change.value === 'string') base.value = change.value;
     } else if (field === 'tags') {
       if (Array.isArray(change.value)) {
@@ -228,7 +252,7 @@ export function parseCardChatEdits(text: string): CardChatProposals | null {
     if (base.value !== undefined || base.action !== undefined) {
       if (field === 'tags' || field === 'cardName' || field === 'firstMessage' ||
           field === 'scenario' || field === 'system_prompt' || field === 'post_history_instructions' ||
-          field === 'creator_notes' || field === 'mvu.statusBarHtml') {
+          field === 'creator_notes' || field === 'mvu.statusBarHtml' || field === 'liveStreamChat.html') {
         proposedChanges.push(base);
       }
     }
@@ -275,6 +299,10 @@ export function computeCardChatDiffs(draft: WizardDraft, proposals: CardChatProp
       hasChange = before !== after;
     } else if (change.field === 'mvu.statusBarHtml') {
       before = draft.mvu?.statusBarHtml || '';
+      after = change.value || '';
+      hasChange = before !== after;
+    } else if (change.field === 'liveStreamChat.html') {
+      before = draft.liveStreamChat?.html || '';
       after = change.value || '';
       hasChange = before !== after;
     } else if (change.field === 'characters') {
@@ -343,6 +371,10 @@ export function applyCardChatPatch(draft: WizardDraft, proposals: CardChatPropos
       next.creator_notes = change.value;
     } else if (change.field === 'mvu.statusBarHtml' && typeof change.value === 'string') {
       next.mvu = next.mvu ? { ...next.mvu, statusBarHtml: change.value } : undefined;
+    } else if (change.field === 'liveStreamChat.html' && typeof change.value === 'string') {
+      next.liveStreamChat = next.liveStreamChat
+        ? { ...next.liveStreamChat, html: change.value, enabled: true }
+        : { enabled: true, html: change.value, themeId: 'terminal', title: '直播间', maxVisible: 10, initialComments: [] };
     } else if (change.field === 'characters') {
       if (change.action === 'replace' && change.id &&
           (typeof change.description === 'string' || typeof change.name === 'string')) {
@@ -415,4 +447,181 @@ export function applyCardChatPatch(draft: WizardDraft, proposals: CardChatPropos
   }
 
   return next;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 原始 JSON 补丁应用（绕过 cardToDraft → assembleCard 往返，避免数据丢失）
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 深拷贝工具：优先使用 structuredClone，降级到 JSON.parse(JSON.stringify(...))。
+ * 用于在应用补丁前复制原始 cardData，避免修改底版。
+ */
+function deepClone<T>(obj: T): T {
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(obj);
+    } catch {
+      // 降级
+    }
+  }
+  return JSON.parse(JSON.stringify(obj)) as T;
+}
+
+/**
+ * 在原始卡片 JSON 上应用单个补丁。
+ *
+ * 与 applyCardChatPatch（作用于 WizardDraft）不同，此函数直接操作原始 JSON 结构，
+ * 完整保留所有未涉及字段（包括 MVU 脚本、正则、extensions、ST 运行时字段等）。
+ *
+ * 支持的字段映射：
+ *   - cardName → data.name + 顶层 name（V1 兼容）
+ *   - firstMessage → data.first_mes
+ *   - scenario / system_prompt / post_history_instructions / creator_notes → data.*
+ *   - tags → data.tags
+ *   - mvu.statusBarHtml → data.extensions.regex_scripts 中 scriptName==='状态栏界面' 的 replaceString
+ *   - liveStreamChat.html → data.extensions.regex_scripts 中 scriptName==='直播间界面' 的 replaceString
+ *   - characters → _meta.characters（replace/add/delete）
+ *   - lorebookEntries → data.character_book.entries（replace/add/delete，按 comment 匹配）
+ */
+export function applyPatchToCardData(
+  cardData: Record<string, unknown>,
+  change: ProposedChange,
+): Record<string, unknown> {
+  const next = deepClone(cardData);
+  // data 可能嵌套在 card.data 下（V2/V3），也可能是顶层（V1）
+  const hasNestedData = next.data && typeof next.data === 'object';
+  const data = (hasNestedData ? (next.data as Record<string, unknown>) : next) as Record<string, unknown>;
+
+  // 标量字段：直接赋值到 data 对应路径
+  if (change.field === 'cardName' && typeof change.value === 'string') {
+    data.name = change.value;
+    if (hasNestedData) next.name = change.value; // V1 顶层
+  } else if (change.field === 'tags' && Array.isArray(change.value)) {
+    data.tags = change.value;
+  } else if (change.field === 'firstMessage' && typeof change.value === 'string') {
+    data.first_mes = change.value;
+  } else if (change.field === 'scenario' && typeof change.value === 'string') {
+    data.scenario = change.value;
+  } else if (change.field === 'system_prompt' && typeof change.value === 'string') {
+    data.system_prompt = change.value;
+  } else if (change.field === 'post_history_instructions' && typeof change.value === 'string') {
+    data.post_history_instructions = change.value;
+  } else if (change.field === 'creator_notes' && typeof change.value === 'string') {
+    data.creator_notes = change.value;
+  } else if (change.field === 'mvu.statusBarHtml' && typeof change.value === 'string') {
+    // 直接修改 regex_scripts 中对应脚本的 replaceString
+    const ext = (data.extensions || {}) as Record<string, unknown>;
+    const scripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Array<Record<string, unknown>>) : [];
+    const target = scripts.find((s) => s.scriptName === '状态栏界面');
+    if (target) {
+      target.replaceString = change.value;
+    }
+    // 如果不存在对应脚本，按用户强约束方案"不新增未涉及的依赖"，跳过
+  } else if (change.field === 'liveStreamChat.html' && typeof change.value === 'string') {
+    const ext = (data.extensions || {}) as Record<string, unknown>;
+    const scripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Array<Record<string, unknown>>) : [];
+    const target = scripts.find((s) => s.scriptName === '直播间界面');
+    if (target) {
+      target.replaceString = change.value;
+    }
+  } else if (change.field === 'characters') {
+    // 修改 _meta.characters（应用元数据，非 SillyTavern spec 字段）
+    const meta = (next._meta || {}) as Record<string, unknown>;
+    const characters = Array.isArray(meta.characters) ? (meta.characters as Array<Record<string, unknown>>) : [];
+
+    if (change.action === 'replace' && change.id) {
+      const idx = characters.findIndex((c) => String(c.id) === String(change.id));
+      if (idx >= 0) {
+        characters[idx] = {
+          ...characters[idx],
+          ...(typeof change.name === 'string' ? { name: change.name } : {}),
+          ...(typeof change.description === 'string' ? { description: change.description } : {}),
+        };
+      }
+    } else if (change.action === 'add' && typeof change.description === 'string') {
+      characters.push({
+        id: generateId(),
+        name: change.name || '',
+        description: change.description,
+        entryIds: [],
+      });
+    }
+    meta.characters = characters;
+    next._meta = meta;
+  } else if (change.field === 'lorebookEntries') {
+    const charBook = (data.character_book || {}) as Record<string, unknown>;
+    const entries = Array.isArray(charBook.entries) ? (charBook.entries as Array<Record<string, unknown>>) : [];
+
+    if (change.action === 'replace' && change.comment) {
+      const idx = entries.findIndex((e) => (e.comment || e.name) === change.comment);
+      if (idx >= 0) {
+        entries[idx] = {
+          ...entries[idx],
+          ...(typeof change.newComment === 'string' ? { comment: change.newComment, name: change.newComment } : {}),
+          ...(typeof change.content === 'string' ? { content: change.content } : {}),
+          ...(Array.isArray(change.keys) ? { keys: change.keys } : {}),
+        };
+      }
+    } else if (change.action === 'add') {
+      const targetComment = change.comment || '';
+      const idx = entries.findIndex((e) => (e.comment || e.name) === targetComment);
+      if (idx >= 0) {
+        // 已存在同 comment 的条目，覆盖更新
+        entries[idx] = {
+          ...entries[idx],
+          ...(typeof change.content === 'string' ? { content: change.content } : {}),
+          ...(Array.isArray(change.keys) ? { keys: change.keys } : {}),
+        };
+      } else {
+        // 新增条目：使用最小字段集，不预设未涉及的依赖
+        entries.push({
+          id: entries.length + 1,
+          keys: change.keys || [],
+          secondary_keys: [],
+          content: change.content || '',
+          name: targetComment,
+          comment: targetComment,
+          enabled: true,
+          insertion_order: entries.length,
+          case_sensitive: false,
+          selective: false,
+          constant: false,
+          position: 'after_char',
+          priority: 0,
+          use_regex: false,
+        });
+      }
+      charBook.entries = entries;
+      data.character_book = charBook;
+    } else if (change.action === 'delete' && change.comment) {
+      const idx = entries.findIndex((e) => (e.comment || e.name) === change.comment);
+      if (idx >= 0) entries.splice(idx, 1);
+      charBook.entries = entries;
+      data.character_book = charBook;
+    }
+
+    // replace/add 也需要确保 charBook.entries 被回写
+    if (change.action === 'replace' || change.action === 'add') {
+      charBook.entries = entries;
+      data.character_book = charBook;
+    }
+  }
+
+  return next;
+}
+
+/**
+ * 批量应用补丁到原始卡片 JSON。
+ * 按顺序依次应用每个 change，返回累积修改后的新 cardData。
+ */
+export function applyPatchesToCardData(
+  cardData: Record<string, unknown>,
+  changes: ProposedChange[],
+): Record<string, unknown> {
+  let result = cardData;
+  for (const change of changes) {
+    result = applyPatchToCardData(result, change);
+  }
+  return result;
 }

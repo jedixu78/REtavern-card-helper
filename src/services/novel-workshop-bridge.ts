@@ -370,10 +370,15 @@ export function variableBlueprintsToMvuSections(
     const group = groups.get(sectionName)!;
 
     let zodType: string;
+    let enumValues: string[] | undefined;
     switch (bp.type) {
       case 'number': zodType = 'z.coerce.number()'; break;
       case 'boolean': zodType = 'z.boolean()'; break;
-      case 'enum': zodType = `z.enum(${JSON.stringify(bp.options || [])})`; break;
+      case 'enum': {
+        enumValues = bp.options && bp.options.length ? bp.options : ['未分类'];
+        zodType = `z.enum(${JSON.stringify(enumValues)})`;
+        break;
+      }
       default: zodType = 'z.string()'; break;
     }
 
@@ -383,7 +388,7 @@ export function variableBlueprintsToMvuSections(
       description: bp.description || bp.path,
       prefix: '',
       initialValue: bp.default ?? (bp.type === 'number' ? 0 : bp.type === 'boolean' ? false : ''),
-      ...(bp.type === 'enum' && bp.options ? { enumValues: bp.options } : {}),
+      ...(enumValues ? { enumValues } : {}),
       ...(bp.type === 'number' && bp.min != null && bp.max != null ? { range: { min: bp.min, max: bp.max } } : {}),
     });
   }

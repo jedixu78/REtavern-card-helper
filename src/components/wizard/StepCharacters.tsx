@@ -28,6 +28,7 @@ interface StepCharactersProps {
   onDeleteVersion: (charId: string, versionId: string) => void;
   onSaveVersion: (charId: string, content: string) => void;
   streamingChunkCallbackRef: StreamingChunkMap;
+  streamingReasoningCallbackRef?: StreamingChunkMap;
 }
 
 export function StepCharacters({
@@ -47,6 +48,7 @@ export function StepCharacters({
   onDeleteVersion,
   onSaveVersion,
   streamingChunkCallbackRef,
+  streamingReasoningCallbackRef,
 }: StepCharactersProps) {
   const { t } = useTranslation();
   const lastEditorRef = useRef<HTMLDivElement>(null);
@@ -103,6 +105,7 @@ export function StepCharacters({
               onDeleteVersion={(versionId) => onDeleteVersion(char.id, versionId)}
               onSaveVersion={(content) => onSaveVersion(char.id, content)}
               streamingChunkCallbackRef={streamingChunkCallbackRef}
+              streamingReasoningCallbackRef={streamingReasoningCallbackRef}
             />
           </div>
         ))}

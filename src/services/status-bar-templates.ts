@@ -1,773 +1,540 @@
 /**
- * Status bar templates and AI generation for MVU status bar.
+ * status-bar-templates — 可复用状态栏模板系统（JS 运行时动态渲染）
  *
- * Status bar HTML is embedded into regex_scripts and rendered by replacing
- * the <StatusPlaceHolderImpl/> placeholder in SillyTavern.
+ * 设计来源：逆向分析 6 张成熟参考卡（遗界/御兽/斗破苍穹/埃瑟尔德/二十一人会/北风之殇）。
  *
- * Variable access: {{getvar::stat_data.角色.好感度}}
+ * 架构（注入层 × 数据层 × 渲染层）：
+ *   - 注入层：沿用占位符替换 `<StatusPlaceHolderImpl/>`（card-exporter 已支持）
+ *   - 数据层：MVU 运行时（MagVarUpdate bundle）提供 getAllVariables()/Mvu/eventOn 等全局，
+ *             状态栏脚本订阅 VARIABLE_UPDATE_ENDED 事件实现变量更新→自动重渲染
+ *   - 渲染层：schema 反射自动选型（number+range→资源条 / enum→语义徽章 / string→数据行 /
+ *             boolean→状态标签 / object|array→列表），CSS 变量驱动主题，一套组件多套皮肤
  *
- * Constraints for AI generation:
- *   - Must use {{getvar::stat_data.路径}} for variables
- *   - Must be self-contained HTML (no external CSS/JS)
- *   - Must use inline styles only (SillyTavern strips <style> tags in some configs)
- *   - Must use width:100% to fill the message container
+ * 生成物是完整 HTML 文档（```html 代码块），含 <style> + <script type="module"> + <body>，
+ * 由 SillyTavern 渲染 HTML 代码块时执行脚本。
  */
 
 import type { MvuSchemaSection, MvuVariable } from '../constants/defaults';
-import { getThemeSettings } from './theme-service';
 
-// ── Theme-aware helpers ─────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// 主题系统（CSS 变量层 — 埃瑟尔德范式：组件只引用变量，主题=变量覆盖包）
+// ════════════════════════════════════════════════════════════════════════════
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  if (!m) return null;
-  return {
-    r: parseInt(m[1], 16),
-    g: parseInt(m[2], 16),
-    b: parseInt(m[3], 16),
-  };
+export interface StatusBarTheme {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  /** CSS 自定义属性覆盖包 */
+  vars: Record<string, string>;
 }
 
-function hexToRgba(hex: string, alpha: number): string {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return hex;
-  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+export const STATUS_BAR_THEMES: StatusBarTheme[] = [
+  {
+    id: 'terminal',
+    name: '战术终端',
+    icon: '🖥️',
+    description: '暗黑等宽终端风（北风之殇范式）',
+    vars: {
+      '--sb-bg': '#0e100f', '--sb-bg-2': '#141613', '--sb-bg-3': '#1c1f1a',
+      '--sb-text': '#c0c0b0', '--sb-text-dim': '#7a7a60', '--sb-accent': '#9a8c6b',
+      '--sb-border': '#2a2a20', '--sb-good': '#709050', '--sb-warn': '#c8a030',
+      '--sb-danger': '#b04030', '--sb-bar-track': '#1a1a14', '--sb-radius': '2px',
+      '--sb-font': "'Courier New','Source Code Pro',monospace", '--sb-blur': 'none',
+    },
+  },
+  {
+    id: 'parchment',
+    name: '羊皮纸',
+    icon: '📜',
+    description: '暖色衬线古风（遗界/埃瑟尔德范式）',
+    vars: {
+      '--sb-bg': '#f4e4bc', '--sb-bg-2': '#ecdcB0', '--sb-bg-3': '#e3c889',
+      '--sb-text': '#3d2914', '--sb-text-dim': '#6b5236', '--sb-accent': '#8b4513',
+      '--sb-border': '#b8975a', '--sb-good': '#5a8a3a', '--sb-warn': '#c8860a',
+      '--sb-danger': '#c0392b', '--sb-bar-track': '#d8c49a', '--sb-radius': '6px',
+      '--sb-font': "'Noto Serif SC','Songti SC',serif", '--sb-blur': 'none',
+    },
+  },
+  {
+    id: 'glass',
+    name: '毛玻璃光幕',
+    icon: '✨',
+    description: '半透明金边玄幻（斗破苍穹范式）',
+    vars: {
+      '--sb-bg': 'rgba(25,10,5,0.88)', '--sb-bg-2': 'rgba(45,22,10,0.72)', '--sb-bg-3': 'rgba(65,32,15,0.6)',
+      '--sb-text': '#e8d5b0', '--sb-text-dim': '#b89a6a', '--sb-accent': '#d4af37',
+      '--sb-border': 'rgba(212,175,55,0.4)', '--sb-good': '#6ab04c', '--sb-warn': '#e0a020',
+      '--sb-danger': '#e05038', '--sb-bar-track': 'rgba(255,255,255,0.08)', '--sb-radius': '12px',
+      '--sb-font': "system-ui,-apple-system,sans-serif", '--sb-blur': 'blur(12px)',
+    },
+  },
+  {
+    id: 'paper',
+    name: '素雅宣纸',
+    icon: '🪶',
+    description: '浅色楷体柔和（御兽范式）',
+    vars: {
+      '--sb-bg': '#fdfbf7', '--sb-bg-2': '#f3efe6', '--sb-bg-3': '#ece5d8',
+      '--sb-text': '#4a3a2a', '--sb-text-dim': '#8a7a60', '--sb-accent': '#8c2a2a',
+      '--sb-border': '#d4c4b7', '--sb-good': '#5a8a4a', '--sb-warn': '#c8860a',
+      '--sb-danger': '#b03030', '--sb-bar-track': '#e0d6c6', '--sb-radius': '8px',
+      '--sb-font': "'STKaiti','Kaiti','楷体','NSimSun',serif", '--sb-blur': 'none',
+    },
+  },
+];
+
+export function getStatusBarThemeById(id: string): StatusBarTheme {
+  return STATUS_BAR_THEMES.find(t => t.id === id) ?? STATUS_BAR_THEMES[0];
 }
 
-function resolveCssColor(varName: string, fallback: string): string {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return fallback;
-  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
-  return value || fallback;
+// ════════════════════════════════════════════════════════════════════════════
+// Schema 反射：变量分类 + 语义色 + 结构化为可渲染描述
+// ════════════════════════════════════════════════════════════════════════════
+
+export type VarKind = 'bar' | 'number' | 'enum' | 'text' | 'boolean' | 'list';
+
+export interface ReflectedVar {
+  path: string;          // 原始路径，如 '关系.情感天平'
+  jsPath: string;        // JS 读取路径，如 'stat_data.关系.情感天平'
+  label: string;         // 显示名（路径末段）
+  kind: VarKind;
+  defaultVal: unknown;
+  min?: number;
+  max?: number;
+  enumValues?: string[];
+  elId: string;          // 唯一 DOM id
+  accent: string;        // 语义色 CSS 变量
 }
 
-/** Build an inline style string that exposes theme variables for status bars. */
-function getStatusBarThemeStyle(): string {
-  const theme = getThemeSettings();
-  return `
-    --sb-bg: ${theme.cardBgColor};
-    --sb-bg-a: ${hexToRgba(theme.cardBgColor, 0.85)};
-    --sb-text: ${theme.textColor};
-    --sb-muted: ${hexToRgba(theme.textColor, 0.6)};
-    --sb-faint: ${hexToRgba(theme.textColor, 0.4)};
-    --sb-primary: ${theme.primaryColor};
-    --sb-primary-a: ${hexToRgba(theme.primaryColor, 0.25)};
-    --sb-success: ${resolveCssColor('--color-status-success', '#4ade80')};
-    --sb-warning: ${resolveCssColor('--color-status-warning', '#fbbf24')};
-    --sb-danger: ${resolveCssColor('--color-status-danger', '#f87171')};
-    --sb-info: ${resolveCssColor('--color-info', '#38bdf8')};
-  `.replace(/\s+/g, ' ').trim();
+export interface ReflectedSection {
+  name: string;
+  vars: ReflectedVar[];
 }
 
-/** Wrap status bar HTML so SillyTavern still has theme vars after stripping <style>. */
-function wrapStatusBarHtml(html: string): string {
-  return `<div style="${getStatusBarThemeStyle()}">${html}</div>`;
+/** 按路径关键词映射语义色（绿黄红是通用语言，资源条/徽章三态着色） */
+function varAccent(path: string): string {
+  const p = path.toLowerCase();
+  if (/hp|生命|血量|健康|体力/.test(path) || p.includes('health')) return 'var(--sb-danger)';
+  if (/mp|魔力|法力|灵力|查克拉/.test(path) || p.includes('mana')) return 'var(--sb-accent)';
+  if (/好感|亲密|爱意|情感|羁绊|信任|倾向|天平/.test(path)) return 'var(--sb-good)';
+  if (/金币|金钱|财富|灵石|资源|经验/.test(path) || p.includes('gold') || p.includes('exp')) return 'var(--sb-warn)';
+  if (/威胁|危险|敌意|心魔|感染|出血/.test(path)) return 'var(--sb-danger)';
+  // 分阶段模板轴变量语义色
+  if (/修为|境界|修仙|灵根/.test(path)) return 'var(--sb-good)';      // 成长突破型：绿（正向递增）
+  if (/污染|堕落|腐化|黑化/.test(path)) return 'var(--sb-danger)';    // 黑化堕落型：红（负面递增）
+  if (/真相|调查|推理|线索/.test(path)) return 'var(--sb-warn)';      // 悬疑推理型：黄（揭露度）
+  if (/进度|主线|剧情/.test(path)) return 'var(--sb-accent)';         // 冒险剧情型：主题色（中性推进）
+  return 'var(--sb-accent)';
 }
 
-// ── Template definitions ────────────────────────────────────────────────────
+/** 变量分类：决定用哪种原子组件渲染 */
+function classifyVariable(v: MvuVariable): VarKind {
+  const z = v.zodType;
+  if (z === 'z.coerce.number()') {
+    // 有合理范围（跨度 ≤ 1000）→ 资源条；否则纯数值
+    if (v.range && (v.range.max - v.range.min) <= 1000) return 'bar';
+    return 'number';
+  }
+  if (z.startsWith('z.enum(')) return 'enum';
+  if (z === 'z.boolean()' || z === 'z.boolean') return 'boolean';
+  if (z.startsWith('z.array(') || z.startsWith('z.record(') || z.startsWith('z.object(')) return 'list';
+  return 'text';
+}
+
+/** 将 schema sections 反射为结构化渲染描述（隐藏变量 $ 前缀不显示） */
+export function reflectSections(sections: MvuSchemaSection[]): ReflectedSection[] {
+  let counter = 0;
+  return sections
+    .map(s => ({
+      name: s.name,
+      vars: s.variables
+        .filter(v => v.prefix !== '$')
+        .map(v => {
+          const kind = classifyVariable(v);
+          const rv: ReflectedVar = {
+            path: v.path,
+            jsPath: `stat_data.${v.path}`,
+            label: v.path.split('.').pop() || v.path,
+            kind,
+            defaultVal: v.initialValue ?? (kind === 'bar' || kind === 'number' ? 0 : kind === 'boolean' ? false : kind === 'list' ? {} : ''),
+            min: v.range?.min,
+            max: v.range?.max,
+            enumValues: v.enumValues,
+            elId: `sb-v-${counter++}`,
+            accent: varAccent(v.path),
+          };
+          return rv;
+        }),
+    }))
+    .filter(s => s.vars.length > 0);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 原子组件 HTML 生成器（含唯一 id，供 JS 填充）
+// ════════════════════════════════════════════════════════════════════════════
+
+function esc(s: string): string {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function componentHtml(v: ReflectedVar): string {
+  const def = v.defaultVal;
+  switch (v.kind) {
+    case 'bar': {
+      const max = v.max ?? 100;
+      const min = v.min ?? 0;
+      const pct = Math.max(0, Math.min(100, ((Number(def) - min) / (max - min)) * 100));
+      return `<div class="sb-bar-wrap" id="${v.elId}">
+        <div class="sb-bar-head"><span class="sb-bar-name">${esc(v.label)}</span><span class="sb-bar-text">${esc(String(def))} / ${max}</span></div>
+        <div class="sb-bar"><div class="sb-bar-fill" style="width:${pct}%"></div></div>
+      </div>`;
+    }
+    case 'number':
+      return `<div class="sb-row" id="${v.elId}"><span class="sb-label">${esc(v.label)}</span><span class="sb-val">${esc(String(def))}</span></div>`;
+    case 'enum':
+      return `<div class="sb-row" id="${v.elId}"><span class="sb-label">${esc(v.label)}</span><span class="sb-badge">${esc(String(def))}</span></div>`;
+    case 'boolean':
+      return `<div class="sb-row" id="${v.elId}"><span class="sb-label">${esc(v.label)}</span><span class="sb-badge ${def ? 'sb-bad' : 'sb-ok'}">${def ? '是' : '否'}</span></div>`;
+    case 'list':
+      return `<div class="sb-row-block" id="${v.elId}"><div class="sb-label" style="margin-bottom:3px">${esc(v.label)}</div><ul class="sb-list"><li class="sb-empty">空</li></ul></div>`;
+    case 'text':
+    default:
+      return `<div class="sb-row" id="${v.elId}"><span class="sb-label">${esc(v.label)}</span><span class="sb-val">${esc(String(def))}</span></div>`;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// JS 运行时填充逻辑生成器（schema 反射驱动）
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 为单个变量生成填充 JS 片段 */
+function populateJsForVar(v: ReflectedVar): string {
+  const def = JSON.stringify(v.defaultVal);
+  const get = `sbGet(all, ${JSON.stringify(v.jsPath)}, ${def})`;
+  switch (v.kind) {
+    case 'bar': {
+      const min = v.min ?? 0;
+      const max = v.max ?? 100;
+      const unidirectional = min >= 0;
+      return `  (function(){
+    var v = ${get};
+    var el = document.getElementById(${JSON.stringify(v.elId)});
+    if(!el) return;
+    var pct = Math.max(0, Math.min(100, ((v - ${min}) / (${max - min})) * 100));
+    var fill = el.querySelector('.sb-bar-fill');
+    fill.style.width = pct + '%';
+    el.querySelector('.sb-bar-text').textContent = v + ' / ' + ${max};
+    ${unidirectional ? `fill.classList.toggle('sb-danger', pct <= 30);
+    fill.classList.toggle('sb-warn', pct > 30 && pct <= 60);` : ''}
+  })();`;
+    }
+    case 'number':
+      return `  (function(){
+    var el = document.getElementById(${JSON.stringify(v.elId)});
+    if(el) el.querySelector('.sb-val').textContent = ${get};
+  })();`;
+    case 'enum':
+      return `  (function(){
+    var v = ${get};
+    var el = document.getElementById(${JSON.stringify(v.elId)});
+    if(!el) return;
+    var b = el.querySelector('.sb-badge');
+    b.textContent = v;
+  })();`;
+    case 'boolean':
+      return `  (function(){
+    var v = ${get};
+    var el = document.getElementById(${JSON.stringify(v.elId)});
+    if(!el) return;
+    var b = el.querySelector('.sb-badge');
+    b.textContent = v ? '是' : '否';
+    b.classList.toggle('sb-bad', !!v);
+    b.classList.toggle('sb-ok', !v);
+  })();`;
+    case 'list':
+      return `  (function(){
+    var v = ${get};
+    var el = document.getElementById(${JSON.stringify(v.elId)});
+    if(!el) return;
+    var ul = el.querySelector('.sb-list');
+    var html = '';
+    if (Array.isArray(v)) {
+      v.forEach(function(item){ html += '<li>' + (typeof item === 'object' ? JSON.stringify(item) : item) + '</li>'; });
+    } else if (v && typeof v === 'object') {
+      Object.entries(v).forEach(function(e){
+        var name = e[0], d = e[1];
+        var qty = (d && typeof d === 'object' && d['数量'] != null) ? ' ×' + d['数量'] : (typeof d === 'object' ? '' : ' ' + d);
+        html += '<li><span>' + name + '</span><span>' + qty + '</span></li>';
+      });
+    }
+    ul.innerHTML = html || '<li class="sb-empty">空</li>';
+  })();`;
+    case 'text':
+    default:
+      return `  (function(){
+    var el = document.getElementById(${JSON.stringify(v.elId)});
+    if(el) el.querySelector('.sb-val').textContent = ${get};
+  })();`;
+  }
+}
+
+/** 生成完整的运行时脚本（自包含辅助函数 + 守卫式运行时全局调用） */
+function buildRuntimeScript(reflected: ReflectedSection[], opts: StatusBarGenerateOptions): string {
+  const allVars = reflected.flatMap(s => s.vars);
+  const populateBody = allVars.map(populateJsForVar).join('\n');
+  const previewValues = JSON.stringify(opts.previewValues ?? {}).replace(/<\/script/gi, '<\\/script');
+  return `<script type="module">
+var sbPreviewValues = ${previewValues};
+// 自包含路径读取（不依赖 lodash）
+function sbGet(obj, path, def) {
+  if (Object.prototype.hasOwnProperty.call(sbPreviewValues, path)) return sbPreviewValues[path];
+  var parts = path.split('.');
+  var cur = obj;
+  for (var i = 0; i < parts.length; i++) {
+    if (cur == null) return def;
+    cur = cur[parts[i]];
+  }
+  return cur === undefined ? def : cur;
+}
+function sbPopulate() {
+  var all = (typeof getAllVariables === 'function') ? getAllVariables() : {};
+${populateBody}
+}
+function sbSetPreviewValues(values) {
+  sbPreviewValues = values || {};
+  sbPopulate();
+}
+window.__statusBarPreview = { setValues: sbSetPreviewValues };
+async function sbInit() {
+  try {
+    if (typeof waitGlobalInitialized === 'function') { await waitGlobalInitialized('Mvu'); }
+  } catch (e) { /* 运行时未就绪也尝试用默认值渲染 */ }
+  sbPopulate();
+  try {
+    if (typeof eventOn === 'function' && typeof Mvu !== 'undefined' && Mvu.events) {
+      eventOn(Mvu.events.VARIABLE_UPDATE_ENDED, sbPopulate);
+    }
+  } catch (e) { /* 事件订阅失败不影响静态展示 */ }
+  document.querySelectorAll('.sb-section-title').forEach(function(t){
+    t.addEventListener('click', function(){ t.parentElement.classList.toggle('sb-collapsed'); });
+  });
+}
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', sbInit); }
+  else { sbInit(); }
+}
+</script>`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 组件样式表（引用 CSS 变量，主题无关）
+// ════════════════════════════════════════════════════════════════════════════
+
+const COMPONENT_CSS = `
+.sb-root{box-sizing:border-box;width:100%;max-width:560px;margin:6px 0;background:var(--sb-bg);color:var(--sb-text);font-family:var(--sb-font);border:1px solid var(--sb-border);border-radius:var(--sb-radius);padding:12px;box-shadow:0 6px 20px rgba(0,0,0,.18);line-height:1.5;backdrop-filter:var(--sb-blur);-webkit-backdrop-filter:var(--sb-blur);opacity:var(--sb-opacity,1);transition:background-color .25s ease,border-color .25s ease,box-shadow .25s ease,opacity .25s ease}
+.sb-root *,.sb-root *::before,.sb-root *::after{box-sizing:border-box}
+.sb-root.sb-comfortable{padding:16px;line-height:1.7}
+.sb-root.sb-animated .sb-row,.sb-root.sb-animated .sb-bar-fill,.sb-root.sb-animated .sb-badge{transition:all .35s ease}
+.sb-root.sb-notice{box-shadow:0 0 0 1px var(--sb-warn),0 8px 28px color-mix(in srgb,var(--sb-warn) 28%,transparent)}
+.sb-notice-label{display:none;color:var(--sb-warn);font-size:10px;font-weight:700;margin-left:auto;animation:sb-notice-pulse 1.4s ease-in-out infinite}
+.sb-root.sb-notice .sb-notice-label{display:block}
+@keyframes sb-notice-pulse{0%,100%{opacity:.55}50%{opacity:1}}
+.sb-header{display:flex;align-items:center;gap:10px;padding-bottom:8px;margin-bottom:10px;border-bottom:1px solid var(--sb-border)}
+.sb-avatar{width:38px;height:38px;flex-shrink:0;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,var(--sb-accent),color-mix(in srgb,var(--sb-accent) 45%,var(--sb-bg)));color:#fff;font-weight:700;font-size:16px;border:2px solid color-mix(in srgb,var(--sb-accent) 55%,#fff);box-shadow:0 2px 8px rgba(0,0,0,.2)}
+.sb-title{font-size:14px;font-weight:700;color:var(--sb-accent);letter-spacing:1px;flex:1;min-width:0}
+.sb-subtitle{font-size:10px;color:var(--sb-text-dim);margin-top:1px}
+.sb-section{margin-bottom:8px;border:1px solid var(--sb-border);border-radius:calc(var(--sb-radius) - 2px);overflow:hidden;background:var(--sb-bg-2)}
+.sb-section:last-child{margin-bottom:0}
+.sb-section-title{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:var(--sb-bg-3);cursor:pointer;user-select:none;font-size:12px;font-weight:700;color:var(--sb-accent);letter-spacing:.5px}
+.sb-section-title:hover{filter:brightness(1.08)}
+.sb-arrow{font-size:9px;color:var(--sb-text-dim);transition:transform .18s ease}
+.sb-section.sb-collapsed .sb-section-body{display:none}
+.sb-section.sb-collapsed .sb-arrow{transform:rotate(-90deg)}
+.sb-section-body{padding:8px 10px}
+.sb-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 0;border-bottom:1px dotted color-mix(in srgb,var(--sb-border) 60%,transparent);font-size:11px}
+.sb-row:last-child{border-bottom:none}
+.sb-row-block{padding:4px 0;border-bottom:1px dotted color-mix(in srgb,var(--sb-border) 60%,transparent);font-size:11px}
+.sb-row-block:last-child{border-bottom:none}
+.sb-label{color:var(--sb-text-dim)}
+.sb-val{color:var(--sb-text);text-align:right;font-weight:600}
+.sb-bar-wrap{margin:6px 0}
+.sb-bar-head{display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px}
+.sb-bar-name{color:var(--sb-text-dim)}
+.sb-bar-text{color:var(--sb-text);font-weight:700}
+.sb-bar{height:9px;background:var(--sb-bar-track);border-radius:999px;overflow:hidden;border:1px solid color-mix(in srgb,var(--sb-border) 50%,transparent)}
+.sb-bar-fill{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,color-mix(in srgb,var(--sb-accent) 65%,var(--sb-bg)),var(--sb-accent));box-shadow:0 0 6px color-mix(in srgb,var(--sb-accent) 40%,transparent);transition:width .45s ease}
+.sb-bar-fill.sb-warn{background:linear-gradient(90deg,color-mix(in srgb,var(--sb-warn) 65%,var(--sb-bg)),var(--sb-warn));box-shadow:0 0 6px color-mix(in srgb,var(--sb-warn) 40%,transparent)}
+.sb-bar-fill.sb-danger{background:linear-gradient(90deg,color-mix(in srgb,var(--sb-danger) 65%,var(--sb-bg)),var(--sb-danger));box-shadow:0 0 6px color-mix(in srgb,var(--sb-danger) 40%,transparent)}
+.sb-badge{display:inline-block;font-size:10px;padding:1px 8px;border-radius:999px;border:1px solid var(--sb-border);background:var(--sb-bg-3);color:var(--sb-text)}
+.sb-badge.sb-ok{border-color:color-mix(in srgb,var(--sb-good) 50%,transparent);color:var(--sb-good)}
+.sb-badge.sb-warn{border-color:color-mix(in srgb,var(--sb-warn) 50%,transparent);color:var(--sb-warn)}
+.sb-badge.sb-bad{border-color:color-mix(in srgb,var(--sb-danger) 50%,transparent);color:var(--sb-danger)}
+.sb-list{margin:0;padding:0;list-style:none}
+.sb-list li{display:flex;justify-content:space-between;gap:8px;font-size:10px;padding:2px 0;border-bottom:1px dotted color-mix(in srgb,var(--sb-border) 50%,transparent);color:var(--sb-text)}
+.sb-list li:last-child{border-bottom:none}
+.sb-empty{color:var(--sb-text-dim)}
+@media(max-width:520px){.sb-root{padding:9px}.sb-title{font-size:13px}.sb-avatar{width:32px;height:32px;font-size:14px}}
+`.trim();
+
+// ════════════════════════════════════════════════════════════════════════════
+// 文档组装
+// ════════════════════════════════════════════════════════════════════════════
+
+function buildThemeVarsCss(theme: StatusBarTheme, opts: StatusBarGenerateOptions): string {
+  const entries = Object.entries(theme.vars).map(([k, v]) => `${k}:${v};`).join('');
+  const opacity = Math.max(0.7, Math.min(1, opts.opacity ?? 1));
+  return `.sb-root{${entries}--sb-opacity:${opacity};}`;
+}
+
+function buildDocument(theme: StatusBarTheme, bodyHtml: string, reflected: ReflectedSection[], opts: StatusBarGenerateOptions): string {
+  const css = `${buildThemeVarsCss(theme, opts)}\n${COMPONENT_CSS}`;
+  const script = buildRuntimeScript(reflected, opts);
+  return '```html\n<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n<style>\n'
+    + css
+    + '\n</style>\n'
+    + script
+    + '\n</head>\n<body>\n'
+    + bodyHtml
+    + '\n</body>\n</html>\n```';
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 生成选项与模板
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface StatusBarGenerateOptions {
+  themeId?: string;
+  title?: string;
+  showAvatar?: boolean;
+  /** 折叠所有分区（信息多时推荐） */
+  collapseAll?: boolean;
+  /** 状态栏整体透明度（0.7~1） */
+  opacity?: number;
+  /** 信息密度 */
+  density?: 'compact' | 'comfortable';
+  /** 是否启用变量更新时的过渡动画 */
+  animated?: boolean;
+  /** 是否显示装饰性图标/箭头 */
+  showIcons?: boolean;
+  /** 仅用于独立预览窗口的初始变量覆盖 */
+  previewValues?: Record<string, unknown>;
+  /** 仅用于独立预览窗口的状态提示 */
+  previewNotice?: string;
+}
+
+function buildHeader(opts: StatusBarGenerateOptions, totalVars: number): string {
+  const title = opts.title || '状态栏';
+  const initial = esc(title.trim().charAt(0) || '状');
+  const avatar = opts.showAvatar !== false
+    ? `<div class="sb-avatar">${initial}</div>`
+    : '';
+  return `<div class="sb-header">${avatar}<div class="sb-title">${esc(title)}<div class="sb-subtitle">实时状态 · ${totalVars} 项</div></div><span class="sb-notice-label">${esc(opts.previewNotice || '')}</span></div>`;
+}
+
+function buildSections(reflected: ReflectedSection[], collapseAll: boolean, multiSection: boolean, showIcons: boolean): string {
+  return reflected.map((s, i) => {
+    const collapsed = collapseAll || (multiSection && i > 0) ? ' sb-collapsed' : '';
+    const body = s.vars.map(componentHtml).join('\n');
+    // 单分区且仅一个分区时不显示分区标题（更紧凑）
+    if (!multiSection) return `<div class="sb-section-body" style="padding:0">${body}</div>`;
+    return `<div class="sb-section${collapsed}">
+      <div class="sb-section-title"><span>${showIcons ? '▸ ' : ''}${esc(s.name)}</span><span class="sb-arrow">${showIcons ? '▼' : ''}</span></div>
+      <div class="sb-section-body">${body}</div>
+    </div>`;
+  }).join('\n');
+}
+
+/** 紧凑 HUD 型：信息密度高、常驻、窄条（北风/遗界顶部 HUD 范式） */
+function generateCompactHud(sections: MvuSchemaSection[], opts: StatusBarGenerateOptions): string {
+  const theme = getStatusBarThemeById(opts.themeId || 'terminal');
+  const reflected = reflectSections(sections);
+  const totalVars = reflected.reduce((n, s) => n + s.vars.length, 0);
+  const header = buildHeader({ ...opts, showAvatar: opts.showAvatar ?? false }, totalVars);
+  const body = buildSections(reflected, opts.collapseAll ?? false, reflected.length > 1, opts.showIcons !== false);
+  const classes = `sb-root${opts.density === 'comfortable' ? ' sb-comfortable' : ''}${opts.animated !== false ? ' sb-animated' : ''}${opts.previewNotice ? ' sb-notice' : ''}`;
+  const bodyHtml = `<div class="${classes}" style="max-width:440px">${header}\n${body}</div>`;
+  return buildDocument(theme, bodyHtml, reflected, opts);
+}
+
+/** 角色面板型：头像 + 可折叠分区 + 资源条（御兽/埃瑟尔德范式） */
+function generateCharacterPanel(sections: MvuSchemaSection[], opts: StatusBarGenerateOptions): string {
+  const theme = getStatusBarThemeById(opts.themeId || 'parchment');
+  const reflected = reflectSections(sections);
+  const totalVars = reflected.reduce((n, s) => n + s.vars.length, 0);
+  const header = buildHeader({ ...opts, showAvatar: opts.showAvatar ?? true }, totalVars);
+  const body = buildSections(reflected, opts.collapseAll ?? false, true, opts.showIcons !== false);
+  const classes = `sb-root${opts.density === 'comfortable' ? ' sb-comfortable' : ''}${opts.animated !== false ? ' sb-animated' : ''}${opts.previewNotice ? ' sb-notice' : ''}`;
+  const bodyHtml = `<div class="${classes}">${header}\n${body}</div>`;
+  return buildDocument(theme, bodyHtml, reflected, opts);
+}
 
 export interface StatusBarTemplate {
   id: string;
   name: string;
   icon: string;
   description: string;
-  /** Generate HTML from variables */
-  generate: (sections: MvuSchemaSection[], title: string) => string;
+  defaultTheme: string;
+  generate: (sections: MvuSchemaSection[], opts: StatusBarGenerateOptions) => string;
 }
-
-/** Get variable icon based on path keywords */
-function getVarIcon(path: string): string {
-  const lower = path.toLowerCase();
-  if (path.includes('好感') || lower.includes('affection')) return '💕';
-  if (path.includes('情绪') || lower.includes('emotion') || lower.includes('mood')) return '😊';
-  if (path.includes('HP') || path.includes('生命') || lower.includes('health')) return '❤️';
-  if (path.includes('MP') || path.includes('魔力') || lower.includes('mana')) return '💎';
-  if (path.includes('等级') || lower.includes('level') || lower.includes('lv')) return '⭐';
-  if (path.includes('场景') || path.includes('区域') || path.includes('地点') || lower.includes('location')) return '📍';
-  if (path.includes('时间') || lower.includes('time')) return '🕐';
-  if (path.includes('阶段') || lower.includes('phase') || lower.includes('stage')) return '📈';
-  if (path.includes('关系') || lower.includes('relation')) return '🔗';
-  if (path.includes('金币') || lower.includes('gold') || lower.includes('money')) return '🪙';
-  if (path.includes('装备') || lower.includes('equipment')) return '⚔️';
-  if (path.includes('任务') || lower.includes('quest')) return '📜';
-  if (path.includes('天气') || lower.includes('weather')) return '🌤️';
-  if (path.includes('社团') || lower.includes('club')) return '🎯';
-  return '📌';
-}
-
-/** Get display name from variable path — show full path to distinguish same-named vars across characters */
-function getDisplayName(path: string): string {
-  const parts = path.split('.');
-  if (parts.length <= 1) return path;
-  return parts.join(' > ');
-}
-
-/** Generate SillyTavern getvar macro for a variable */
-function formatVarExpr(v: MvuVariable): string {
-  return `{{getvar::stat_data.${v.path}}}`;
-}
-
-/** Render a numeric meter using native min/max/value attributes.
- * Avoid CSS arithmetic because many ST/WebView renderers do not support calc() multiplication reliably.
- */
-function drawBarHtml(expr: string, color: string, trackBg: string, min = 0, max = 100): string {
-  return `<div style="display:flex;align-items:center;gap:8px;font-size:11px;width:100%">
-      <meter min="${min}" max="${max}" value="${expr}" style="flex:1;width:100%;height:10px;accent-color:${color};background:${trackBg};border-radius:999px"></meter>
-      <span style="min-width:56px;text-align:right;font-weight:700">${expr}</span>
-    </div>`;
-}
-
-/** Render a negative-capable range meter. Native meter handles min/max/value reliably after macros resolve. */
-function drawBidirectionalBarHtml(
-  expr: string,
-  positiveColor: string,
-  _negativeColor: string,
-  trackBg: string,
-  labelBg: string,
-  labelColor: string,
-  max: number,
-  icon: string,
-  name: string,
-): string {
-  return `<div style="display:block;width:100%;font-size:11px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;color:${labelColor}">
-        <span style="white-space:nowrap">${icon} ${name}</span>
-        <span style="background:${labelBg};border-radius:999px;padding:1px 7px;font-weight:700">${expr}</span>
-      </div>
-      <meter min="-${max}" max="${max}" low="-${max * 0.35}" high="${max * 0.35}" optimum="0" value="${expr}" style="display:block;width:100%;height:10px;accent-color:${positiveColor};background:${trackBg};border-radius:999px"></meter>
-      <div style="display:flex;justify-content:space-between;margin-top:2px;font-size:9px;opacity:0.72;color:${labelColor}"><span>-${max}</span><span>0</span><span>${max}</span></div>
-    </div>`;
-}
-
-/** Build compact variable boxes used across templates (single-column full-width) */
-function buildVarRows(
-  vars: MvuVariable[],
-  opts: {
-    labelColor: string;
-    valueColor: string;
-    boxBg: string;
-    barColor: string;
-    barTrack: string;
-    twoColumn?: boolean;
-  },
-): string {
-  const boxStyle = `display:block;width:100%;box-sizing:border-box;background:${opts.boxBg};border-radius:8px;padding:8px 10px;margin-bottom:7px;border:1px solid color-mix(in srgb, var(--sb-text) 10%, transparent)`;
-  return vars
-    .map(v => {
-      const icon = getVarIcon(v.path);
-      const name = getDisplayName(v.path);
-      const expr = formatVarExpr(v);
-      const isNumber = v.zodType === 'z.coerce.number()';
-      const max = v.range?.max ?? 100;
-
-      if (isNumber) {
-        const min = v.range?.min ?? 0;
-        const isBidirectional = min < 0;
-        const rangeLabel = isBidirectional ? `${min}~${max}` : `${max}`;
-        const bar = isBidirectional
-          ? drawBidirectionalBarHtml(expr, opts.barColor, 'var(--sb-danger)', opts.barTrack, opts.boxBg, opts.labelColor, Math.max(Math.abs(min), Math.abs(max)), icon, name)
-          : drawBarHtml(expr, opts.barColor, opts.barTrack, min, max);
-        return `<div style="${boxStyle}">
-          ${isBidirectional
-            ? `<div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:5px;font-size:11px">
-                 <span style="color:${opts.valueColor};font-weight:600">${expr} / ${rangeLabel}</span>
-               </div>
-               ${bar}`
-            : `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;font-size:12px">
-                 <span style="color:${opts.labelColor}">${icon} ${name}</span>
-                 <span style="color:${opts.valueColor};font-weight:600;font-size:11px">${expr} / ${rangeLabel}</span>
-               </div>
-               ${bar}`}
-        </div>`;
-      }
-      return `<div style="display:flex;justify-content:space-between;align-items:center;${boxStyle}">
-        <span style="color:${opts.labelColor}">${icon} ${name}</span>
-        <span style="color:${opts.valueColor};font-weight:600">${expr}</span>
-      </div>`;
-    })
-    .join('\n');
-}
-
-// ── Template: Compact Panel ─────────────────────────────────────────────────
-
-const compactPanel: StatusBarTemplate = {
-  id: 'compact-panel',
-  name: '紧凑信息面板',
-  icon: '▣',
-  description: '通用稳妥，适合大多数角色卡',
-  generate(sections, title) {
-    const vars = sections.flatMap(s => s.variables).filter(v => v.prefix !== '$').slice(0, 10);
-    const rows = buildVarRows(vars, {
-      labelColor: 'var(--sb-muted)',
-      valueColor: 'var(--sb-primary)',
-      boxBg: 'var(--sb-bg-a)',
-      barColor: 'var(--sb-primary)',
-      barTrack: 'color-mix(in srgb, var(--sb-text) 18%, transparent)',
-      twoColumn: false,
-    });
-
-    return `<div style="width:100%;max-width:none;box-sizing:border-box;background:color-mix(in srgb, var(--sb-bg) 88%, transparent);border:1px solid color-mix(in srgb, var(--sb-text) 24%, transparent);border-radius:8px;padding:10px 12px;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:var(--sb-text);margin:8px 0;box-shadow:0 6px 18px color-mix(in srgb, black 18%, transparent)">
-  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid color-mix(in srgb, var(--sb-text) 16%, transparent)">
-    <span style="font-size:12px;font-weight:700;color:var(--sb-text);white-space:nowrap">${title}</span>
-    <span style="font-size:10px;color:var(--sb-faint);text-transform:uppercase;letter-spacing:0.5px">MVU</span>
-  </div>
-  <div style="display:block;width:100%">
-${rows}
-  </div>
-</div>`;
-  },
-};
-
-// ── Template: Minimal Dark ──────────────────────────────────────────────────
-
-const minimalDark: StatusBarTemplate = {
-  id: 'minimal-dark',
-  name: '极简暗色',
-  icon: '🌙',
-  description: '全宽深色面板，进度条展示',
-  generate(sections, title) {
-    const vars = sections.flatMap(s => s.variables).filter(v => v.prefix !== '$').slice(0, 8);
-    const rows = buildVarRows(vars, {
-      labelColor: 'var(--sb-muted)',
-      valueColor: 'var(--sb-primary)',
-      boxBg: 'color-mix(in srgb, var(--sb-text) 4%, transparent)',
-      barColor: 'var(--sb-primary)',
-      barTrack: 'color-mix(in srgb, var(--sb-text) 8%, transparent)',
-      twoColumn: false,
-    });
-
-    return `<div style="width:100%;max-width:none;box-sizing:border-box;background:color-mix(in srgb, var(--sb-bg) 90%, transparent);border:1px solid var(--sb-primary-a);border-radius:10px;padding:12px 14px;font-family:system-ui,sans-serif;color:var(--sb-text);backdrop-filter:blur(8px);box-shadow:0 4px 16px color-mix(in srgb, black 20%, transparent);margin:8px 0">
-  <div style="font-size:11px;color:var(--sb-faint);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid color-mix(in srgb, var(--sb-primary) 15%, transparent);padding-bottom:6px;font-weight:600">${title}</div>
-  <div style="display:block;width:100%">
-${rows}
-  </div>
-</div>`;
-  },
-};
-
-// ── Template: Glass Light ───────────────────────────────────────────────────
-
-const glassLight: StatusBarTemplate = {
-  id: 'glass-light',
-  name: '毛玻璃浅色',
-  icon: '☀️',
-  description: '全宽毛玻璃浅色面板',
-  generate(sections, title) {
-    const vars = sections.flatMap(s => s.variables).filter(v => v.prefix !== '$').slice(0, 8);
-    const rows = buildVarRows(vars, {
-      labelColor: 'var(--sb-muted)',
-      valueColor: 'var(--sb-primary)',
-      boxBg: 'color-mix(in srgb, var(--sb-bg) 50%, transparent)',
-      barColor: 'var(--sb-primary)',
-      barTrack: 'color-mix(in srgb, var(--sb-text) 6%, transparent)',
-      twoColumn: false,
-    });
-
-    return `<div style="width:100%;max-width:none;box-sizing:border-box;background:color-mix(in srgb, var(--sb-bg) 78%, transparent);border:1px solid color-mix(in srgb, var(--sb-primary) 18%, transparent);border-radius:12px;padding:12px 14px;font-family:system-ui,sans-serif;color:var(--sb-text);backdrop-filter:blur(12px);box-shadow:0 8px 24px color-mix(in srgb, black 6%, transparent);margin:8px 0">
-  <div style="font-size:11px;color:var(--sb-muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;border-bottom:1px solid color-mix(in srgb, var(--sb-text) 6%, transparent);padding-bottom:6px">${title}</div>
-  <div style="display:block;width:100%">
-${rows}
-  </div>
-</div>`;
-  },
-};
-
-// ── Template: Game HUD ──────────────────────────────────────────────────────
-
-const gameHud: StatusBarTemplate = {
-  id: 'game-hud',
-  name: '游戏HUD',
-  icon: '🎮',
-  description: 'RPG 游戏风格全宽 HUD',
-  generate(sections, title) {
-    const vars = sections.flatMap(s => s.variables).filter(v => v.prefix !== '$').slice(0, 8);
-    const rows = buildVarRows(vars, {
-      labelColor: 'var(--sb-muted)',
-      valueColor: 'var(--sb-primary)',
-      boxBg: 'color-mix(in srgb, var(--sb-text) 4%, transparent)',
-      barColor: 'var(--sb-primary)',
-      barTrack: 'color-mix(in srgb, var(--sb-text) 8%, transparent)',
-      twoColumn: false,
-    });
-
-    return `<div style="width:100%;max-width:none;box-sizing:border-box;background:linear-gradient(135deg,color-mix(in srgb, var(--sb-bg) 95%, transparent),color-mix(in srgb, var(--sb-bg) 85%, transparent));border:2px solid var(--sb-primary-a);border-radius:10px;padding:12px 14px;font-family:'Segoe UI',system-ui,sans-serif;color:var(--sb-text);box-shadow:0 4px 20px color-mix(in srgb, black 30%, transparent),inset 0 1px 0 color-mix(in srgb, var(--sb-primary) 10%, transparent);margin:8px 0">
-  <div style="font-size:11px;color:var(--sb-primary);margin-bottom:10px;text-transform:uppercase;letter-spacing:1px;font-weight:700;border-bottom:1px solid color-mix(in srgb, var(--sb-primary) 20%, transparent);padding-bottom:6px;text-shadow:0 0 8px color-mix(in srgb, var(--sb-primary) 30%, transparent)">⚔️ ${title}</div>
-  <div style="display:block;width:100%">
-${rows}
-  </div>
-</div>`;
-  },
-};
-
-// ── Template: Anime Card ────────────────────────────────────────────────────
-
-const animeCard: StatusBarTemplate = {
-  id: 'anime-card',
-  name: '二次元卡片',
-  icon: '🌸',
-  description: '粉色系全宽卡片面板',
-  generate(sections, title) {
-    const vars = sections.flatMap(s => s.variables).filter(v => v.prefix !== '$').slice(0, 8);
-    const rows = buildVarRows(vars, {
-      labelColor: 'var(--sb-muted)',
-      valueColor: 'var(--sb-text)',
-      boxBg: 'color-mix(in srgb, var(--sb-text) 12%, transparent)',
-      barColor: 'var(--sb-primary)',
-      barTrack: 'color-mix(in srgb, var(--sb-text) 12%, transparent)',
-      twoColumn: false,
-    });
-
-    return `<div style="width:100%;max-width:none;box-sizing:border-box;background:linear-gradient(135deg,color-mix(in srgb, var(--sb-primary) 30%, transparent),color-mix(in srgb, var(--sb-primary) 30%, transparent));border:1px solid color-mix(in srgb, var(--sb-primary) 35%, transparent);border-radius:14px;padding:12px 14px;font-family:'Segoe UI',system-ui,sans-serif;color:var(--sb-text);backdrop-filter:blur(10px);box-shadow:0 8px 24px color-mix(in srgb, var(--sb-primary) 15%, transparent);margin:8px 0">
-  <div style="font-size:12px;color:var(--sb-muted);margin-bottom:10px;text-align:center;font-weight:600;letter-spacing:0.5px;text-shadow:0 0 6px color-mix(in srgb, var(--sb-primary) 30%, transparent);border-bottom:1px solid color-mix(in srgb, var(--sb-text) 15%, transparent);padding-bottom:6px">🌸 ${title} 🌸</div>
-  <div style="display:block;width:100%">
-${rows}
-  </div>
-</div>`;
-  },
-};
-
-// ── Template: Terminal ──────────────────────────────────────────────────────
-
-const terminal: StatusBarTemplate = {
-  id: 'terminal',
-  name: '终端风格',
-  icon: '💻',
-  description: '赛博朋克终端全宽面板',
-  generate(sections, title) {
-    const vars = sections.flatMap(s => s.variables).filter(v => v.prefix !== '$').slice(0, 8);
-    const rows = vars
-      .map(v => {
-        const name = getDisplayName(v.path);
-        const expr = formatVarExpr(v);
-        return `<div style="display:block;width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 8px;font-size:12px;background:color-mix(in srgb, var(--sb-primary) 6%, transparent);border-radius:4px;font-family:'Cascadia Code','Fira Code',monospace">
-          <span style="color:var(--sb-primary)">[</span><span style="color:var(--sb-muted)">${name}</span><span style="color:var(--sb-primary)">]</span>
-          <span style="color:var(--sb-success);font-weight:600;float:right">→ ${expr}</span>
-          <div style="clear:both"></div>
-        </div>`;
-      })
-      .join('\n');
-
-    return `<div style="width:100%;max-width:none;box-sizing:border-box;background:color-mix(in srgb, var(--sb-bg) 92%, transparent);border:1px solid color-mix(in srgb, var(--sb-primary) 25%, transparent);border-radius:8px;padding:12px 14px;font-family:'Cascadia Code','Fira Code',monospace;color:var(--sb-text);box-shadow:0 0 20px color-mix(in srgb, var(--sb-primary) 8%, transparent),inset 0 0 20px color-mix(in srgb, var(--sb-primary) 3%, transparent);margin:8px 0">
-  <div style="font-size:11px;color:var(--sb-primary);margin-bottom:10px;border-bottom:1px solid color-mix(in srgb, var(--sb-primary) 15%, transparent);padding-bottom:6px;letter-spacing:1px">&gt; ${title}</div>
-  <div style="display:block;width:100%">
-${rows}
-  </div>
-</div>`;
-  },
-};
-
-// ── Template: Ancient Scroll（参考示例的古风折叠面板）───────────────────────
-
-const ancientScroll: StatusBarTemplate = {
-  id: 'ancient-scroll',
-  name: '古风卷轴',
-  icon: '📜',
-  description: '参考大炎王朝示例的古风全宽折叠面板',
-  generate(sections, title) {
-    const vars = sections.flatMap(s => s.variables).filter(v => v.prefix !== '$').slice(0, 12);
-    const emotionVars = vars.filter(v => v.zodType === 'z.coerce.number()' && /情感|心境|好感|爱意|恨意|信任|亲密|倾向|天平|羁绊|忠诚|敌意|欲望|羞耻|理智|压力/.test(v.path));
-    const otherVars = vars.filter(v => !emotionVars.includes(v));
-    const otherRows = buildVarRows(otherVars, {
-      labelColor: 'var(--sb-text)',
-      valueColor: 'var(--sb-primary)',
-      boxBg: 'color-mix(in srgb, var(--sb-bg) 82%, transparent)',
-      barColor: 'var(--sb-primary)',
-      barTrack: 'color-mix(in srgb, var(--sb-text) 12%, transparent)',
-      twoColumn: false,
-    });
-
-    const renderEmotion = (v: MvuVariable) => {
-      const icon = getVarIcon(v.path);
-      const name = getDisplayName(v.path);
-      const expr = formatVarExpr(v);
-      const min = v.range?.min ?? -100;
-      const max = v.range?.max ?? 100;
-      const isDual = min < 0;
-      const leftText = isDual ? '疏离' : `${min}`;
-      const rightText = isDual ? '亲近' : `${max}`;
-      return `<div style="background:linear-gradient(135deg,color-mix(in srgb, var(--sb-bg) 95%, transparent),color-mix(in srgb, var(--sb-bg) 86%, transparent));border:1px solid color-mix(in srgb, var(--sb-text) 24%, transparent);border-radius:10px;padding:10px 11px;margin-bottom:9px;box-shadow:inset 0 1px 0 color-mix(in srgb, var(--sb-text) 20%, transparent),0 2px 6px color-mix(in srgb, black 6%, transparent)">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
-          <span style="font-size:12px;color:var(--sb-text);font-weight:700;letter-spacing:0.5px">${icon} ${name}</span>
-          <span style="font-size:12px;color:var(--sb-primary);font-weight:800;font-family:Georgia,'Times New Roman',serif">${expr}</span>
-        </div>
-        <meter min="${min}" max="${max}" low="${isDual ? min * 0.35 : min}" high="${isDual ? max * 0.35 : max}" optimum="${isDual ? 0 : max}" value="${expr}" style="display:block;width:100%;height:12px;accent-color:var(--sb-primary);background:var(--sb-bg-a);border-radius:999px"></meter>
-        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--sb-muted);letter-spacing:0.5px;margin-top:4px">
-          <span>${leftText}</span><span>${isDual ? '中和' : `${min}~${max}`}</span><span>${rightText}</span>
-        </div>
-      </div>`;
-    };
-
-    const emotionSection = emotionVars.length > 0 ? `<div style="margin-bottom:12px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;color:var(--sb-primary);font-size:12px;font-weight:700;letter-spacing:1px">
-        <span>❦</span><span>心绪流转</span><span style="flex:1;height:1px;background:linear-gradient(90deg,color-mix(in srgb, var(--sb-primary) 28%, transparent),transparent)"></span>
-      </div>
-${emotionVars.map(renderEmotion).join('\n')}
-    </div>` : '';
-
-    return `<div style="width:100%;max-width:none;box-sizing:border-box;margin:8px 0;border:1px solid color-mix(in srgb, var(--sb-text) 30%, transparent);border-radius:8px;overflow:hidden;box-shadow:0 4px 12px color-mix(in srgb, black 8%, transparent);font-family:'Noto Serif SC','Source Han Serif SC',serif;color:var(--sb-text);background:linear-gradient(180deg,color-mix(in srgb, var(--sb-bg) 98%, white),color-mix(in srgb, var(--sb-bg) 90%, white))">
-  <div style="padding:10px 14px;background:linear-gradient(to right,color-mix(in srgb, var(--sb-bg) 80%, white),color-mix(in srgb, var(--sb-bg) 95%, white),color-mix(in srgb, var(--sb-bg) 80%, white));border-bottom:1px solid color-mix(in srgb, var(--sb-text) 30%, transparent)">
-    <span style="font-weight:700;color:var(--sb-primary);letter-spacing:1px">📜 ${title}</span>
-  </div>
-  <div style="padding:13px;background:linear-gradient(180deg,color-mix(in srgb, var(--sb-bg) 98%, white),color-mix(in srgb, var(--sb-bg) 94%, white))">
-    ${emotionSection}
-    <div style="display:block;width:100%">
-${otherRows}
-    </div>
-  </div>
-</div>`;
-  },
-};
-
-// ── Template: Visual Novel (灵感来自"岁岁年年"，支持静态图片) ─────────────────
-
-const visualNovel: StatusBarTemplate = {
-  id: 'visual-novel',
-  name: '视觉小说风格',
-  icon: '🖼️',
-  description: '精细卡片布局，支持背景图/立绘/头像，适合恋爱/校园/剧情题材',
-  generate(sections, title) {
-    const vars = sections.flatMap(s => s.variables).filter(v => v.prefix !== '$').slice(0, 12);
-    const numberVars = vars.filter(v => v.zodType === 'z.coerce.number()');
-    const stringVars = vars.filter(v => v.zodType !== 'z.coerce.number()');
-
-    // 分组：着装、身体、事件、其他
-    const outfitVars = stringVars.filter(v => /着装|上装|下装|内衣|配饰|鞋子/.test(v.path));
-    const bodyVars = stringVars.filter(v => /身体|胸部|阴道|子宫|肛门/.test(v.path));
-    const eventVars = stringVars.filter(v => /事件|坦白|告白|永恒/.test(v.path));
-    const otherStringVars = stringVars.filter(v =>
-      !/着装|上装|下装|内衣|配饰|鞋子|身体|胸部|阴道|子宫|肛门|事件|坦白|告白|永恒/.test(v.path)
-    );
-
-    const renderNumberVar = (v: MvuVariable) => {
-      const icon = getVarIcon(v.path);
-      const name = getDisplayName(v.path);
-      const expr = formatVarExpr(v);
-      const max = v.range?.max ?? 100;
-      const min = v.range?.min ?? 0;
-
-      return `<div style="margin-bottom:14px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px">
-          <span style="font-size:13px;font-weight:500;color:var(--sb-text)">${icon} ${name}</span>
-          <span style="font-weight:800;font-size:14px;color:var(--sb-primary);font-family:'ZCOOL KuaiLe',cursive,sans-serif">${expr} / ${min}~${max}</span>
-        </div>
-        <meter min="${min}" max="${max}" low="${min < 0 ? min * 0.35 : min}" high="${min < 0 ? max * 0.35 : max}" optimum="${min < 0 ? 0 : max}" value="${expr}" style="display:block;width:100%;height:11px;accent-color:var(--sb-primary);background:color-mix(in srgb, var(--sb-text) 5%, transparent);border-radius:999px"></meter>
-      </div>`;
-    };
-
-    const renderListItem = (v: MvuVariable) => {
-      const icon = getVarIcon(v.path);
-      const name = v.path.split('.').pop() || v.path;
-      const expr = formatVarExpr(v);
-      return `<div style="display:flex;align-items:center;padding:8px 12px;background:color-mix(in srgb, var(--sb-bg) 70%, transparent);border-radius:10px;margin-bottom:6px;border-left:3px solid var(--sb-primary);box-shadow:0 2px 4px color-mix(in srgb, black 2%, transparent)">
-        <span style="margin-right:10px;font-size:16px">${icon}</span>
-        <span style="font-weight:600;color:var(--sb-muted);margin-right:8px;min-width:40px;font-size:12px">${name}</span>
-        <span style="color:var(--sb-text);font-weight:500;font-size:12px;flex:1;text-align:right">${expr}</span>
-      </div>`;
-    };
-
-    const renderOtherString = (v: MvuVariable) => {
-      const icon = getVarIcon(v.path);
-      const name = getDisplayName(v.path);
-      const expr = formatVarExpr(v);
-      return `<div style="background:color-mix(in srgb, var(--sb-bg) 70%, transparent);border:1px solid color-mix(in srgb, var(--sb-text) 6%, transparent);border-radius:12px;padding:12px;margin-bottom:10px;box-shadow:inset 0 2px 5px color-mix(in srgb, black 2%, transparent)">
-        <div style="font-size:12px;font-weight:500;color:var(--sb-muted);margin-bottom:6px">${icon} ${name}</div>
-        <div style="font-size:13px;line-height:1.6;color:var(--sb-text);font-family:'ZCOOL KuaiLe',cursive,sans-serif">${expr}</div>
-      </div>`;
-    };
-
-    // 分区标题样式
-    const sectionTitle = (icon: string, label: string) => `
-      <div style="font-family:'ZCOOL KuaiLe',cursive,sans-serif;font-size:16px;color:var(--sb-primary);margin-bottom:14px;display:flex;align-items:center;gap:8px">
-        <span>${icon}</span><span>${label}</span>
-        <span style="flex:1;height:1px;background:linear-gradient(90deg,color-mix(in srgb, var(--sb-primary) 25%, transparent),transparent)"></span>
-      </div>`;
-
-    // 卡片容器样式
-    const cardStyle = 'background:color-mix(in srgb, var(--sb-bg) 78%, transparent);border:1px solid color-mix(in srgb, var(--sb-primary) 25%, transparent);border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 4px 16px color-mix(in srgb, black 6%, transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)';
-
-    const numberSection = numberVars.length > 0 ? `
-      <div style="${cardStyle}">
-        ${sectionTitle('💕', '核心指数')}
-        ${numberVars.map(renderNumberVar).join('\n')}
-      </div>` : '';
-
-    const outfitSection = outfitVars.length > 0 ? `
-      <div style="${cardStyle}">
-        ${sectionTitle('👗', '当前着装')}
-        ${outfitVars.map(renderListItem).join('\n')}
-      </div>` : '';
-
-    const bodySection = bodyVars.length > 0 ? `
-      <div style="${cardStyle}">
-        ${sectionTitle('🫦', '身体状态')}
-        ${bodyVars.map(renderListItem).join('\n')}
-      </div>` : '';
-
-    // 事件卡片 - 不判断实际值（因为无法在模板中判断），统一显示为待解锁状态
-    const eventSection = eventVars.length > 0 ? `
-      <div style="${cardStyle}">
-        ${sectionTitle('✨', '事件')}
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          ${eventVars.map(v => {
-            const name = v.path.split('.').pop() || v.path;
-            const expr = formatVarExpr(v);
-            return `<div style="flex:1;min-width:80px;aspect-ratio:9/14;border-radius:12px;overflow:hidden;position:relative;background:color-mix(in srgb, var(--sb-bg) 60%, transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:2px solid color-mix(in srgb, var(--sb-primary) 25%, transparent);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px">
-              <div style="font-size:24px;margin-bottom:6px">🎭</div>
-              <div style="font-size:11px;font-weight:600;color:var(--sb-primary);text-align:center">${name}</div>
-              <div style="font-size:10px;color:var(--sb-muted);margin-top:4px">${expr}</div>
-            </div>`;
-          }).join('\n')}
-        </div>
-      </div>` : '';
-
-    const otherSection = otherStringVars.length > 0 ? `
-      <div style="${cardStyle}">
-        ${sectionTitle('📜', '详细信息')}
-        ${otherStringVars.map(renderOtherString).join('\n')}
-      </div>` : '';
-
-    // 图片URL占位符 - 用户可替换
-    const BG_IMAGE = 'https://placehold.co/800x400/ffb6c1/fff?background';
-    const TACHIE_IMAGE = 'https://placehold.co/300x500/transparent/fff?text=立绘';
-    const AVATAR_IMAGE = 'https://placehold.co/80x80/e87a90/fff?text=头像';
-
-    // 全部使用内联样式，不使用<style>标签
-    return `<div style="width:100%;max-width:none;box-sizing:border-box;margin:8px 0;position:relative;border-radius:20px;overflow:hidden;box-shadow:0 15px 35px color-mix(in srgb, black 15%, transparent);font-family:'ZCOOL KuaiLe',cursive,-apple-system,BlinkMacSystemFont,sans-serif">
-      <div style="position:absolute;top:0;left:0;width:100%;height:100%;background-image:url('${BG_IMAGE}');background-size:cover;background-position:center top;z-index:0"></div>
-      <div style="position:absolute;top:0;left:0;width:100%;height:100%;background:linear-gradient(180deg,color-mix(in srgb, var(--sb-bg) 15%, transparent) 0%,color-mix(in srgb, var(--sb-bg) 35%, transparent) 35%,color-mix(in srgb, var(--sb-bg) 60%, transparent) 100%);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);z-index:1"></div>
-      <div style="position:relative;z-index:2;padding:20px">
-        <div style="background:color-mix(in srgb, var(--sb-bg) 70%, transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);padding:14px 20px;border-radius:16px;border:1px solid color-mix(in srgb, var(--sb-primary) 25%, transparent);box-shadow:0 4px 15px color-mix(in srgb, black 5%, transparent);margin-bottom:16px;display:flex;align-items:center;gap:14px">
-          <div style="width:56px;height:56px;border-radius:12px;overflow:hidden;border:2px solid var(--sb-primary);box-shadow:0 4px 10px color-mix(in srgb, black 10%, transparent);flex-shrink:0">
-            <img src="${AVATAR_IMAGE}" alt="avatar" style="width:100%;height:100%;object-fit:cover;display:block">
-          </div>
-          <div style="flex:1">
-            <div style="font-size:20px;color:var(--sb-primary);text-shadow:0 2px 4px color-mix(in srgb, var(--sb-bg) 80%, transparent);letter-spacing:2px">${title}</div>
-            <div style="font-size:11px;color:var(--sb-muted);margin-top:4px">Visual Novel Status Bar</div>
-          </div>
-        </div>
-        <div style="position:relative;width:100%;min-height:180px;margin-bottom:16px;display:flex;justify-content:flex-end">
-          <img src="${TACHIE_IMAGE}" alt="tachie" style="position:absolute;bottom:0;left:5%;width:45%;max-height:250px;object-fit:contain;object-position:bottom center;filter:drop-shadow(3px 5px 10px color-mix(in srgb, black 20%, transparent));z-index:3">
-          <div style="width:50%;margin-left:auto">
-            ${numberSection}
-          </div>
-        </div>
-        ${outfitSection}
-        ${bodySection}
-        ${eventSection}
-        ${otherSection}
-      </div>
-    </div>`;
-  },
-};
-
-// ── Template registry ───────────────────────────────────────────────────────
 
 export const STATUS_BAR_TEMPLATES: StatusBarTemplate[] = [
-  compactPanel,
-  minimalDark,
-  glassLight,
-  gameHud,
-  animeCard,
-  terminal,
-  ancientScroll,
-  visualNovel,
+  {
+    id: 'compact-hud',
+    name: '紧凑HUD',
+    icon: '🖥️',
+    description: '高密度窄条，常驻显示，适合变量较少或追求沉浸感的卡片',
+    defaultTheme: 'terminal',
+    generate: generateCompactHud,
+  },
+  {
+    id: 'character-panel',
+    name: '角色面板',
+    icon: '🗂️',
+    description: '头像+可折叠分区+资源条，适合变量丰富的角色卡',
+    defaultTheme: 'parchment',
+    generate: generateCharacterPanel,
+  },
 ];
 
-export function getTemplateById(id: string): StatusBarTemplate | undefined {
+export function getStatusBarTemplateById(id: string): StatusBarTemplate | undefined {
   return STATUS_BAR_TEMPLATES.find(t => t.id === id);
 }
+
+export interface StatusBarTemplatePreset {
+  templateId: string;
+  statusTemplateId: string;
+  themeId: string;
+  title: string;
+}
+
+/** 分阶段/MVU 模板的主题化状态栏预设 */
+export const STATUS_BAR_TEMPLATE_PRESETS: StatusBarTemplatePreset[] = [
+  { templateId: 'pure-love', statusTemplateId: 'character-panel', themeId: 'paper', title: '纯爱情感' },
+  { templateId: 'ntr', statusTemplateId: 'character-panel', themeId: 'glass', title: '堕落情感' },
+  { templateId: 'dual-route', statusTemplateId: 'character-panel', themeId: 'parchment', title: '情感天平' },
+  { templateId: 'cultivation', statusTemplateId: 'character-panel', themeId: 'parchment', title: '修为境界' },
+  { templateId: 'main-plot', statusTemplateId: 'compact-hud', themeId: 'terminal', title: '主线进度' },
+  { templateId: 'corruption', statusTemplateId: 'compact-hud', themeId: 'glass', title: '心智污染' },
+  { templateId: 'investigation', statusTemplateId: 'character-panel', themeId: 'terminal', title: '调查真相度' },
+  { templateId: 'wuxia', statusTemplateId: 'character-panel', themeId: 'paper', title: '江湖状态' },
+  { templateId: 'xianxia', statusTemplateId: 'character-panel', themeId: 'parchment', title: '修仙状态' },
+  { templateId: 'apocalypse', statusTemplateId: 'compact-hud', themeId: 'terminal', title: '生存终端' },
+  { templateId: 'modern', statusTemplateId: 'character-panel', themeId: 'glass', title: '都市状态' },
+];
+
+export function getStatusBarPresetByTemplateId(templateId: string): StatusBarTemplatePreset | undefined {
+  return STATUS_BAR_TEMPLATE_PRESETS.find(preset => preset.templateId === templateId);
+}
+
 
 export function generateStatusBarHtml(
   templateId: string,
   sections: MvuSchemaSection[],
-  title: string,
+  opts: StatusBarGenerateOptions = {},
 ): string {
-  const template = getTemplateById(templateId);
+  const template = getStatusBarTemplateById(templateId);
   if (!template) return '';
-  return wrapStatusBarHtml(template.generate(sections, title));
-}
-
-/**
- * 根据 AI 返回的状态栏配置（标题、要显示的变量路径列表、风格提示）
- * 选择最合适的模板并生成 HTML。会被 AI 生成流程使用。
- *
- * - 若 showVariables 为空，则展示全部非隐藏变量
- * - 若指定了风格关键词（如"赛博"、"暗色"、"粉色"），匹配对应模板
- * - 默认使用 minimal-dark
- */
-export function generateStatusBarFromAiConfig(
-  sections: MvuSchemaSection[],
-  cfg: { title?: string; showVariables?: string[]; styleHint?: string },
-): { html: string; templateId: string; title: string } {
-  const title = (cfg.title || '状态栏').trim();
-  const styleHint = (cfg.styleHint || '').toLowerCase();
-
-  // 风格关键词 → 模板 id
-  let templateId = 'compact-panel';
-  if (/赛博|终端|cyber|terminal|霓虹/.test(styleHint)) templateId = 'terminal';
-  else if (/粉|二次元|少女|anime|sakura|樱花/.test(styleHint)) templateId = 'anime-card';
-  else if (/rpg|游戏|hud|game/.test(styleHint)) templateId = 'game-hud';
-  else if (/浅|亮|light|玻璃|glass|白色/.test(styleHint)) templateId = 'glass-light';
-  else if (/古风|卷轴|scroll|水墨/.test(styleHint)) templateId = 'ancient-scroll';
-  else if (/梦幻|毛玻璃|dreamy|恋爱|校园|柔和/.test(styleHint)) templateId = 'visual-novel';
-  else if (/视觉|图片|立绘|visual|vn|剧情|精细/.test(styleHint)) templateId = 'visual-novel';
-  else if (/暗|dark|深色|极简|minimal/.test(styleHint)) templateId = 'minimal-dark';
-
-  // 若指定了要显示的变量，构造一个过滤后的 sections 副本
-  const showSet = new Set((cfg.showVariables || []).filter(Boolean));
-  let usedSections = sections;
-  if (showSet.size > 0) {
-    usedSections = sections
-      .map(s => ({
-        ...s,
-        variables: s.variables.filter(v => showSet.has(v.path)),
-      }))
-      .filter(s => s.variables.length > 0);
-  }
-
-  return {
-    html: wrapStatusBarHtml(generateStatusBarHtml(templateId, usedSections, title)),
-    templateId,
-    title,
-  };
-}
-
-// ── AI generation prompt ────────────────────────────────────────────────────
-
-/**
- * Build the AI prompt for status bar generation.
- * Includes strict constraints to ensure MVU/EJS compatibility.
- */
-export function buildStatusBarAIPrompt(
-  sections: MvuSchemaSection[],
-  cardName: string,
-  styleHint: string,
-): { system: string; user: string } {
-  // Build variable list for AI context
-  const varList = sections
-    .flatMap(s => s.variables)
-    .filter(v => v.prefix !== '$')
-    .map(v => {
-      const type = v.zodType === 'z.coerce.number()' ? 'number' : v.zodType.startsWith('z.enum(') ? 'enum' : 'string';
-      const range = v.range ? ` (range: ${v.range.min}-${v.range.max})` : '';
-      return `  - ${v.path} [${type}${range}]: ${v.description} (initial: ${v.initialValue})`;
-    })
-    .join('\n');
-
-  return {
-    system: `你是一个 SillyTavern 状态栏 HTML 生成器。根据用户提供的 MVU 变量列表，生成一个美观的状态栏 HTML 模板。
-
-## 严格约束（违反将导致状态栏无法显示变量）
-
-1. 变量读取必须使用 SillyTavern 内置宏 {{getvar::stat_data.路径}}，路径必须以 stat_data. 开头：
-   - 正确: {{getvar::stat_data.角色.好感度}}
-   - 错误: <%- getvar('stat_data.角色.好感度') %>
-   - 错误: {{getvar::角色.好感度}}
-   - 错误: {{好感度}}
-2. 数字类型推荐使用 <meter>，不要用 CSS calc() 计算宽度：
-   - 正确: <meter min="0" max="100" value="{{getvar::stat_data.角色.好感度}}"></meter>
-   - 正确: <meter min="-100" max="100" optimum="0" value="{{getvar::stat_data.角色.情感天平}}"></meter>
-   - range 不是 0~100（例如 1~99、-100~100）时尤其必须使用 min/max/value
-   - 错误: style="width:{{getvar::stat_data.角色.好感度}}%"
-   - 错误: style="width:max(0%, calc({{getvar::stat_data.角色.情感天平}} * 1%))"
-3. 只能使用内联样式（style 属性），不要用 <style> 标签或外部 CSS
-4. 必须是自包含的 HTML，不要引用外部资源
-5. 不要使用 <script> 标签
-6. 变量路径必须与用户提供的列表完全一致，不要自行修改路径
-7. 根容器必须使用 width:100%，让状态栏填满 SillyTavern 消息容器，不要固定像素宽度
-8. 使用 box-sizing:border-box 避免 padding/border 撑破布局
-9. 每个变量卡片必须用 display:block;width:100% 单列全宽布局；禁止用 display:inline-block;width:48% 做多列、禁止用 display:grid / display:flex 做多列（SillyTavern 消息渲染会把它压成一行）
-10. 避免使用 <details>/<summary> 标签，SillyTavern 消息渲染会将其显示为原始符号
-11. 每个卡片内部用简单的 div 堆叠：标题、数值、进度条，不要嵌套复杂结构
-
-## 状态栏渲染机制
-
-生成的 HTML 会被嵌入 SillyTavern 的 regex_scripts 中：
-- 每次 AI 回复末尾会自动包含 \`<StatusPlaceHolderImpl/>\`
-- regex 脚本 "状态栏界面" 会把该占位符替换为这段 HTML（仅在前端显示）
-- regex 脚本 "对AI隐藏状态栏" 会把占位符从 AI prompt 中删除
-
-因此生成的 HTML 不需要 \`@@render_after\` 装饰器，也不需要 \`<script>\` 标签。
-
-## 设计要求
-
-- 状态栏显示在聊天消息区域，宽度必须填满容器
-- 使用卡片/分组样式展示变量，每个变量一个小 box
-- 数字变量用进度条展示，字符串变量用标签展示
-- 如果用户要求古风/卷轴/水墨风格，情感、好感、心境、信任、倾向、天平等变量应优先做成“心绪/阴阳/亲疏”双向刻度，而不是普通现代进度条
-- 顶部有标题栏，带装饰性下边框
-- 配色与用户指定的风格一致
-- 布局紧凑但信息清晰
-
-## 输出格式
-
-直接输出 HTML 代码，不要包裹在代码块中，不要添加任何解释文字。`,
-    user: `卡片名称：${cardName}
-
-## 可用变量列表
-${varList || '（无变量）'}
-
-## 风格要求
-${styleHint || '基于紧凑信息面板，通用、克制、清晰、兼容移动端'}
-
-请生成状态栏 HTML：`,
-  };
-}
-
-/**
- * Build the AI prompt for modifying an existing status bar.
- * The AI receives the current HTML and user's natural-language instruction.
- */
-export function buildStatusBarModifyAIPrompt(
-  sections: MvuSchemaSection[],
-  cardName: string,
-  currentHtml: string,
-  instruction: string,
-): { system: string; user: string } {
-  const varList = sections
-    .flatMap(s => s.variables)
-    .filter(v => v.prefix !== '$')
-    .map(v => {
-      const type = v.zodType === 'z.coerce.number()' ? 'number' : v.zodType.startsWith('z.enum(') ? 'enum' : 'string';
-      const range = v.range ? ` (range: ${v.range.min}-${v.range.max})` : '';
-      return `  - ${v.path} [${type}${range}]: ${v.description} (initial: ${v.initialValue})`;
-    })
-    .join('\n');
-
-  return {
-    system: `你是一个 SillyTavern 状态栏 HTML 修改器。用户会提供一段已有的状态栏 HTML 和一段自然语言修改指令，请基于原 HTML 进行修改，而不是重新生成。
-
-## 严格约束（违反将导致状态栏无法显示变量）
-
-1. 必须保留所有现有的 {{getvar::stat_data.路径}} 宏，路径必须与用户提供的一致，不要修改路径。
-2. 可以新增布局、样式、图标、颜色，但不能删除已有变量展示。
-3. 古风/卷轴/水墨风格下，情感、好感、心境、信任、倾向、天平等变量应优先使用“心绪/阴阳/亲疏”双向刻度。
-4. 数字类型推荐使用 <meter min="..." max="..." value="{{getvar::stat_data.路径}}">，不要用 CSS calc() 计算宽度。
-   - 负数区间（如 -100~100）使用 <meter min="-100" max="100" optimum="0" value="{{getvar::stat_data.角色.情感天平}}">
-   - 非 0 起点区间使用真实 min/max，例如 <meter min="1" max="99" value="{{getvar::stat_data.主角.等级}}">
-   - 错误: style="width:{{getvar::stat_data.角色.情感天平}}%"
-   - 错误: style="width:max(0%, calc({{getvar::stat_data.角色.情感天平}} * 1%))"
-5. 只能使用内联样式（style 属性），不要用 <style> 标签或外部 CSS。
-6. 必须是自包含的 HTML，不要引用外部资源。
-7. 不要使用 <script> 标签。
-8. 根容器必须使用 width:100%，不要固定像素宽度。
-9. 使用 box-sizing:border-box。
-10. 每个变量卡片必须用 display:block;width:100% 单列全宽布局；禁止多列。
-11. 避免使用 <details>/<summary> 标签。
-
-## 输出格式
-
-直接输出修改后的 HTML 代码，不要包裹在代码块中，不要添加任何解释文字。`,
-    user: `卡片名称：${cardName}
-
-## 可用变量列表
-${varList || '（无变量）'}
-
-## 当前状态栏 HTML
-${currentHtml || '（空）'}
-
-## 修改要求
-${instruction || '保持原样，仅优化视觉效果'}
-
-请直接输出修改后的 HTML：`,
-  };
+  const merged: StatusBarGenerateOptions = { themeId: opts.themeId || template.defaultTheme, ...opts };
+  return template.generate(sections, merged);
 }

@@ -57,7 +57,6 @@ export function StepFirstMessage({
   const [retryCount, setRetryCount] = useState(0);
   const retryCountRef = useRef(0);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [showRequirements, setShowRequirements] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
 
   // Clean up pending retry timeout on unmount
@@ -185,13 +184,6 @@ export function StepFirstMessage({
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setShowRequirements(!showRequirements)}
-            >
-              {showRequirements ? t('firstMessage.collapseRequirements') : (writingRequirements.trim() ? t('firstMessage.writingRequirementsActive') : t('firstMessage.writingRequirementsButton'))}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
               onClick={() => handleStreamGenerate(false)}
               disabled={aiStatus === 'generating'}
             >
@@ -256,38 +248,36 @@ export function StepFirstMessage({
         </div>
       </div>
 
-      {/* Writing requirements panel */}
-      {showRequirements && (
-        <div className="mb-4 rounded-xl border-2 border-[color-mix(in_srgb,var(--color-status-warning)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-status-warning)_20%,transparent)] p-4 space-y-3 animate-fade-in">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-bold text-[var(--color-status-warning)]">⚠️ {t('firstMessage.writingReqTitle')}</h3>
-            </div>
-            {writingRequirements.trim() && (
-              <span className="text-[10px] px-2 py-0.5 rounded bg-[color-mix(in_srgb,var(--color-status-success)_40%,transparent)] text-[var(--color-status-success)]">✅ {t('firstMessage.reqFilled')}</span>
-            )}
+      {/* Writing requirements panel — always visible */}
+      <div className="mb-4 rounded-xl border-2 border-[color-mix(in_srgb,var(--color-status-warning)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-status-warning)_20%,transparent)] p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-bold text-[var(--color-status-warning)]">⚠️ {t('firstMessage.writingReqTitle')}</h3>
           </div>
-          <div className="rounded-lg bg-[color-mix(in_srgb,var(--color-status-warning)_20%,transparent)] border border-[color-mix(in_srgb,var(--color-status-warning)_30%,transparent)] px-3 py-2">
-            <p className="text-[11px] text-[var(--color-status-warning)] leading-relaxed">
-              {t('firstMessage.writingReqHint')}
-            </p>
-          </div>
-          <textarea
-            value={writingRequirements}
-            onChange={(e) => setWritingRequirements(e.target.value)}
-            placeholder={t('firstMessage.writingReqPlaceholder')}
-            className="w-full h-32 rounded-lg border border-[color-mix(in_srgb,var(--color-status-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_80%,transparent)] px-3 py-2 text-xs text-[var(--text-color)] placeholder-[var(--color-text-muted)] resize-y focus:border-[var(--color-status-warning)] focus:outline-none"
-          />
-          <div className="flex items-center justify-between">
-            <p className="text-[11px] text-[var(--color-text-muted)]">
-              💡 {t('firstMessage.writingReqTip')}
-            </p>
-            {writingRequirements.trim() && (
-              <span className="text-[10px] text-[var(--color-text-muted)] shrink-0">{writingRequirements.length}{t('common.words')}</span>
-            )}
-          </div>
+          {writingRequirements.trim() && (
+            <span className="text-[10px] px-2 py-0.5 rounded bg-[color-mix(in_srgb,var(--color-status-success)_40%,transparent)] text-[var(--color-status-success)]">✅ {t('firstMessage.reqFilled')}</span>
+          )}
         </div>
-      )}
+        <div className="rounded-lg bg-[color-mix(in_srgb,var(--color-status-warning)_20%,transparent)] border border-[color-mix(in_srgb,var(--color-status-warning)_30%,transparent)] px-3 py-2">
+          <p className="text-[11px] text-[var(--color-status-warning)] leading-relaxed">
+            {t('firstMessage.writingReqHint')}
+          </p>
+        </div>
+        <textarea
+          value={writingRequirements}
+          onChange={(e) => setWritingRequirements(e.target.value)}
+          placeholder={t('firstMessage.writingReqPlaceholder')}
+          className="w-full h-32 rounded-lg border border-[color-mix(in_srgb,var(--color-status-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_80%,transparent)] px-3 py-2 text-xs text-[var(--text-color)] placeholder-[var(--color-text-muted)] resize-y focus:border-[var(--color-status-warning)] focus:outline-none"
+        />
+        <div className="flex items-center justify-between">
+          <p className="text-[11px] text-[var(--color-text-muted)]">
+            💡 {t('firstMessage.writingReqTip')}
+          </p>
+          {writingRequirements.trim() && (
+            <span className="text-[10px] text-[var(--color-text-muted)] shrink-0">{writingRequirements.length}{t('common.words')}</span>
+          )}
+        </div>
+      </div>
 
       {/* Word count presets */}
       <div className="flex flex-wrap items-center gap-2 mb-4">

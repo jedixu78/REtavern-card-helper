@@ -22,7 +22,7 @@
  *   first_mes 末尾自动追加占位符，保证开场消息也会渲染状态栏。
  */
 import { generateId, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt } from '../constants/defaults';
-import type { WizardDraft, LorebookEntry, LorebookPosition, MvuConfig, EjsEntryConfig } from '../constants/defaults';
+import type { WizardDraft, LorebookEntry, LorebookPosition, MvuConfig, EjsEntryConfig, LiveStreamChatConfig } from '../constants/defaults';
 import { buildMvuScriptBundle } from './mvu-builder';
 import { migrateStagedDispatcherContent, parseDispatcherContent } from './staged-lorebook-builder';
 
@@ -66,8 +66,11 @@ const SELECTIVE_LOGIC_REVERSE: Record<number, number> = {
 /** Placeholder appended to first_mes and every AI reply for status bar rendering */
 const STATUS_BAR_PLACEHOLDER = '<StatusPlaceHolderImpl/>';
 
+/** Placeholder appended to first_mes for live stream chat panel rendering (independent of MVU) */
+const LIVE_CHAT_PLACEHOLDER = '<LiveStreamChatImpl/>';
+
 /** Default creator notes used when draft.creator_notes is empty */
-const DEFAULT_CREATOR_NOTES = '本卡由「吟游手册」制作。\nhttps://tavern-card-helper.tavern-helper.workers.dev/';
+const DEFAULT_CREATOR_NOTES = '本卡由「吟游手册」制作。\n请尊重创作者的劳动成果，本卡仅供个人娱乐与学习交流使用，严禁任何形式的商业用途、倒卖、转载售卖或未经授权的二次分发。';
 
 /**
  * Escape a value for use as a single-quoted JS string literal embedded in EJS.
@@ -123,11 +126,28 @@ function buildFirstMessage(draft: WizardDraft): string {
     }
   }
 
-  // 追加状态栏占位符（如果尚未存在）
-  if (draft.mvu?.enabled && draft.mvu.statusBarHtml?.trim()) {
+  // 只要状态栏已启用且存在模板/样式选择，就保留占位符；HTML 可在导出前由模板重新生成。
+  const mvuStatusBarActive = draft.mvu?.enabled &&
+    draft.mvu.statusBarStyle !== 'none' &&
+    (draft.mvu.statusBarHtml?.trim() || draft.mvu.statusBarStyle);
+  if (mvuStatusBarActive) {
     if (!result.includes(STATUS_BAR_PLACEHOLDER)) {
       result = result ? `${result}\n${STATUS_BAR_PLACEHOLDER}` : STATUS_BAR_PLACEHOLDER;
     }
+  } else {
+    // 移除残留的状态栏占位符（用户可能先启用又禁用）
+    result = result.split(STATUS_BAR_PLACEHOLDER).map((s) => s.trim()).filter(Boolean).join('\n');
+  }
+
+  // 直播间评论面板占位符：启用时追加，禁用时移除（独立于 MVU，纯正则驱动）
+  const liveChatActive = draft.liveStreamChat?.enabled && draft.liveStreamChat.html?.trim();
+  if (liveChatActive) {
+    if (!result.includes(LIVE_CHAT_PLACEHOLDER)) {
+      result = result ? `${result}\n${LIVE_CHAT_PLACEHOLDER}` : LIVE_CHAT_PLACEHOLDER;
+    }
+  } else {
+    // 移除残留的直播面板占位符
+    result = result.split(LIVE_CHAT_PLACEHOLDER).map((s) => s.trim()).filter(Boolean).join('\n');
   }
 
   return result;
@@ -195,14 +215,17 @@ export function editableLorebookEntries(draft: WizardDraft): LorebookEntry[] {
 }
 
 function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<string, unknown> {
-  if (!draft.mvu?.enabled) return {};
+  // 直播间评论面板独立于 MVU，纯正则驱动：只要任一启用就需要构建扩展
+  const mvuEnabled = Boolean(draft.mvu?.enabled && (draft.mvu.schemaTsContent || (draft.mvu.schemaSections?.length ?? 0) > 0));
+  const liveChatEnabled = Boolean(draft.liveStreamChat?.enabled && draft.liveStreamChat.html?.trim());
+  if (!mvuEnabled && !liveChatEnabled) return {};
 
   const deps: string[] = [];
-  if (draft.mvu.schemaTsContent || draft.mvu.schemaSections.length > 0) {
+  if (mvuEnabled) {
     deps.push('SillyTavern-MVU');
   }
 
-  // ── 酒馆助手脚本注册 ──────────────────────────────────────────────────
+  // ── 酒馆助手脚本注册（仅 MVU）──────────────────────────────────────
   // MVU 主脚本：加载 MagVarUpdate bundle.js，提供变量更新、Zod 校验等功能
   // Zod 脚本：内联的 Zod 4 校验脚本
   // 注意：
@@ -211,7 +234,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
   //   - 每个脚本必须有 name 字段
   const tavernHelperScripts: unknown[] = [];
 
-  if (draft.mvu.schemaTsContent || draft.mvu.schemaSections.length > 0) {
+  if (mvuEnabled && draft.mvu) {
     // MVU 主脚本：从 CDN 加载 MagVarUpdate bundle（与可用卡一致）
     tavernHelperScripts.push({
       type: 'script',
@@ -249,82 +272,125 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
   }
 
   // ── 正则脚本 ──────────────────────────────────────────────────────────
-  // 3 个正则脚本：对 AI 隐藏 / 美化 <update> 变量更新标签
-  // 注意：SillyTavern 要求 regex_scripts 是数组，每个脚本有 scriptName 字段
   const regexScripts: unknown[] = [];
 
-  // 1. 对AI隐藏变量更新 — 移除 <update>...</update> 标签（AI 回复中的变量更新指令）
-  regexScripts.push({
-    id: 'aa12731a-97c4-4450-ac2f-0bfe1d6a4f64',
-    scriptName: '对AI隐藏变量更新',
-    findRegex: '/<(update(?:variable)?)>(?:(?!.*<\\/\\1>)(?:(?!<\\1>).)*$|(?:(?!<\\1>).)*<\\/\\1?>)/gsi',
-    replaceString: '',
-    trimStrings: [],
-    placement: [1, 2],
-    disabled: false,
-    markdownOnly: false,
-    promptOnly: true,
-    runOnEdit: false,
-    substituteRegex: 0,
-    minDepth: null,
-    maxDepth: null,
-  });
-  // 2. 变量更新中美化 — 未闭合的 <update> 标签美化
-  regexScripts.push({
-    id: 'b9d5f25b-a9d0-41bf-8a69-602d64bbde22',
-    scriptName: '变量更新中美化',
-    findRegex: '/<(update(?:variable)?)>(?!.*<\\/\\1>)\\s*((?:(?!<\\1>).)*)\\s*$/gsi',
-    replaceString: '',
-    trimStrings: [],
-    placement: [1, 2],
-    disabled: false,
-    markdownOnly: true,
-    promptOnly: false,
-    runOnEdit: false,
-    substituteRegex: 0,
-    minDepth: null,
-    maxDepth: null,
-  });
-  // 3. 变量更新美化 — 闭合的 <update>...</update> 标签美化
-  regexScripts.push({
-    id: '92d49340-fe5e-4929-871f-43d110e5ec76',
-    scriptName: '变量更新美化',
-    findRegex: '/<(update(?:variable)?)>\\s*((?:(?!<\\1>).)*)\\s*<\\/\\1>/gsi',
-    replaceString: '',
-    trimStrings: [],
-    placement: [1, 2],
-    disabled: false,
-    markdownOnly: true,
-    promptOnly: false,
-    runOnEdit: false,
-    substituteRegex: 0,
-    minDepth: null,
-    maxDepth: null,
-  });
+  if (mvuEnabled && draft.mvu) {
+    // 3 个正则脚本：对 AI 隐藏 / 美化 <update> 变量更新标签
+    // 注意：SillyTavern 要求 regex_scripts 是数组，每个脚本有 scriptName 字段
 
-  // 4. 状态栏界面 — 把占位符替换为 HTML 状态栏，只在界面显示（promptOnly=false, markdownOnly=true）
-  // 使用 SillyTavern 内置的 {{format_message_variable::}} 宏直接读取 stat_data 值
-  // （与可用卡「银帷骑士团」方案一致，不依赖 MVU InitVar 或 JS 渲染脚本）
-  if (draft.mvu.statusBarHtml && draft.mvu.statusBarHtml.trim()) {
-    const cleanHtml = draft.mvu.statusBarHtml
-      .replace(/^@@render_after\s*\n?/m, '')
-      .replace(/\n/g, '')
-      // 兼容旧版 AI 生成的 EJS getvar → SillyTavern 内置 format_message_variable 宏
-      .replace(/<%-\s*getvar\('stat_data\.([^']+)',\s*\{\s*defaults:\s*[^}]+\s*\}\)\s*%>/g, '{{format_message_variable::stat_data.$1}}')
-      .replace(/<%-\s*getvar\('stat_data\.([^']+)'\)\s*%>/g, '{{format_message_variable::stat_data.$1}}')
-      // {{getvar::}} → {{format_message_variable::}}（AI 可能生成 getvar 宏）
-      .replace(/\{\{getvar::(stat_data\.[^}]+)\}\}/g, '{{format_message_variable::$1}}')
-      // 旧版写卡站自定义 __MVU_VAR::...__ 标记 → ST 内置 format_message_variable 宏
-      .replace(/__MVU_VAR::(stat_data\.[^_]+)__/g, '{{format_message_variable::$1}}')
-      // CSS 中的 calc(... * 1%) 替换为直接使用宏输出的百分比
-      .replace(/width:\s*max\s*\(\s*0%\s*,\s*calc\s*\(\s*\{\{format_message_variable::([^}]+)\}\}\s*\*\s*1%\s*\)\s*\)/gi, 'width:{{format_message_variable::$1}}%');
-    // 注意：状态栏的 findRegex 必须用纯字符串（非 /.../gi 正则），
-    // 与参考卡「银帷骑士团」一致。SillyTavern 对纯字符串做字面替换。
+    // 1. 对AI隐藏变量更新 — 移除 <update>...</update> 标签（AI 回复中的变量更新指令）
     regexScripts.push({
-      id: 'c5e7a8d9-1234-4a5b-9c6d-7e8f9a0b1c2d',
-      scriptName: '状态栏界面',
-      findRegex: '<StatusPlaceHolderImpl/>',
-      replaceString: cleanHtml,
+      id: 'aa12731a-97c4-4450-ac2f-0bfe1d6a4f64',
+      scriptName: '对AI隐藏变量更新',
+      findRegex: '/<(update(?:variable)?)>(?:(?!.*<\\/\\1>)(?:(?!<\\1>).)*$|(?:(?!<\\1>).)*<\\/\\1?>)/gsi',
+      replaceString: '',
+      trimStrings: [],
+      placement: [1, 2],
+      disabled: false,
+      markdownOnly: false,
+      promptOnly: true,
+      runOnEdit: false,
+      substituteRegex: 0,
+      minDepth: null,
+      maxDepth: null,
+    });
+    // 2. 变量更新中美化 — 未闭合的 <update> 标签美化
+    regexScripts.push({
+      id: 'b9d5f25b-a9d0-41bf-8a69-602d64bbde22',
+      scriptName: '变量更新中美化',
+      findRegex: '/<(update(?:variable)?)>(?!.*<\\/\\1>)\\s*((?:(?!<\\1>).)*)\\s*$/gsi',
+      replaceString: '',
+      trimStrings: [],
+      placement: [1, 2],
+      disabled: false,
+      markdownOnly: true,
+      promptOnly: false,
+      runOnEdit: false,
+      substituteRegex: 0,
+      minDepth: null,
+      maxDepth: null,
+    });
+    // 3. 变量更新美化 — 闭合的 <update>...</update> 标签美化
+    regexScripts.push({
+      id: '92d49340-fe5e-4929-871f-43d110e5ec76',
+      scriptName: '变量更新美化',
+      findRegex: '/<(update(?:variable)?)>\\s*((?:(?!<\\1>).)*)\\s*<\\/\\1>/gsi',
+      replaceString: '',
+      trimStrings: [],
+      placement: [1, 2],
+      disabled: false,
+      markdownOnly: true,
+      promptOnly: false,
+      runOnEdit: false,
+      substituteRegex: 0,
+      minDepth: null,
+      maxDepth: null,
+    });
+
+    // 4. 状态栏界面 — 把占位符替换为 HTML 状态栏，只在界面显示（promptOnly=false, markdownOnly=true）
+    // 使用 SillyTavern 内置的 {{format_message_variable::}} 宏直接读取 stat_data 值
+    // （与可用卡「银帷骑士团」方案一致，不依赖 MVU InitVar 或 JS 渲染脚本）
+    if (draft.mvu.statusBarHtml && draft.mvu.statusBarHtml.trim()) {
+      const cleanHtml = draft.mvu.statusBarHtml
+        .replace(/^@@render_after\s*\n?/m, '')
+        .replace(/\n/g, '')
+        // 兼容旧版 AI 生成的 EJS getvar（单双引号）→ SillyTavern 内置 format_message_variable 宏
+        .replace(/<%-\s*getvar\(\s*(['"])stat_data\.([^'"]+)\1\s*,\s*\{\s*defaults:\s*[^}]+\}\s*\)\s*%>/g, '{{format_message_variable::stat_data.$2}}')
+        .replace(/<%-\s*getvar\(\s*(['"])stat_data\.([^'"]+)\1\s*\)\s*%>/g, '{{format_message_variable::stat_data.$2}}')
+        // {{getvar::}} → {{format_message_variable::}}（AI 可能生成 getvar 宏）
+        .replace(/\{\{getvar::(stat_data\.[^}]+)\}\}/g, '{{format_message_variable::$1}}')
+        // 旧版写卡站自定义 __MVU_VAR::...__ 标记 → ST 内置 format_message_variable 宏
+        .replace(/__MVU_VAR::(stat_data\.[^_]+)__/g, '{{format_message_variable::$1}}')
+        // CSS 中的 calc(... * 1%) 替换为直接使用宏输出的百分比
+        .replace(/width:\s*max\s*\(\s*0%\s*,\s*calc\s*\(\s*\{\{format_message_variable::([^}]+)\}\}\s*\*\s*1%\s*\)\s*\)/gi, 'width:{{format_message_variable::$1}}%');
+      // 注意：状态栏的 findRegex 必须用纯字符串（非 /.../gi 正则），
+      // 与参考卡「银帷骑士团」一致。SillyTavern 对纯字符串做字面替换。
+      regexScripts.push({
+        id: 'c5e7a8d9-1234-4a5b-9c6d-7e8f9a0b1c2d',
+        scriptName: '状态栏界面',
+        findRegex: '<StatusPlaceHolderImpl/>',
+        replaceString: cleanHtml,
+        trimStrings: [],
+        placement: [2],
+        disabled: false,
+        markdownOnly: true,
+        promptOnly: false,
+        runOnEdit: true,
+        substituteRegex: 0,
+        minDepth: null,
+        maxDepth: null,
+      });
+
+      // 5. 对AI隐藏状态栏 — 把占位符从 AI prompt 中删除
+      regexScripts.push({
+        id: 'd6f8b9e0-2345-4b6c-ad7e-8f9a0b1c2d3e',
+        scriptName: '对AI隐藏状态栏',
+        findRegex: '<StatusPlaceHolderImpl/>',
+        replaceString: '',
+        trimStrings: [],
+        placement: [2],
+        disabled: false,
+        markdownOnly: false,
+        promptOnly: true,
+        runOnEdit: true,
+        substituteRegex: 0,
+        minDepth: null,
+        maxDepth: null,
+      });
+    }
+  }
+
+  // ── 直播间评论面板正则脚本（独立于 MVU，纯正则驱动）─────────────────
+  // 2 个正则脚本：把 <LiveStreamChatImpl/> 占位符替换为面板 HTML（界面显示），
+  // 并从 AI prompt 中移除占位符。
+  if (liveChatEnabled && draft.liveStreamChat) {
+    const liveChatHtml = draft.liveStreamChat.html;
+    // 直播间界面 — 替换占位符为面板 HTML（仅界面显示，AI 不可见）
+    regexScripts.push({
+      id: 'e1a2b3c4-5678-9abc-def0-1234567890ab',
+      scriptName: '直播间界面',
+      findRegex: LIVE_CHAT_PLACEHOLDER,
+      replaceString: liveChatHtml,
       trimStrings: [],
       placement: [2],
       disabled: false,
@@ -335,12 +401,11 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
       minDepth: null,
       maxDepth: null,
     });
-
-    // 5. 对AI隐藏状态栏 — 把占位符从 AI prompt 中删除
+    // 对AI隐藏直播间 — 把占位符从 AI prompt 中删除
     regexScripts.push({
-      id: 'd6f8b9e0-2345-4b6c-ad7e-8f9a0b1c2d3e',
-      scriptName: '对AI隐藏状态栏',
-      findRegex: '<StatusPlaceHolderImpl/>',
+      id: 'f2b3c4d5-6789-abcd-ef01-2345678901bc',
+      scriptName: '对AI隐藏直播间',
+      findRegex: LIVE_CHAT_PLACEHOLDER,
       replaceString: '',
       trimStrings: [],
       placement: [2],
@@ -354,17 +419,37 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
     });
   }
 
-  return {
-    mvu_enabled: true,
-    mvu_dependencies: deps,
-    mvu_schema_sections: draft.mvu.schemaSections.length,
-    mvu_has_status_bar: Boolean(draft.mvu.statusBarHtml),
-    mvu_has_ejs_preprocess: Boolean(draft.mvu.ejsPreprocessContent),
+  const result: Record<string, unknown> = {};
+
+  if (mvuEnabled && draft.mvu) {
+    result.mvu_enabled = true;
+    result.mvu_dependencies = deps;
+    result.mvu_schema_sections = draft.mvu.schemaSections.length;
+    result.mvu_has_status_bar = Boolean(draft.mvu.statusBarHtml);
+    result.mvu_has_ejs_preprocess = Boolean(draft.mvu.ejsPreprocessContent);
     // 酒馆助手脚本注册
-    tavern_helper: tavernHelperScripts.length > 0 ? { scripts: tavernHelperScripts, variables: {} } : undefined,
-    // 正则脚本
-    regex_scripts: regexScripts.length > 0 ? regexScripts : undefined,
-  };
+    if (tavernHelperScripts.length > 0) {
+      result.tavern_helper = { scripts: tavernHelperScripts, variables: {} };
+    }
+  }
+
+  // 正则脚本（MVU + 直播间面板合并）
+  if (regexScripts.length > 0) {
+    result.regex_scripts = regexScripts;
+  }
+
+  // 直播间评论面板配置元数据（用于导入时恢复完整配置，不依赖从 HTML 反解析）
+  if (liveChatEnabled && draft.liveStreamChat) {
+    result.live_stream_chat = {
+      enabled: true,
+      themeId: draft.liveStreamChat.themeId || 'terminal',
+      title: draft.liveStreamChat.title || '直播间',
+      maxVisible: draft.liveStreamChat.maxVisible ?? 10,
+      initialComments: (draft.liveStreamChat.initialComments ?? []).filter((s) => s.trim()),
+    };
+  }
+
+  return result;
 }
 
 /**
@@ -927,6 +1012,36 @@ function reconstructMvuConfig(
     updateRulesYamlContent,
     statusBarHtml,
     statusBarStyle: (ext.mvu_has_status_bar ? 'minimal-dark' : ''),
+    statusBarOptions: {}, // Options are not recoverable from exported HTML; reset to defaults
+  };
+}
+
+/**
+ * Reconstruct live stream chat config from saved card data.
+ * Independent of MVU — looks for the '直播间界面' regex script in extensions.
+ * Reads config metadata from `live_stream_chat` extension field if available;
+ * falls back to defaults for older cards that only have the regex script.
+ */
+function reconstructLiveStreamChat(
+  data: Record<string, unknown>,
+): LiveStreamChatConfig | undefined {
+  const ext = (data.extensions || {}) as Record<string, unknown>;
+  const regexScripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Array<Record<string, unknown>>) : [];
+  const liveChatScript = regexScripts.find((s) => s.scriptName === '直播间界面');
+  if (!liveChatScript) return undefined;
+  const html = (liveChatScript.replaceString as string) || '';
+  if (!html.trim()) return undefined;
+
+  // 从扩展字段读取配置元数据（新版导出包含此字段）
+  const meta = (ext.live_stream_chat ?? {}) as Record<string, unknown>;
+
+  return {
+    enabled: true,
+    html,
+    themeId: (meta.themeId as string) || 'terminal',
+    title: (meta.title as string) || '直播间',
+    maxVisible: (meta.maxVisible as number) ?? 10,
+    initialComments: Array.isArray(meta.initialComments) ? (meta.initialComments as string[]) : [],
   };
 }
 
@@ -1081,6 +1196,8 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
 
     // Reconstruct MVU config from extensions + lorebook entries
     mvu: reconstructMvuConfig(data, rawEntries),
+    // Reconstruct live stream chat config from regex scripts (independent of MVU)
+    liveStreamChat: reconstructLiveStreamChat(data),
     worldRules: '',
     // Shared UI state between Step 2 & Step 4 — start with defaults when loading a card.
     // (These are draft-only UI state, not persisted in the card itself.)

@@ -705,7 +705,7 @@ function buildPlotDispatcherContent(
   lines.push(`<%_ const ${rawVar} = ${rawExpr}; _%>`);
   lines.push(`<%_ const ${valVar} = Array.isArray(${rawVar}) ? ${rawVar}[0] : ${rawVar}; _%>`);
   lines.push(`<%_ if (${valVar} === undefined) { _%>`);
-  lines.push(`<!-- 错误：阶段轴变量"${escapedAxisPath}"未定义，无法加载剧情主线分阶段内容。请在第 5 步启用 MVU 并初始化此变量。 -->`);
+  lines.push(`<!-- 错误：阶段轴变量"${escapedAxisPath}"未定义，无法加载剧情主线分阶段内容。请在第 5 步（分阶段模式）选择剧情模板以初始化此变量。 -->`);
   stages.forEach((stage) => {
     // H12: Use escapeEjsSingleQuoted for fallback condition so a backslash in
     // stage.name can't break out of the single-quoted JS string literal.

@@ -659,3 +659,178 @@ describe('Staged Lorebook Builder — H12 autoCondition backslash+quote injectio
     }
   });
 });
+
+// ── 新增分阶段模板（cultivation/main-plot/corruption/investigation）的排序与调度 ──
+
+describe('Staged Lorebook Builder — 新增非恋爱模板的排序与调度', () => {
+  /** EJS → JS 转换（复用 H7/H9 测试中的实现） */
+  function ejsToJs(ejs: string): string {
+    const tagRe = /(<%_[\s\S]*?_%>|<%=!?[\s\S]*?%>|<%[\s\S]*?%>)/g;
+    const out: string[] = [];
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = tagRe.exec(ejs)) !== null) {
+      const text = ejs.slice(last, m.index);
+      if (text) out.push(`output += ${JSON.stringify(text)};`);
+      const tag = m[1];
+      if (tag.startsWith('<%_')) {
+        out.push(tag.slice(4, -3).trim());
+      } else if (tag.startsWith('<%=')) {
+        const expr = tag.slice(3, tag.endsWith('_%>') ? -3 : -2).trim().replace(/^await\s+/, '');
+        out.push(`output += String(${expr});`);
+      } else {
+        out.push(tag.slice(2, tag.endsWith('_%>') ? -3 : -2).trim());
+      }
+      last = tagRe.lastIndex;
+    }
+    const tail = ejs.slice(last);
+    if (tail) out.push(`output += ${JSON.stringify(tail)};`);
+    return out.join('\n');
+  }
+
+  function renderDispatcher(getvarReturn: unknown, content: string): string {
+    const getvar = () => getvarReturn;
+    const getWorldInfo = (_book: string, comment: string) => `[[${comment}]]`;
+    // eslint-disable-next-line no-new-func
+    const fn = new Function('getvar', 'getWorldInfo', `let output = ''; ${ejsToJs(content)}; return output;`);
+    return fn(getvar, getWorldInfo);
+  }
+
+  // 4 个新模板的 fixtures（与 staged-templates.ts 中的定义一致）
+  const newTemplateFixtures = [
+    {
+      name: '修仙境界 (cultivation)',
+      axisPath: '境界.修为',
+      dispatcherName: '主角分阶段人设',
+      stages: [
+        { name: '炼气', condition: '>= 0' },
+        { name: '筑基', condition: '>= 15' },
+        { name: '金丹', condition: '>= 35' },
+        { name: '元婴', condition: '>= 55' },
+        { name: '化神', condition: '>= 75' },
+        { name: '炼虚', condition: '>= 90' },
+        { name: '大乘', condition: '>= 100' },
+      ],
+    },
+    {
+      name: '主线推进 (main-plot)',
+      axisPath: '剧情.进度',
+      dispatcherName: '主角分阶段人设',
+      stages: [
+        { name: '序章', condition: '>= 0' },
+        { name: '起步', condition: '>= 20' },
+        { name: '发展', condition: '>= 40' },
+        { name: '转折', condition: '>= 65' },
+        { name: '高潮', condition: '>= 85' },
+        { name: '终章', condition: '>= 100' },
+      ],
+    },
+    {
+      name: '心智污染 (corruption)',
+      axisPath: '心智.污染度',
+      dispatcherName: '主角分阶段人设',
+      stages: [
+        { name: '正常', condition: '>= 0' },
+        { name: '动摇', condition: '>= 20' },
+        { name: '异常', condition: '>= 40' },
+        { name: '黑化', condition: '>= 65' },
+        { name: '崩溃', condition: '>= 85' },
+        { name: '毁灭', condition: '>= 100' },
+      ],
+    },
+    {
+      name: '案件调查 (investigation)',
+      axisPath: '调查.真相度',
+      dispatcherName: '主角分阶段人设',
+      stages: [
+        { name: '迷雾', condition: '>= 0' },
+        { name: '初步调查', condition: '>= 15' },
+        { name: '线索串联', condition: '>= 35' },
+        { name: '锁定嫌疑人', condition: '>= 55' },
+        { name: '真相浮现', condition: '>= 75' },
+        { name: '破案', condition: '>= 90' },
+        { name: '反转/终局', condition: '>= 100' },
+      ],
+    },
+  ] as const;
+
+  for (const fx of newTemplateFixtures) {
+    describe(`${fx.name}`, () => {
+      // 实际使用时 handleApply 会先 sortStagesByDirection 再构建，此处同步该流程
+      const sortedStages = sortStagesByDirection(
+        fx.stages.map((s) => ({ name: s.name, condition: s.condition })),
+        'number',
+        '>=',
+      );
+      const cfg: StagedLorebookConfig = {
+        axisPath: fx.axisPath,
+        axisType: 'number',
+        numericDirection: '>=',
+        stages: sortedStages,
+        bookName: '测试卡',
+        dispatcherName: fx.dispatcherName,
+      };
+
+      it('>= 方向阶段应按阈值从高到低排序', () => {
+        // 打乱顺序后排序应恢复为从高到低
+        const shuffled = [...fx.stages].reverse().map((s) => ({ name: s.name, condition: s.condition }));
+        const sorted = sortStagesByDirection(shuffled, 'number', '>=');
+        const expectedConditions = fx.stages.map((s) => s.condition).slice().reverse();
+        expect(sorted.map((s) => s.condition)).toEqual(expectedConditions);
+      });
+
+      it('dispatcher 应正确引用该模板的轴路径', () => {
+        const content = buildDispatcherContent(cfg);
+        expect(content).toContain(`getvar('stat_data.${fx.axisPath}')`);
+        // 排序后最高阈值在最前（第一个 else if）
+        const highestStage = fx.stages[fx.stages.length - 1];
+        expect(content).toContain(`} else if (__stagedVal_主角分阶段人设 ${highestStage.condition}) {`);
+      });
+
+      it('调度条目生成正确数量的子阶段', () => {
+        const entries = buildStagedLorebookEntries(cfg);
+        // 1 个 dispatcher + N 个子阶段
+        expect(entries.length).toBe(fx.stages.length + 1);
+        const dispatcher = entries[0];
+        expect(dispatcher.constant).toBe(true);
+        expect(dispatcher.enabled).toBe(true);
+        const children = entries.slice(1);
+        expect(children.every((e) => e.enabled === false)).toBe(true);
+      });
+
+      it('渲染：初始值 0 命中第一阶段，满值命中最高阶段', () => {
+        const content = buildDispatcherContent(cfg);
+        const firstStage = fx.stages[0];        // 最低阈值阶段（fixtures 里从低到高排列）
+        const highestStage = fx.stages[fx.stages.length - 1]; // 最高阈值阶段
+
+        // 初始值 0 → 命中最低阈值阶段（>= 0）
+        expect(renderDispatcher(0, content)).toContain(`主角分阶段人设：${firstStage.name}`);
+        // 满值 100 → 命中最高阈值阶段（>= 100）
+        expect(renderDispatcher(100, content)).toContain(`主角分阶段人设：${highestStage.name}`);
+        // 未定义 → 错误提示
+        expect(renderDispatcher(undefined, content)).toContain('未定义');
+      });
+
+      it('渲染：中间值命中对应阶段', () => {
+        const content = buildDispatcherContent(cfg);
+        // 取中间一个阶段的阈值验证（fx.stages 从低到高排列）
+        const midIdx = Math.floor(fx.stages.length / 2);
+        const midStage = fx.stages[midIdx];
+        const midThreshold = parseInt(midStage.condition.replace(/[^\d-]/g, ''), 10);
+        // 值 = midThreshold 时，更高阈值都不满足，该阈值满足 → 命中该阶段
+        expect(renderDispatcher(midThreshold, content)).toContain(`主角分阶段人设：${midStage.name}`);
+      });
+
+      it('反向解析器能正确提取轴路径和子条目', () => {
+        const content = buildDispatcherContent(cfg);
+        const parsed = parseDispatcherContent(content);
+        expect(parsed).not.toBeNull();
+        expect(parsed!.axisPath).toBe(fx.axisPath);
+        expect(parsed!.bookName).toBe('测试卡');
+        // 第一个和最后一个子条目都应被解析到
+        expect(parsed!.childComments).toContain(`主角分阶段人设：${fx.stages[0].name}`);
+        expect(parsed!.childComments).toContain(`主角分阶段人设：${fx.stages[fx.stages.length - 1].name}`);
+      });
+    });
+  }
+});

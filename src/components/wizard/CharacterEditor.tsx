@@ -29,6 +29,8 @@ interface CharacterEditorProps {
   onDeleteVersion: (versionId: string) => void;
   onSaveVersion: (content: string) => void;
   streamingChunkCallbackRef: StreamingChunkMap;
+  /** 推理模型思考阶段回调映射；编辑器据此显示"思考中"指示 */
+  streamingReasoningCallbackRef?: StreamingChunkMap;
 }
 
 /** Map of character index → streaming chunk callback.
@@ -58,6 +60,7 @@ export function CharacterEditor({
   onDeleteVersion,
   onSaveVersion,
   streamingChunkCallbackRef,
+  streamingReasoningCallbackRef,
 }: CharacterEditorProps) {
   const { t } = useTranslation();
   const [localName, setLocalName] = useState(character.name ?? '');
@@ -68,6 +71,7 @@ export function CharacterEditor({
   const [modifyInstruction, setModifyInstruction] = useState('');
   const [selection, setSelection] = useState<{ text: string; start: number; end: number } | null>(null);
   const [streamingText, setStreamingText] = useState('');
+  const [isThinking, setIsThinking] = useState(false);
   const descTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const streamPreviewRef = useRef<HTMLDivElement | null>(null);
 
@@ -84,6 +88,7 @@ export function CharacterEditor({
   useEffect(() => {
     const map = streamingChunkCallbackRef.current;
     map.set(index, (_chunk: string, fullText: string) => {
+      setIsThinking(false); // 正文开始输出，思考阶段结束
       pendingChunkRef.current = fullText;
       if (!rafPendingRef.current) {
         rafPendingRef.current = true;
@@ -92,6 +97,14 @@ export function CharacterEditor({
     });
     return () => { map.delete(index); };
   }, [index, flushChunks, streamingChunkCallbackRef]);
+
+  // Register reasoning handler: mark "thinking" while the model reasons (no content yet).
+  useEffect(() => {
+    if (!streamingReasoningCallbackRef) return;
+    const map = streamingReasoningCallbackRef.current;
+    map.set(index, () => { setIsThinking(true); });
+    return () => { map.delete(index); };
+  }, [index, streamingReasoningCallbackRef]);
 
   const wrappedOnGenerate = useCallback(() => {
     pendingChunkRef.current = '';
@@ -105,6 +118,7 @@ export function CharacterEditor({
   useEffect(() => {
     pendingChunkRef.current = '';
     setStreamingText('');
+    setIsThinking(false);
   }, [isGenerating]);
 
   useEffect(() => {
@@ -325,7 +339,9 @@ export function CharacterEditor({
                 {streamingText}
               </pre>
             ) : (
-              <p className="text-[11px] italic" style={{ color: faintText }}>{t('characterEditor.streamingWaiting')}</p>
+              <p className="text-[11px] italic" style={{ color: faintText }}>
+                {isThinking ? t('characterEditor.streamingThinking') : t('characterEditor.streamingWaiting')}
+              </p>
             )}
           </div>
           <p className="text-[10px] mt-2" style={{ color: faintText }}>{t('characterEditor.streamingHint')}</p>

@@ -1,2119 +1,511 @@
 /**
- * StepMvuVariables - MVU (Model-View-Update) variable system editor.
+ * StepMvuVariables — MVU 变量系统步骤（向导第 5 步）
  *
- * Dual mode:
- *   - 大神模式 (expert): Full manual schema/update-rules/EJS editor
- *   - 小白模式 (beginner): Preset templates + AI generation + status bar preview
+ * MVU（变量追踪系统）三段式架构：
+ *   - Model（模型）：在此定义变量 schema（含技能/功法等游戏元素）
+ *   - View（视图）：状态栏模板（分阶段模式步骤配置）展示这些变量
+ *   - Update（更新）：更新规则 + MVU 运行时让 AI 在聊天中追踪更新变量
  *
- * Auto-sync: 当 schemaSections / updateRules / ejsConfigs 发生变化时，
- *   自动重新生成 schemaTsContent / initvarYamlContent / updateRulesYamlContent / ejsPreprocessContent，
- *   不再需要手动点"重新生成"按钮，避免导出时 MVU 块被静默跳过。
+ * 本步骤与「分阶段模式」并存且都可选：此处定义的变量会与分阶段模板的变量合并。
  */
-import { useState, useCallback, useMemo } from 'react';
-import { useDebouncedEffect } from '../../hooks/useDebouncedEffect';
+import { useState, useEffect, useRef } from 'react';
 import { Button } from '../shared/Button';
-import { useToast } from '../shared/Toast';
 import { TextInput } from '../shared/TextInput';
 import { TextArea } from '../shared/TextArea';
-import { useTranslation } from '../../i18n/I18nContext';
-import { FileText, Check, Code2, Download, Upload, Trash2, Sparkles, Wand2, AlertTriangle, ChevronDown, ChevronUp, X, Settings, Eye, RefreshCw } from 'lucide-react';
-import { useAIGenerate } from '../../hooks/useAIGenerate';
-import { MVU_BEGINNER_GENERATE_PROMPT } from '../../constants/prompts';
-import { MultiCharTemplateModal } from './MultiCharTemplateModal';
-import {
-  buildSchemaTs,
-  buildInitvarYaml,
-  buildUpdateRulesYaml,
-  buildEjsPreprocess,
-  buildZodTxt,
-  parseRangeString,
-} from '../../services/mvu-builder';
-import {
-  STATUS_BAR_TEMPLATES,
-  generateStatusBarHtml,
-  buildStatusBarAIPrompt,
-  buildStatusBarModifyAIPrompt,
-  generateStatusBarFromAiConfig,
-} from '../../services/status-bar-templates';
-import type {
-  MvuConfig,
-  MvuSchemaSection,
-  MvuVariable,
-  MvuUpdateRule,
-  MvuPrefix,
-  EjsEntryConfig,
-  LorebookEntry,
-} from '../../constants/defaults';
+import type { MvuConfig, MvuSchemaSection, MvuVariable, MvuUpdateRule, MvuPrefix } from '../../constants/defaults';
+import { createEmptyMvuConfig } from '../../constants/defaults';
+import { buildSchemaTs, buildInitvarYaml, buildUpdateRulesYaml, buildEjsPreprocess } from '../../services/mvu-builder';
+import { BeginnerModePanel } from './BeginnerModePanel';
 
-import { BEGINNER_TEMPLATES, EXPERT_TEMPLATES, VARIABLE_PRESETS, CHECK_RULE_PRESETS, type ExpertTemplate, type VariablePreset } from './mvu-templates';
-import { ZOD_TYPE_PRESETS, PREFIX_OPTIONS, EJS_COMPLEXITY_OPTIONS, createEmptyEjsConfig, validateImportedConfig, buildGenerateRulesPrompt, buildGenerateEjsPrompt, applyTemplate } from './mvu-helpers';
+// ════════════════════════════════════════════════════════════════════════════
+// 游戏元素模型（技能 / 功法）—— 映射为 MVU record 变量
+// ════════════════════════════════════════════════════════════════════════════
 
-// ── Helper functions ────────────────────────────────────────────────────────
-
-function createEmptyVariable(): MvuVariable {
-  return { path: '', zodType: 'z.string()', description: '', prefix: '', initialValue: '' };
+interface GameElement {
+  name: string;
+  icon: string;
+  level: string;
+  description: string;
 }
 
-function createEmptyUpdateRule(): MvuUpdateRule {
-  return { path: '', type: '', range: '', check: [] };
+interface GameElementCategory {
+  key: '技能' | '功法';
+  label: string;
+  icon: string;
+  levelLabel: string;
+  sectionName: string;
+  varPath: string;
+  zodType: string;
 }
 
-/** 根据 zodType 推断 update rule 的 type */
-function inferVariableType(zodType: string): string {
-  if (zodType === 'z.coerce.number()') return 'number';
-  if (zodType === 'z.boolean()' || zodType === 'z.boolean') return 'boolean';
-  if (zodType.startsWith('z.enum(')) return 'string';
-  if (zodType.startsWith('z.array(')) return 'array';
-  if (zodType.startsWith('z.union(')) return 'string';
-  if (zodType.startsWith('z.object(')) return 'object';
-  if (zodType.startsWith('z.record(')) return 'record';
-  return 'string';
+const GAME_ELEMENT_CATEGORIES: GameElementCategory[] = [
+  {
+    key: '技能', label: '技能', icon: '⚔️', levelLabel: '等级/熟练度',
+    sectionName: '技能', varPath: '技能.列表',
+    zodType: 'z.record(z.string(), z.object({图标: z.string(), 等级: z.string(), 描述: z.string()}))',
+  },
+  {
+    key: '功法', label: '功法', icon: '📿', levelLabel: '境界/层数',
+    sectionName: '功法', varPath: '功法.列表',
+    zodType: 'z.record(z.string(), z.object({图标: z.string(), 等级: z.string(), 描述: z.string()}))',
+  },
+];
+
+function recordToElements(rec: unknown): GameElement[] {
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return [];
+  return Object.entries(rec as Record<string, unknown>).map(([name, v]) => {
+    const obj = (v && typeof v === 'object') ? v as Record<string, unknown> : {};
+    return { name, icon: String(obj['图标'] ?? ''), level: String(obj['等级'] ?? ''), description: String(obj['描述'] ?? '') };
+  });
 }
 
-// ── Component ───────────────────────────────────────────────────────────────
+function elementsToRecord(elements: GameElement[]): Record<string, { 图标: string; 等级: string; 描述: string }> {
+  const rec: Record<string, { 图标: string; 等级: string; 描述: string }> = {};
+  for (const e of elements) {
+    const name = e.name.trim();
+    if (name) rec[name] = { 图标: e.icon, 等级: e.level, 描述: e.description };
+  }
+  return rec;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 变量类型选项
+// ════════════════════════════════════════════════════════════════════════════
+
+const VAR_TYPE_OPTIONS = [
+  { value: 'z.string()', label: '字符串' },
+  { value: 'z.coerce.number()', label: '数值' },
+  { value: 'z.enum()', label: '枚举' },
+  { value: 'z.boolean()', label: '布尔' },
+  { value: 'z.record()', label: '记录/列表' },
+  { value: 'z.array()', label: '数组' },
+];
+
+function normalizeZodType(zodType: string): string {
+  if (zodType.startsWith('z.enum(')) return 'z.enum()';
+  if (zodType.startsWith('z.record(')) return 'z.record()';
+  if (zodType.startsWith('z.array(')) return 'z.array()';
+  return zodType;
+}
+
+const PREFIX_OPTIONS: { value: MvuPrefix; label: string }[] = [
+  { value: '', label: '可见可更新' },
+  { value: '_', label: '只读' },
+  { value: '$', label: '隐藏' },
+];
+
+// ════════════════════════════════════════════════════════════════════════════
+// 主组件
+// ════════════════════════════════════════════════════════════════════════════
 
 interface StepMvuVariablesProps {
-  mvu: MvuConfig;
-  lorebookEntries: LorebookEntry[];
+  mvu?: MvuConfig;
   onChange: (mvu: MvuConfig) => void;
-  /** Card name + character summaries for AI context */
-  cardName?: string;
-  characterDescriptions?: string;
-  /** 多角色套模板应用阶段轴信息（供步骤6分阶段模式预填充） */
-  onApplyStageAxes?: (axes: Array<{ characterName: string; axisPath: string }>, templateId: string) => void;
+  cardName: string;
 }
 
-export function StepMvuVariables({ mvu, lorebookEntries, onChange, cardName = '', characterDescriptions = '', onApplyStageAxes }: StepMvuVariablesProps) {
-  const { t } = useTranslation();
-  const { addToast } = useToast();
-  const { generateText } = useAIGenerate();
-  const [activeTab, setActiveTab] = useState<'schema' | 'updateRules' | 'ejs' | 'output'>('schema');
-  const [selectedSection, setSelectedSection] = useState(0);
-  const [expandedVars, setExpandedVars] = useState<Set<string>>(new Set());
-  const [aiInput, setAiInput] = useState('');
-  const [aiGenerating, setAiGenerating] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState<string>('');
-  const [statusBarStyle, setStatusBarStyle] = useState(mvu.statusBarStyle || 'minimal-dark');
-  const [statusBarTitle, setStatusBarTitle] = useState('状态栏');
-  const [aiBarGenerating, setAiBarGenerating] = useState(false);
-  const [aiBarStyle, setAiBarStyle] = useState('');
-  const [aiBarModifyInstruction, setAiBarModifyInstruction] = useState('');
-  const [aiBarModifying, setAiBarModifying] = useState(false);
-  const [showBarCode, setShowBarCode] = useState(false);
-  const [bgImageUrl, setBgImageUrl] = useState('');
-  const [tachieImageUrl, setTachieImageUrl] = useState('');
-  const [avatarImageUrl, setAvatarImageUrl] = useState('');
-  const [showMultiCharModal, setShowMultiCharModal] = useState(false);
-  // 大神模式增强状态
-  const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set(mvu.schemaSections.map((_, i) => i)));
-  const [selectedVariables, setSelectedVariables] = useState<Set<string>>(new Set());
-  const [showTemplateMarket, setShowTemplateMarket] = useState(false);
-  const [aiRuleGenerating, setAiRuleGenerating] = useState(false);
-  const [aiEjsGenerating, setAiEjsGenerating] = useState(false);
-  const [selectedEjsEntries, setSelectedEjsEntries] = useState<Set<string>>(new Set());
-  const [draggedVar, setDraggedVar] = useState<{ sectionIdx: number; varIdx: number } | null>(null);
-  const [draggedSection, setDraggedSection] = useState<number | null>(null);
-  const [dragOverSection, setDragOverSection] = useState<number | null>(null);
-  const [dragOverVar, setDragOverVar] = useState<{ sectionIdx: number; varIdx: number } | null>(null);
+const inputCls = 'w-full rounded-lg border border-[var(--input-border)] bg-[var(--color-surface-raised)] px-2.5 py-1.5 text-sm text-[var(--text-color)] focus:border-[var(--color-border-focus)] focus:outline-none';
+const labelCls = 'text-xs font-medium text-[var(--color-text-secondary)] mb-1 block';
+const cardCls = 'rounded-xl border border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] p-3';
 
-  const fieldCls = 'w-full rounded border border-[var(--input-border)] bg-[var(--color-surface-raised)] px-2 py-1 text-sm text-[var(--text-color)]';
-  const labelCls = 'text-xs text-[var(--color-text-secondary)]';
-  const errorCls = 'border-[color-mix(in_srgb,var(--color-status-error)_60%,transparent)] text-[var(--color-status-error)]';
+export function StepMvuVariables({ mvu: mvuProp, onChange, cardName }: StepMvuVariablesProps) {
+  const mvu = mvuProp ?? createEmptyMvuConfig();
+  const [activeTab, setActiveTab] = useState<'variables' | 'elements' | 'rules'>('variables');
 
-  // ── MVU enable toggle ─────────────────────────────────────────────────
-  const toggleMvu = () => {
-    onChange({ ...mvu, enabled: !mvu.enabled });
-  };
-
-  const toggleMode = () => {
-    const newMode = mvu.mode === 'expert' ? 'beginner' : 'expert';
-    onChange({ ...mvu, mode: newMode });
-  };
-
-  // ── Section management ─────────────────────────────────────────────────
-  const addSection = () => {
-    const newSection: MvuSchemaSection = {
-      name: `新分区 ${mvu.schemaSections.length + 1}`,
-      variables: [],
-    };
-    onChange({ ...mvu, schemaSections: [...mvu.schemaSections, newSection] });
-    setSelectedSection(mvu.schemaSections.length);
-  };
-
-  const removeSection = (idx: number) => {
-    onChange({ ...mvu, schemaSections: mvu.schemaSections.filter((_, i) => i !== idx) });
-    if (selectedSection >= mvu.schemaSections.length - 1) {
-      setSelectedSection(Math.max(0, mvu.schemaSections.length - 2));
-    }
-  };
-
-  const updateSection = (idx: number, updates: Partial<MvuSchemaSection>) => {
-    onChange({ ...mvu, schemaSections: mvu.schemaSections.map((s, i) => (i === idx ? { ...s, ...updates } : s)) });
-  };
-
-  const duplicateSection = (idx: number) => {
-    const section = mvu.schemaSections[idx];
-    const cloned: MvuSchemaSection = JSON.parse(JSON.stringify(section));
-    cloned.name = `${cloned.name} 副本`;
-    cloned.variables = cloned.variables.map(v => ({ ...v, path: `${v.path}_副本` }));
-    const nextSections = [...mvu.schemaSections];
-    nextSections.splice(idx + 1, 0, cloned);
-    onChange({ ...mvu, schemaSections: nextSections });
-    setExpandedSections(prev => {
-      const next = new Set(prev);
-      next.add(idx + 1);
-      return next;
-    });
-  };
-
-  const moveSection = (fromIdx: number, toIdx: number) => {
-    if (fromIdx === toIdx) return;
-    const sections = [...mvu.schemaSections];
-    const [moved] = sections.splice(fromIdx, 1);
-    const adjustedTo = toIdx > fromIdx ? toIdx - 1 : toIdx;
-    sections.splice(adjustedTo, 0, moved);
-    onChange({ ...mvu, schemaSections: sections });
-    setSelectedSection(adjustedTo);
-  };
-
-  const toggleSectionExpanded = (idx: number) => {
-    setExpandedSections(prev => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx); else next.add(idx);
-      return next;
-    });
-  };
-
-  // ── Variable management ────────────────────────────────────────────────
-  const addVariable = (sectionIdx: number) => {
-    const v = createEmptyVariable();
-    const section = mvu.schemaSections[sectionIdx];
-    v.path = `${section.name}.新变量`;
-    updateSection(sectionIdx, { variables: [...section.variables, v] });
-    setExpandedVars(prev => new Set([...prev, v.path]));
-  };
-
-  const duplicateVariable = (sectionIdx: number, varIdx: number) => {
-    const section = mvu.schemaSections[sectionIdx];
-    const v = section.variables[varIdx];
-    const cloned: MvuVariable = JSON.parse(JSON.stringify(v));
-    cloned.path = `${cloned.path}_副本`;
-    const nextVars = [...section.variables];
-    nextVars.splice(varIdx + 1, 0, cloned);
-    updateSection(sectionIdx, { variables: nextVars });
-    setExpandedVars(prev => new Set([...prev, cloned.path]));
-  };
-
-  const removeVariable = (sectionIdx: number, varIdx: number) => {
-    const section = mvu.schemaSections[sectionIdx];
-    updateSection(sectionIdx, { variables: section.variables.filter((_, i) => i !== varIdx) });
-  };
-
-  const moveVariable = (fromSectionIdx: number, fromVarIdx: number, toSectionIdx: number, toVarIdx: number) => {
-    if (fromSectionIdx === toSectionIdx && fromVarIdx === toVarIdx) return;
-    const sections = JSON.parse(JSON.stringify(mvu.schemaSections)) as MvuSchemaSection[];
-    const [moved] = sections[fromSectionIdx].variables.splice(fromVarIdx, 1);
-    const adjustedTo = toVarIdx > fromVarIdx && fromSectionIdx === toSectionIdx ? toVarIdx - 1 : toVarIdx;
-    sections[toSectionIdx].variables.splice(adjustedTo, 0, moved);
-    onChange({ ...mvu, schemaSections: sections });
-  };
-
-  const updateVariable = (sectionIdx: number, varIdx: number, updates: Partial<MvuVariable>) => {
-    const section = mvu.schemaSections[sectionIdx];
-    const oldPath = section.variables[varIdx].path;
-    const newPath = updates.path ?? oldPath;
-    updateSection(sectionIdx, { variables: section.variables.map((v, i) => (i === varIdx ? { ...v, ...updates } : v)) });
-    // 同步更新展开状态 key，避免修改变量路径时卡片自动折叠
-    if (updates.path !== undefined && oldPath !== newPath && expandedVars.has(oldPath)) {
-      setExpandedVars((prev) => {
-        const next = new Set(prev);
-        next.delete(oldPath);
-        next.add(newPath);
-        return next;
-      });
-    }
-  };
-
-  const toggleExpanded = (path: string) => {
-    setExpandedVars(prev => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path); else next.add(path);
-      return next;
-    });
-  };
-
-  // ── Update rule management ─────────────────────────────────────────────
-  const addUpdateRule = () => { onChange({ ...mvu, updateRules: [...mvu.updateRules, createEmptyUpdateRule()] }); };
-  const removeUpdateRule = (idx: number) => { onChange({ ...mvu, updateRules: mvu.updateRules.filter((_, i) => i !== idx) }); };
-  const updateUpdateRule = (idx: number, updates: Partial<MvuUpdateRule>) => {
-    onChange({ ...mvu, updateRules: mvu.updateRules.map((r, i) => (i === idx ? { ...r, ...updates } : r)) });
-  };
-  const addCheckRule = (idx: number) => {
-    const rule = mvu.updateRules[idx];
-    updateUpdateRule(idx, { check: [...(rule.check || []), ''] });
-  };
-  const updateCheckRule = (ruleIdx: number, checkIdx: number, value: string) => {
-    const rule = mvu.updateRules[ruleIdx];
-    const newCheck = [...(rule.check || [])]; newCheck[checkIdx] = value;
-    updateUpdateRule(ruleIdx, { check: newCheck });
-  };
-  const removeCheckRule = (ruleIdx: number, checkIdx: number) => {
-    const rule = mvu.updateRules[ruleIdx];
-    updateUpdateRule(ruleIdx, { check: (rule.check || []).filter((_, i) => i !== checkIdx) });
-  };
-
-  // ── Batch variable operations ──────────────────────────────────────────
-  const batchDeleteVariables = () => {
-    if (selectedVariables.size === 0) return;
-    const nextSections = mvu.schemaSections.map(s => ({
-      ...s,
-      variables: s.variables.filter(v => !selectedVariables.has(v.path)),
-    }));
-    onChange({ ...mvu, schemaSections: nextSections });
-    setSelectedVariables(new Set());
-    addToast('success', `已删除 ${selectedVariables.size} 个变量`);
-  };
-
-  // ── Import / Export MVU config ─────────────────────────────────────────
-  const exportMvuConfig = () => {
-    const payload = {
-      schemaSections: mvu.schemaSections,
-      updateRules: mvu.updateRules,
-      ejsConfigs: mvu.ejsConfigs,
-      ejsPreprocessContent: mvu.ejsPreprocessContent,
-      statusBarHtml: mvu.statusBarHtml,
-      statusBarStyle: mvu.statusBarStyle,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `mvu-config-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    addToast('success', 'MVU 配置已导出');
-  };
-
-  const importMvuConfig = async (file: File) => {
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
-      const imported = validateImportedConfig(parsed);
-      if (!imported || (!imported.schemaSections?.length && !imported.updateRules?.length && !imported.ejsConfigs?.length)) {
-        addToast('error', '导入文件不合法或为空');
-        return;
+  // ── schema 自动生成（防抖）──────────────────────────────────
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) { firstRun.current = false; return; }
+    const t = setTimeout(() => {
+      const sections = mvu.schemaSections;
+      const schemaTs = buildSchemaTs(sections);
+      const initvarYaml = buildInitvarYaml(sections);
+      const updateRulesYaml = buildUpdateRulesYaml(mvu.updateRules);
+      const ejsPreprocess = buildEjsPreprocess([], sections);
+      if (
+        schemaTs !== mvu.schemaTsContent || initvarYaml !== mvu.initvarYamlContent ||
+        updateRulesYaml !== mvu.updateRulesYamlContent || ejsPreprocess !== mvu.ejsPreprocessContent
+      ) {
+        onChange({ ...mvu, enabled: true, schemaTsContent: schemaTs, initvarYamlContent: initvarYaml, updateRulesYamlContent: updateRulesYaml, ejsPreprocessContent: ejsPreprocess });
       }
-      const next: MvuConfig = {
-        ...mvu,
-        schemaSections: imported.schemaSections ?? mvu.schemaSections,
-        updateRules: imported.updateRules ?? mvu.updateRules,
-        ejsConfigs: imported.ejsConfigs ?? mvu.ejsConfigs,
-        statusBarHtml: imported.statusBarHtml ?? mvu.statusBarHtml,
-        statusBarStyle: imported.statusBarStyle ?? mvu.statusBarStyle,
-      };
-      onChange(next);
-      setExpandedSections(new Set(next.schemaSections.map((_, i) => i)));
-      addToast('success', 'MVU 配置已导入');
-    } catch (err) {
-      addToast('error', `导入失败: ${err instanceof Error ? err.message : '请检查 JSON 格式'}`);
-    }
-  };
-
-  // ── AI generate update rules ───────────────────────────────────────────
-  const handleAiGenerateRules = async () => {
-    if (mvu.schemaSections.flatMap(s => s.variables).length === 0) {
-      addToast('error', '请先定义变量再生成规则');
-      return;
-    }
-    setAiRuleGenerating(true);
-    try {
-      const prompt = buildGenerateRulesPrompt(mvu.schemaSections, cardName);
-      const result = await generateText(prompt.system, prompt.user);
-      const parsed = JSON.parse(result);
-      const rulesRaw = Array.isArray(parsed.rules) ? parsed.rules : [];
-      const rules: MvuUpdateRule[] = rulesRaw.map((r: Record<string, unknown>) => ({
-        path: String(r.path || ''),
-        type: String(r.type || ''),
-        range: r.range !== undefined ? String(r.range) : undefined,
-        format: r.format !== undefined ? String(r.format) : undefined,
-        value: r.value !== undefined ? String(r.value) : undefined,
-        check: Array.isArray(r.check) ? r.check.map(String) : [],
-      })).filter((r: MvuUpdateRule) => r.path);
-      if (rules.length === 0) {
-        addToast('error', 'AI 没有返回可用规则');
-        return;
-      }
-      onChange({ ...mvu, updateRules: rules });
-      addToast('success', `已生成 ${rules.length} 条更新规则`);
-    } catch (err) {
-      addToast('error', `AI 生成规则失败: ${err instanceof Error ? err.message : '请重试'}`);
-    } finally {
-      setAiRuleGenerating(false);
-    }
-  };
-
-  // ── AI generate EJS configs ────────────────────────────────────────────
-  const handleAiGenerateEjs = async () => {
-    if (selectedEjsEntries.size === 0) {
-      addToast('error', '请先在下方选择要应用 EJS 的世界书条目');
-      return;
-    }
-    if (mvu.schemaSections.flatMap(s => s.variables).length === 0) {
-      addToast('error', '请先定义变量再生成 EJS');
-      return;
-    }
-    setAiEjsGenerating(true);
-    try {
-      const prompt = buildGenerateEjsPrompt(mvu.schemaSections, lorebookEntries, Array.from(selectedEjsEntries), cardName);
-      const result = await generateText(prompt.system, prompt.user);
-      const parsed = JSON.parse(result);
-      const configsRaw = Array.isArray(parsed.ejsConfigs) ? parsed.ejsConfigs : [];
-      const configs: EjsEntryConfig[] = configsRaw.map((c: Record<string, unknown>) => ({
-        entryId: String(c.entryId || ''),
-        complexity: ['显隐', '段落控制', '动态文本', '分阶段调度'].includes(String(c.complexity))
-          ? (String(c.complexity) as EjsEntryConfig['complexity'])
-          : '显隐',
-        condition: String(c.condition || ''),
-        usedVariables: Array.isArray(c.usedVariables) ? c.usedVariables.map(String) : [],
-      })).filter((c: EjsEntryConfig) => c.entryId && selectedEjsEntries.has(c.entryId));
-      if (configs.length === 0) {
-        addToast('error', 'AI 没有返回可用 EJS 配置');
-        return;
-      }
-      const existing = mvu.ejsConfigs.filter(c => !selectedEjsEntries.has(c.entryId));
-      onChange({ ...mvu, ejsConfigs: [...existing, ...configs] });
-      addToast('success', `已生成 ${configs.length} 条 EJS 配置`);
-    } catch (err) {
-      addToast('error', `AI 生成 EJS 失败: ${err instanceof Error ? err.message : '请重试'}`);
-    } finally {
-      setAiEjsGenerating(false);
-    }
-  };
-
-  // ── Apply expert template (append, do not overwrite) ─────────────────────
-  const applyExpertTemplate = (template: ExpertTemplate, overwrite: boolean) => {
-    const clonedSections = JSON.parse(JSON.stringify(template.sections)) as MvuSchemaSection[];
-    const clonedRules = JSON.parse(JSON.stringify(template.updateRules)) as MvuUpdateRule[];
-    let nextSections = overwrite ? clonedSections : [...mvu.schemaSections, ...clonedSections];
-    let nextRules = overwrite ? clonedRules : [...mvu.updateRules, ...clonedRules];
-    if (!overwrite) {
-      // 去重：已有相同路径的变量/规则不再追加
-      const existingPaths = new Set(mvu.schemaSections.flatMap(s => s.variables.map(v => v.path)));
-      nextSections = [...mvu.schemaSections];
-      for (const s of clonedSections) {
-        const newVars = s.variables.filter(v => !existingPaths.has(v.path));
-        if (newVars.length > 0) {
-          const existingSectionIdx = nextSections.findIndex(ns => ns.name === s.name);
-          if (existingSectionIdx >= 0) {
-            nextSections[existingSectionIdx] = { ...nextSections[existingSectionIdx], variables: [...nextSections[existingSectionIdx].variables, ...newVars] };
-          } else {
-            nextSections.push({ ...s, variables: newVars });
-          }
-        }
-      }
-      const existingRulePaths = new Set(mvu.updateRules.map(r => r.path));
-      nextRules = [...mvu.updateRules, ...clonedRules.filter(r => !existingRulePaths.has(r.path))];
-    }
-    onChange({ ...mvu, schemaSections: nextSections, updateRules: nextRules });
-    setExpandedSections(new Set(nextSections.map((_, i) => i)));
-    setShowTemplateMarket(false);
-    addToast('success', `已应用模板「${template.name}」`);
-  };
-
-  // ── EJS config management ──────────────────────────────────────────────
-  const addEjsConfig = () => { onChange({ ...mvu, ejsConfigs: [...mvu.ejsConfigs, createEmptyEjsConfig()] }); };
-  const removeEjsConfig = (idx: number) => { onChange({ ...mvu, ejsConfigs: mvu.ejsConfigs.filter((_, i) => i !== idx) }); };
-  const updateEjsConfig = (idx: number, updates: Partial<EjsEntryConfig>) => {
-    onChange({ ...mvu, ejsConfigs: mvu.ejsConfigs.map((c, i) => (i === idx ? { ...c, ...updates } : c)) });
-  };
-
-  // ── Generate all outputs (manual trigger — kept as fallback) ────────────
-  const generateAll = useCallback(() => {
-    const schemaTs = buildSchemaTs(mvu.schemaSections);
-    const initvarYaml = buildInitvarYaml(mvu.schemaSections);
-    const updateRulesYaml = buildUpdateRulesYaml(mvu.updateRules);
-    const ejsPreprocess = buildEjsPreprocess(mvu.ejsConfigs, mvu.schemaSections);
-    onChange({ ...mvu, schemaTsContent: schemaTs, initvarYamlContent: initvarYaml, updateRulesYamlContent: updateRulesYaml, ejsPreprocessContent: ejsPreprocess });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mvu]);
-
-  // ── Auto-sync: derived content re-generates when source data changes ─────
-  // 消除"忘记点重新生成"导致导出时 MVU 块被跳过的坑。
-  // 每当 schemaSections / updateRules / ejsConfigs 发生变化，自动重新生成
-  // schemaTsContent / initvarYamlContent / updateRulesYamlContent / ejsPreprocessContent。
-  // 性能优化：使用 300ms 防抖，避免每次按键都触发全量重新生成。
-  useDebouncedEffect(() => {
-    const schemaTs = buildSchemaTs(mvu.schemaSections);
-    const initvarYaml = buildInitvarYaml(mvu.schemaSections);
-    const updateRulesYaml = buildUpdateRulesYaml(mvu.updateRules);
-    const ejsPreprocess = buildEjsPreprocess(mvu.ejsConfigs, mvu.schemaSections);
-    // 仅在内容确实发生变化时才触发 onChange，避免循环渲染
-    if (
-      schemaTs !== mvu.schemaTsContent ||
-      initvarYaml !== mvu.initvarYamlContent ||
-      updateRulesYaml !== mvu.updateRulesYamlContent ||
-      ejsPreprocess !== mvu.ejsPreprocessContent
-    ) {
-      onChange({ ...mvu, schemaTsContent: schemaTs, initvarYamlContent: initvarYaml, updateRulesYamlContent: updateRulesYaml, ejsPreprocessContent: ejsPreprocess });
-    }
+    }, 300);
+    return () => clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mvu.schemaSections, mvu.updateRules, mvu.ejsConfigs], 300);
+  }, [mvu.schemaSections, mvu.updateRules]);
 
-  // ── Auto-sync status bar: non-AI-custom 模式下变量变化时自动重生成 ──────
-  useDebouncedEffect(() => {
-    if (mvu.statusBarStyle && mvu.statusBarStyle !== 'ai-custom' && mvu.schemaSections.length > 0) {
-      const html = generateStatusBarHtml(mvu.statusBarStyle, mvu.schemaSections, statusBarTitle);
-      if (html !== mvu.statusBarHtml) {
-        onChange({ ...mvu, statusBarHtml: html });
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mvu.schemaSections, mvu.statusBarStyle], 300);
+  const setSections = (schemaSections: MvuSchemaSection[]) => onChange({ ...mvu, enabled: true, schemaSections });
 
-  // ── Beginner: apply template ───────────────────────────────────────────
-  const handleApplyTemplate = (templateId: string) => {
-    const template = BEGINNER_TEMPLATES.find(t => t.id === templateId);
-    if (!template) return;
-    const cfg = applyTemplate(template);
-    onChange({ ...cfg, mode: 'beginner' });
-    setSelectedTemplate(templateId);
+  // ── 变量分区操作 ────────────────────────────────────────────
+  const addSection = () => setSections([...mvu.schemaSections, { name: `分区${mvu.schemaSections.length + 1}`, variables: [] }]);
+  const removeSection = (idx: number) => setSections(mvu.schemaSections.filter((_, i) => i !== idx));
+  const updateSectionName = (idx: number, name: string) => setSections(mvu.schemaSections.map((s, i) => (i === idx ? { ...s, name } : s)));
+
+  const addVariable = (sIdx: number) => {
+    const v: MvuVariable = { path: `${mvu.schemaSections[sIdx].name}.新变量`, zodType: 'z.string()', description: '', prefix: '', initialValue: '' };
+    setSections(mvu.schemaSections.map((s, i) => (i === sIdx ? { ...s, variables: [...s.variables, v] } : s)));
+  };
+  const updateVariable = (sIdx: number, vIdx: number, patch: Partial<MvuVariable>) => {
+    setSections(mvu.schemaSections.map((s, i) => (i === sIdx ? { ...s, variables: s.variables.map((v, j) => (j === vIdx ? { ...v, ...patch } : v)) } : s)));
+  };
+  const removeVariable = (sIdx: number, vIdx: number) => {
+    setSections(mvu.schemaSections.map((s, i) => (i === sIdx ? { ...s, variables: s.variables.filter((_, j) => j !== vIdx) } : s)));
   };
 
-  // ── Beginner: AI generate ──────────────────────────────────────────────
-  const handleAiGenerate = async () => {
-    setAiGenerating(true);
-    try {
-      const prompt = MVU_BEGINNER_GENERATE_PROMPT(cardName, characterDescriptions, aiInput, mvu.beginnerTemplateId || selectedTemplate);
-      const result = await generateText(prompt.system, prompt.user);
-      // Try to parse AI response as JSON
-      const jsonMatch = result.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+  // ── 更新规则操作 ────────────────────────────────────────────
+  const setRules = (updateRules: MvuUpdateRule[]) => onChange({ ...mvu, enabled: true, updateRules });
+  const addRule = () => setRules([...mvu.updateRules, { path: '', check: [''] }]);
+  const updateRule = (idx: number, patch: Partial<MvuUpdateRule>) => setRules(mvu.updateRules.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  const removeRule = (idx: number) => setRules(mvu.updateRules.filter((_, i) => i !== idx));
 
-        const sectionsRaw = Array.isArray(parsed.sections) ? parsed.sections : [];
-        const sections: MvuSchemaSection[] = (sectionsRaw as Record<string, unknown>[]).map((s: Record<string, unknown>) => ({
-          name: String(s.name || ''),
-          variables: ((s.variables || []) as Record<string, unknown>[]).map((v: Record<string, unknown>) => {
-            const type = String(v.type || 'string');
-            let zodType = 'z.string()';
-            let enumValues: string[] | undefined;
-            let range: { min: number; max: number } | undefined;
-            let initialValue: unknown = v.initialValue ?? '';
-
-            if (type === 'number') {
-              zodType = 'z.coerce.number()';
-              // 优先读取 AI 返回的 rangeMin/rangeMax，退化读取 range 字符串
-              const rm = v.rangeMin != null && v.rangeMax != null
-                ? { min: Number(v.rangeMin), max: Number(v.rangeMax) }
-                : parseRangeString(v.range);
-              range = rm || { min: 0, max: 100 };
-              initialValue = isNaN(Number(initialValue)) ? 0 : Number(initialValue);
-            } else if (type === 'enum') {
-              const ev = Array.isArray(v.enumValues) ? v.enumValues.map(String) : [];
-              enumValues = ev;
-              zodType = ev.length > 0 ? `z.enum(${JSON.stringify(ev)})` : 'z.string()';
-              // initialValue 必须是 enumValues 之一
-              if (ev.length > 0 && !ev.includes(String(initialValue))) {
-                initialValue = ev[0];
-              }
-            }
-            return {
-              path: String(v.path || ''),
-              zodType,
-              description: String(v.description || ''),
-              prefix: '' as MvuPrefix,
-              initialValue,
-              range,
-              enumValues,
-            };
-          }),
-        }));
-
-        const updateRulesRaw = Array.isArray(parsed.updateRules) ? parsed.updateRules : [];
-        const updateRules: MvuUpdateRule[] = (updateRulesRaw as Record<string, unknown>[]).map((r: Record<string, unknown>) => ({
-          path: String(r.path || ''),
-          type: String(r.type || ''),
-          range: String(r.range || ''),
-          check: (r.check as string[] || []),
-        }));
-
-        // 立即生成 schema.ts / initvar.yaml / 更新规则.yaml / EJS 预处理
-        // 否则 schemaTsContent 为空，导出时整个 MVU 块会被跳过
-        const schemaTs = buildSchemaTs(sections);
-        const initvarYaml = buildInitvarYaml(sections);
-        const updateRulesYaml = buildUpdateRulesYaml(updateRules);
-        const ejsPreprocess = buildEjsPreprocess([], sections);
-
-        // 应用 AI 返回的状态栏配置
-        let newStatusBarHtml = mvu.statusBarHtml;
-        let newStatusBarStyle = mvu.statusBarStyle;
-        if (parsed.statusBar) {
-          const sb = parsed.statusBar as Record<string, unknown>;
-          const cfg = generateStatusBarFromAiConfig(sections, {
-            title: String(sb.title || ''),
-            showVariables: Array.isArray(sb.showVariables) ? sb.showVariables.map(String) : [],
-            styleHint: String(sb.styleHint || ''),
-          });
-          newStatusBarHtml = cfg.html;
-          newStatusBarStyle = cfg.templateId;
-          setStatusBarTitle(cfg.title);
-          setStatusBarStyle(cfg.templateId);
-        }
-
-        onChange({
-          ...mvu,
-          schemaSections: sections,
-          updateRules: updateRules,
-          ejsConfigs: [],
-          ejsPreprocessContent: ejsPreprocess,
-          schemaTsContent: schemaTs,
-          initvarYamlContent: initvarYaml,
-          updateRulesYamlContent: updateRulesYaml,
-          statusBarHtml: newStatusBarHtml,
-          statusBarStyle: newStatusBarStyle,
-        });
-        setSelectedTemplate('custom');
-      }
-    } catch (err) {
-      addToast('error', `MVU 生成失败: ${err instanceof Error ? err.message : '请重试'}`);
-    } finally {
-      setAiGenerating(false);
-    }
+  // ── 游戏元素操作（技能/功法 ↔ record 变量）──────────────────
+  const getElements = (cat: GameElementCategory): GameElement[] => {
+    const section = mvu.schemaSections.find(s => s.name === cat.sectionName);
+    const variable = section?.variables.find(v => v.path === cat.varPath);
+    return recordToElements(variable?.initialValue);
   };
-
-  // ── Beginner: quick add variable from presets ──────────────────────────
-  const quickAddVar = (sectionIdx: number, preset: VariablePreset) => {
-    const v: MvuVariable = {
-      path: preset.path,
-      zodType: preset.zodType,
-      description: preset.description,
-      prefix: preset.prefix,
-      initialValue: preset.initialValue,
-      range: preset.range,
-      enumValues: preset.enumValues,
+  const setElements = (cat: GameElementCategory, elements: GameElement[]) => {
+    const record = elementsToRecord(elements);
+    const existingSections = mvu.schemaSections.filter(s => s.name !== cat.sectionName);
+    const existingVars = (mvu.schemaSections.find(s => s.name === cat.sectionName)?.variables ?? []).filter(v => v.path !== cat.varPath);
+    const gameVar: MvuVariable = {
+      path: cat.varPath, zodType: cat.zodType, description: `${cat.label}列表（名称 → 图标/等级/描述）`,
+      prefix: '', initialValue: record,
     };
-    updateSection(sectionIdx, { variables: [...mvu.schemaSections[sectionIdx].variables, v] });
-    setExpandedVars(prev => new Set([...prev, v.path]));
+    const section: MvuSchemaSection = { name: cat.sectionName, variables: [...existingVars, gameVar] };
+    // 保持分区顺序：已存在则原位更新，否则追加
+    const idx = mvu.schemaSections.findIndex(s => s.name === cat.sectionName);
+    let next: MvuSchemaSection[];
+    if (idx >= 0) {
+      next = mvu.schemaSections.map((s, i) => (i === idx ? section : s));
+    } else {
+      next = [...existingSections, section];
+    }
+    setSections(next);
   };
 
-  // ── Real-time validation ───────────────────────────────────────────────
-  const schemaVarPaths = useMemo(() => new Set(mvu.schemaSections.flatMap(s => s.variables.map(v => v.path))), [mvu.schemaSections]);
-  const pathOccurrences = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const s of mvu.schemaSections) {
-      for (const v of s.variables) {
-        map.set(v.path, (map.get(v.path) || 0) + 1);
-      }
-    }
-    return map;
-  }, [mvu.schemaSections]);
-  const invalidRulePaths = useMemo(() => new Set(mvu.updateRules.map(r => r.path).filter(p => p && !schemaVarPaths.has(p))), [mvu.updateRules, schemaVarPaths]);
-  const invalidEjsVarNames = useMemo(() => {
-    const schemaVarNames = new Set(mvu.schemaSections.flatMap(s => s.variables).filter(v => v.prefix !== '$').map(v => v.path.split('.').pop() || v.path));
-    const invalid = new Set<string>();
-    for (const c of mvu.ejsConfigs) {
-      for (const v of c.usedVariables) {
-        if (!schemaVarNames.has(v)) invalid.add(v);
-      }
-    }
-    return invalid;
-  }, [mvu.ejsConfigs, mvu.schemaSections]);
-  const typeMismatchedRules = useMemo(() => {
-    const mismatches: { path: string; ruleType: string; varType: string }[] = [];
-    for (const r of mvu.updateRules) {
-      if (!r.path || !r.type) continue;
-      const v = mvu.schemaSections.flatMap(s => s.variables).find(vv => vv.path === r.path);
-      if (!v) continue;
-      const inferred = inferVariableType(v.zodType);
-      if (r.type !== inferred && !(r.type === 'string' && inferred === 'boolean')) {
-        mismatches.push({ path: r.path, ruleType: r.type, varType: inferred });
-      }
-    }
-    return mismatches;
-  }, [mvu.updateRules, mvu.schemaSections]);
+  const totalVars = mvu.schemaSections.reduce((n, s) => n + s.variables.length, 0);
+  const mode = mvu.mode ?? 'beginner';
 
-  // ── Status bar: generate preview HTML ──────────────────────────────────
-  // Use AI-generated HTML if present, otherwise use template
-  const statusBarHtml = useMemo(() => {
-    // If user has AI-generated or manually edited HTML, use it
-    if (mvu.statusBarHtml) return mvu.statusBarHtml;
-
-    // Otherwise generate from template
-    if (mvu.schemaSections.length === 0 || !statusBarStyle) {
-      return '<p style="color:var(--color-text-muted);font-size:12px;text-align:center;padding:20px">暂无变量，请先选择模板或生成变量</p>';
-    }
-    return generateStatusBarHtml(statusBarStyle, mvu.schemaSections, statusBarTitle);
-  }, [mvu.statusBarHtml, mvu.schemaSections, statusBarStyle, statusBarTitle]);
-
-  // ── Status bar: preview HTML (substitute getvar with initial values) ────
-  const statusBarPreviewHtml = useMemo(() => {
-    let html = statusBarHtml;
-    // Replace getvar macros with initial values for preview
-    const vars = mvu.schemaSections.flatMap(s => s.variables).filter(v => v.prefix !== '$');
-    const varMap = new Map(vars.map(v => [v.path, String(v.initialValue ?? '')]));
-    html = html.replace(/\{\{getvar::stat_data\.([^}]+)\}\}/g, (_match, path) => {
-      return varMap.get(path) ?? '';
-    });
-
-    // Fix layout: force all block-level elements to width:100% except progress bar fills
-    // (AI-generated HTML may have containers with fixed/narrow widths)
-    try {
-      const tmp = document.createElement('div');
-      tmp.innerHTML = html;
-      tmp.querySelectorAll<HTMLElement>('[style]').forEach(el => {
-        const s = el.style;
-        // Skip progress bar fills: they have background + height:100% + small border-radius (3-5px)
-        // Character cards typically have border-radius 8-14px, so threshold at 6px is safe
-        const br = parseFloat(s.borderRadius) || 0;
-        const isProgressBarFill =
-          (s.background || s.backgroundColor || s.backgroundImage) &&
-          s.height === '100%' &&
-          br > 0 && br <= 6;
-        if (isProgressBarFill) return;
-        // Override width to 100% for layout elements
-        if (s.width && s.width !== '100%') {
-          s.width = '100%';
-        }
-        // Remove max-width constraints
-        if (s.maxWidth) {
-          s.maxWidth = 'none';
-        }
-      });
-      html = tmp.innerHTML;
-    } catch { /* ignore */ }
-
-    return html;
-  }, [statusBarHtml, mvu.schemaSections]);
-
-  const statusBarModeLabel = statusBarStyle === 'ai-custom'
-    ? 'AI/手动定制'
-    : '模板同步';
-  const statusBarModeHint = statusBarStyle === 'ai-custom'
-    ? '变量变更不会自动重写状态栏，可手动刷新或重新选择模板。'
-    : '变量变更会自动按当前模板重建状态栏。';
-
-  // ── Status bar: apply template ──────────────────────────────────────────
-  const applyStatusBarTemplate = (templateId: string) => {
-    setStatusBarStyle(templateId);
-    let html = generateStatusBarHtml(templateId, mvu.schemaSections, statusBarTitle);
-    // 如果是visual-novel模板，应用用户填写的图片URL
-    if (templateId === 'visual-novel') {
-      if (bgImageUrl) {
-        html = html.replace(/https:\/\/placehold\.co\/800x400\/ffb6c1\/fff\?background/g, bgImageUrl);
-      }
-      if (tachieImageUrl) {
-        html = html.replace(/https:\/\/placehold\.co\/300x500\/transparent\/fff\?text=立绘/g, tachieImageUrl);
-      }
-      if (avatarImageUrl) {
-        html = html.replace(/https:\/\/placehold\.co\/80x80\/e87a90\/fff\?text=头像/g, avatarImageUrl);
-      }
-    }
-    onChange({ ...mvu, statusBarStyle: templateId, statusBarHtml: html });
-  };
-
-  // ── Status bar: AI generate ─────────────────────────────────────────────
-  const handleAiGenerateStatusBar = async () => {
-    if (mvu.schemaSections.length === 0) {
-      addToast('error', '请先添加 MVU 变量，再生成状态栏');
-      return;
-    }
-    setAiBarGenerating(true);
-    try {
-      const prompt = buildStatusBarAIPrompt(mvu.schemaSections, cardName, aiBarStyle);
-      const result = await generateText(prompt.system, prompt.user);
-      // Clean: remove markdown code fences if present
-      let cleaned = result.trim();
-      if (cleaned.startsWith('```')) {
-        cleaned = cleaned.replace(/^```(?:html)?\n?/, '').replace(/\n?```$/, '');
-      }
-      // 兼容：AI 可能误用 format_message_variable，自动转为正确的 getvar 宏
-      cleaned = cleaned.replace(/\{\{format_message_variable::stat_data\.([^}]+)\}\}/g, '{{getvar::stat_data.$1}}');
-      // Validate: must contain getvar macro
-      if (!cleaned.includes('{{getvar::')) {
-        addToast('error', 'AI 没有保留变量宏，已拒绝应用');
-        return;
-      }
-      onChange({ ...mvu, statusBarHtml: cleaned, statusBarStyle: 'ai-custom' });
-      setStatusBarStyle('ai-custom');
-      addToast('success', '状态栏已生成，可在预览中检查后导出');
-    } catch (err) {
-      addToast('error', err instanceof Error ? err.message : '状态栏生成失败');
-    } finally {
-      setAiBarGenerating(false);
-    }
-  };
-
-  // ── Status bar: AI modify ────────────────────────────────────────────────
-  const handleAiModifyStatusBar = async () => {
-    if (mvu.schemaSections.length === 0) {
-      addToast('error', '请先添加 MVU 变量，再修改状态栏');
-      return;
-    }
-    const currentHtml = mvu.statusBarHtml || statusBarHtml;
-    if (!currentHtml || currentHtml.includes('暂无变量')) {
-      addToast('error', '当前没有可修改的状态栏');
-      return;
-    }
-    setAiBarModifying(true);
-    try {
-      const prompt = buildStatusBarModifyAIPrompt(mvu.schemaSections, cardName, currentHtml, aiBarModifyInstruction);
-      const result = await generateText(prompt.system, prompt.user);
-      // Clean: remove markdown code fences if present
-      let cleaned = result.trim();
-      if (cleaned.startsWith('```')) {
-        cleaned = cleaned.replace(/^```(?:html)?\n?/, '').replace(/\n?```$/, '');
-      }
-      // 兼容：AI 可能误用 format_message_variable，自动转为正确的 getvar 宏
-      cleaned = cleaned.replace(/\{\{format_message_variable::stat_data\.([^}]+)\}\}/g, '{{getvar::stat_data.$1}}');
-      // Validate: must contain getvar macro
-      if (!cleaned.includes('{{getvar::')) {
-        addToast('error', 'AI 没有保留变量宏，已拒绝应用');
-        return;
-      }
-      onChange({ ...mvu, statusBarHtml: cleaned, statusBarStyle: 'ai-custom' });
-      setStatusBarStyle('ai-custom');
-      addToast('success', '状态栏已修改，可在预览中检查后导出');
-    } catch (err) {
-      addToast('error', err instanceof Error ? err.message : '状态栏修改失败');
-    } finally {
-      setAiBarModifying(false);
-    }
-  };
-
-  // ── Status bar: regenerate from template when variables change ──────────
-  const regenerateStatusBar = () => {
-    if (statusBarStyle && statusBarStyle !== 'ai-custom') {
-      let html = generateStatusBarHtml(statusBarStyle, mvu.schemaSections, statusBarTitle);
-      // 如果是visual-novel模板，应用用户填写的图片URL
-      if (statusBarStyle === 'visual-novel') {
-        if (bgImageUrl) {
-          html = html.replace(/https:\/\/placehold\.co\/800x400\/ffb6c1\/fff\?background/g, bgImageUrl);
-        }
-        if (tachieImageUrl) {
-          html = html.replace(/https:\/\/placehold\.co\/300x500\/transparent\/fff\?text=立绘/g, tachieImageUrl);
-        }
-        if (avatarImageUrl) {
-          html = html.replace(/https:\/\/placehold\.co\/80x80\/e87a90\/fff\?text=头像/g, avatarImageUrl);
-        }
-      }
-      onChange({ ...mvu, statusBarHtml: html });
-    }
-  };
-
-  // ── Render: disabled state ─────────────────────────────────────────────
-  if (!mvu.enabled) {
-    return (
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-xl font-bold text-[var(--text-color)]">MVU 变量系统</h2>
-            <p className="text-sm text-[var(--color-text-secondary)] mt-1">基于 tavern-cards MVU 规范，为角色卡定义动态变量追踪系统</p>
-          </div>
+  return (
+    <div className="space-y-4">
+      {/* 头部 */}
+      <div className="mobile-stack-header flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold text-[var(--text-color)]">MVU 变量系统</h2>
+          <p className="text-sm text-[var(--color-text-secondary)] mt-1">
+            定义角色卡追踪的变量（Model），配合状态栏展示（View）与更新规则（Update）。共 {totalVars} 个变量。
+          </p>
         </div>
-        <div className="text-center py-16 border border-dashed border-[var(--color-border-default)] rounded-xl">
-          <p className="text-[var(--color-text-secondary)] mb-4">MVU 变量系统用于追踪角色好感度、场景状态、装备等动态信息</p>
-          <p className="text-sm text-[var(--color-text-muted)] mb-6">启用后可在世界书条目中使用 EJS 条件渲染，开场白也可引用变量初始状态</p>
-          <Button onClick={toggleMvu}>✨ 启用 MVU 变量系统</Button>
-        </div>
+        <Button variant={mvu.enabled ? 'secondary' : 'ghost'} size="sm" onClick={() => onChange({ ...mvu, enabled: !mvu.enabled })}>
+          {mvu.enabled ? '✓ 已启用' : '启用 MVU'}
+        </Button>
       </div>
-    );
-  }
 
-  // ── Render: expert mode ────────────────────────────────────────────────
-  if (mvu.mode === 'expert') {
-    return renderExpertMode();
-  }
+      {/* 模式切换：新手 / 专家 */}
+      <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)] p-1 w-fit">
+        <button
+          onClick={() => onChange({ ...mvu, mode: 'beginner' })}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+            mode === 'beginner'
+              ? 'bg-[var(--color-primary)] text-white shadow-sm'
+              : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+          }`}
+        >
+          🎯 新手模式
+        </button>
+        <button
+          onClick={() => onChange({ ...mvu, mode: 'expert' })}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+            mode === 'expert'
+              ? 'bg-[var(--color-primary)] text-white shadow-sm'
+              : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+          }`}
+        >
+          🔧 专家模式
+        </button>
+      </div>
 
-  // ── Render: beginner mode ──────────────────────────────────────────────
-  return renderBeginnerMode();
+      {/* ── 新手模式 ── */}
+      {mode === 'beginner' && (
+        <BeginnerModePanel mvu={mvu} onChange={onChange} cardName={cardName} />
+      )}
 
-  // ────────────────────────────────────────────────────────────────────────
-  // Expert mode renderer
-  // ────────────────────────────────────────────────────────────────────────
-  // ────────────────────────────────────────────────────────────────────────
-  // Expert mode renderer (optimized UI & mobile-first responsive)
-  // ────────────────────────────────────────────────────────────────────────
-  function renderExpertMode() {
-    const section = mvu.schemaSections[selectedSection];
-
-    /** 切换变量类型时给出合适的默认初始值 */
-    function getInitialValueForType(zodType: string, current: unknown): unknown {
-      if (zodType === 'z.coerce.number()') return typeof current === 'number' ? current : 0;
-      if (zodType === 'z.boolean()' || zodType === 'z.boolean') return typeof current === 'boolean' ? current : false;
-      if (zodType.startsWith('z.enum(')) {
-        const match = zodType.match(/z\.enum\(\[([^\]]+)\]\)/);
-        if (match) {
-          const first = match[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''))[0];
-          return first ?? '';
-        }
-        return '';
-      }
-      if (zodType.startsWith('z.array(')) return Array.isArray(current) ? current : [];
-      if (zodType.startsWith('z.union(')) return current ?? '';
-      if (zodType.startsWith('z.object(') || zodType.startsWith('z.record(')) return (current !== null && typeof current === 'object' && !Array.isArray(current)) ? current : {};
-      return typeof current === 'string' ? current : '';
-    }
-
-    // 大神模式专用样式常量，统一输入框高度、卡片圆角、间距
-    const cardBase = 'rounded-xl border border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)] p-4 shadow-[var(--shadow-sm)] transition-all duration-200';
-    const cardHover = 'hover:border-[color-mix(in_srgb,var(--color-primary)_25%,transparent)] hover:shadow-md';
-    const inputBase = 'w-full rounded-lg border border-[var(--input-border)] bg-[var(--color-surface-raised)] px-3 py-2 text-sm text-[var(--text-color)] min-h-[44px] transition-colors focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[color-mix(in_srgb,var(--color-primary)_18%,transparent)]';
-    const labelBase = 'text-xs font-medium text-[var(--color-text-secondary)] mb-1.5 block';
-    const badgeBase = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium';
-    const chipBase = 'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition-colors select-none min-h-[44px]';
-    const sectionChip = 'group inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm transition-all duration-200 select-none min-h-[44px]';
-    const iconBtn = 'inline-flex items-center justify-center rounded-md p-1.5 text-[var(--color-text-secondary)] hover:bg-[color-mix(in_srgb,var(--color-text-primary)_6%,transparent)] hover:text-[var(--text-color)] transition-colors min-h-[44px] min-w-[44px] disabled:opacity-30 disabled:cursor-not-allowed';
-    const emptyBox = 'flex flex-col items-center justify-center py-10 text-center animate-fade-in';
-
-    const tabs = [
-      { id: 'schema' as const, label: 'Schema', icon: FileText },
-      { id: 'updateRules' as const, label: '更新规则', icon: Check },
-      { id: 'ejs' as const, label: 'EJS', icon: Code2 },
-      { id: 'output' as const, label: '输出', icon: Download },
-    ];
-
-    /** 根据变量类型渲染初始值输入控件 */
-    function renderInitialValueInput(v: MvuVariable, sectionIdx: number, varIdx: number) {
-      if (v.zodType === 'z.boolean()' || v.zodType === 'z.boolean') {
-        return (
-          <select value={String(v.initialValue ?? false)} onChange={(e) => updateVariable(sectionIdx, varIdx, { initialValue: e.target.value === 'true' })} className={inputBase}>
-            <option value="true">true</option>
-            <option value="false">false</option>
-          </select>
-        );
-      }
-      if (v.zodType.startsWith('z.array(')) {
-        return <input value={JSON.stringify(v.initialValue ?? [])} onChange={(e) => { try { const parsed = JSON.parse(e.target.value); if (Array.isArray(parsed)) updateVariable(sectionIdx, varIdx, { initialValue: parsed }); } catch { /* ignore invalid JSON */ } }} placeholder='JSON 数组: ["a", "b"]' className={inputBase} />;
-      }
-      if (v.zodType.startsWith('z.object(') || v.zodType.startsWith('z.record(')) {
-        return <input value={JSON.stringify(v.initialValue ?? {})} onChange={(e) => { try { const parsed = JSON.parse(e.target.value); if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) updateVariable(sectionIdx, varIdx, { initialValue: parsed }); } catch { /* ignore invalid JSON */ } }} placeholder='JSON 对象: {"key": "value"}' className={inputBase} />;
-      }
-      if (v.zodType.startsWith('z.union(')) {
-        return <input value={String(v.initialValue ?? '')} onChange={(e) => updateVariable(sectionIdx, varIdx, { initialValue: e.target.value })} placeholder="字符串或数字" className={inputBase} />;
-      }
-      return <input value={String(v.initialValue ?? '')} onChange={(e) => { let val: unknown = e.target.value; if (v.zodType === 'z.coerce.number()') { const parsed = e.target.value === '' ? 0 : Number(e.target.value); val = Number.isNaN(parsed) ? v.initialValue : parsed; } updateVariable(sectionIdx, varIdx, { initialValue: val }); }} placeholder="0" className={inputBase} />;
-    }
-
-    return (
-      <div className="animate-fade-in space-y-4">
-        {/* 页面标题与全局操作 */}
-        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-bold text-[var(--text-color)]">MVU 变量系统</h2>
-            <p className="text-sm text-[var(--color-text-secondary)] mt-1.5 flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1 rounded-full bg-primary-tint px-2 py-0.5 text-xs text-primary">大神模式</span>
-              <span>schema.ts · initvar.yaml · 更新规则 · EJS 配置</span>
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={exportMvuConfig} title="导出当前 MVU 配置为 JSON">
-              <Download className="w-4 h-4" /> 导出配置
-            </Button>
-            <label className="btn-secondary inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer transition-all duration-200 min-h-[44px]">
-              <Upload className="w-4 h-4" /> 导入配置
-              <input type="file" accept="application/json,.json" className="sr-only" onChange={(e) => { const f = e.target.files?.[0]; if (f) importMvuConfig(f); e.target.value = ''; }} />
-            </label>
-            <Button variant="ghost" size="sm" onClick={toggleMode} title="切换到小白模式">
-              <Settings className="w-4 h-4" /> 切换到小白模式
-            </Button>
-            <Button variant="ghost" size="sm" onClick={toggleMvu}>禁用 MVU</Button>
-          </div>
-        </div>
-
-        {/* 桌面端 Tab 导航 */}
-        <div className="hidden sm:flex items-center gap-1 border-b border-[var(--color-border-default)]">
-          {tabs.map(tab => {
-            const Icon = tab.icon;
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`relative flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-[1px] transition-colors min-h-[44px] ${
-                  active
-                    ? 'border-[var(--color-primary)] text-[var(--color-primary)]'
-                    : 'border-transparent text-[var(--color-text-secondary)] hover:text-[var(--text-color)] hover:bg-[color-mix(in_srgb,var(--color-text-primary)_4%,transparent)]'
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* 移动端 Tab 下拉，避免横向拥挤 */}
-        <div className="flex sm:hidden">
-          <select
-            value={activeTab}
-            onChange={(e) => setActiveTab(e.target.value as typeof activeTab)}
-            className={inputBase}
+      {/* ── 专家模式 ── */}
+      {mode === 'expert' && (<>
+      {/* Tab 切换 */}
+      <div className="flex gap-2 border-b border-[var(--color-border-default)]">
+        {([['variables', '📊 变量分区'], ['elements', '🎮 游戏元素'], ['rules', '📝 更新规则']] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === key
+                ? 'border-[var(--color-primary)] text-[var(--color-primary)]'
+                : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+            }`}
           >
-            {tabs.map(tab => (
-              <option key={tab.id} value={tab.id}>{tab.label}</option>
-            ))}
-          </select>
-        </div>
+            {label}
+          </button>
+        ))}
+      </div>
 
-        {/* Tab 内容区，切换时播放淡入动画 */}
-        <div key={activeTab} className="animate-fade-in">
-          {/* ── Schema Tab ── */}
-          {activeTab === 'schema' && (
-            <div className="space-y-4">
-              {/* 工具栏 */}
-              <div className={`${cardBase} flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3`}>
-                <div className="flex flex-wrap items-center gap-2">
-                  {selectedVariables.size > 0 ? (
-                    <>
-                      <span className="inline-flex items-center gap-1 rounded-full bg-primary-tint px-2 py-1 text-xs text-primary">
-                        已选 {selectedVariables.size} 个变量
-                      </span>
-                      <Button variant="danger" size="sm" onClick={batchDeleteVariables}>
-                        <Trash2 className="w-3.5 h-3.5" /> 批量删除
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setSelectedVariables(new Set())}>取消选择</Button>
-                    </>
-                  ) : (
-                    <span className="text-xs text-[var(--color-text-muted)]">勾选变量后可批量删除</span>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button variant="secondary" size="sm" onClick={() => setShowTemplateMarket(true)}>
-                    <Sparkles className="w-3.5 h-3.5" /> 应用模板
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={addSection}>
-                    <span className="text-base leading-none">+</span> 新分区
-                  </Button>
-                </div>
+      {/* ── Tab 1: 变量分区 ── */}
+      {activeTab === 'variables' && (
+        <div className="space-y-3">
+          {mvu.schemaSections.map((section, sIdx) => (
+            <div key={sIdx} className={cardCls}>
+              <div className="flex items-center gap-2 mb-2">
+                <TextInput value={section.name} onChange={(e) => updateSectionName(sIdx, e.target.value)} className={`${inputCls} max-w-[180px] font-semibold`} />
+                <span className="text-xs text-[var(--color-text-muted)]">{section.variables.length} 个变量</span>
+                <div className="flex-1" />
+                <Button variant="danger" size="sm" onClick={() => removeSection(sIdx)}>删除分区</Button>
               </div>
-
-              {/* 分区标签：桌面端拖拽，移动端上下移动按钮 */}
-              <div className="flex flex-wrap gap-2">
-                {mvu.schemaSections.map((s, i) => {
-                  const active = i === selectedSection;
-                  const expanded = expandedSections.has(i);
-                  const isFirst = i === 0;
-                  const isLast = i === mvu.schemaSections.length - 1;
+              <div className="space-y-2">
+                {section.variables.map((v, vIdx) => {
+                  const typeKey = normalizeZodType(v.zodType);
                   return (
-                    <div
-                      key={i}
-                      draggable
-                      onDragStart={() => setDraggedSection(i)}
-                      onDragOver={(e) => { e.preventDefault(); setDragOverSection(i); }}
-                      onDragLeave={() => setDragOverSection(null)}
-                      onDrop={(e) => { e.preventDefault(); if (draggedSection !== null) moveSection(draggedSection, i); setDraggedSection(null); setDragOverSection(null); }}
-                      className={`${sectionChip} cursor-grab active:cursor-grabbing ${
-                        active
-                          ? 'bg-primary-tint border-primary-tint-light text-[var(--color-primary)]'
-                          : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--input-border)] hover:text-[var(--text-color)]'
-                      } ${dragOverSection === i ? 'ring-2 ring-[var(--color-primary)]' : ''}`}
-                    >
-                      <span className="hidden sm:inline text-[var(--color-text-muted)] select-none">⋮⋮</span>
-                      <button
-                        onClick={() => setSelectedSection(i)}
-                        className="flex items-center gap-1.5 min-w-0"
-                      >
-                        <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
-                        <span className="truncate max-w-[120px] sm:max-w-[180px]">{s.name}</span>
-                        {s.variables.length > 0 && (
-                          <span className="rounded-full bg-[color-mix(in_srgb,var(--color-text-muted)_20%,transparent)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)]">
-                            {s.variables.length}
-                          </span>
-                        )}
-                      </button>
-                      <div className="flex sm:hidden items-center gap-0.5">
-                        <button
-                          className={iconBtn}
-                          disabled={isFirst}
-                          onClick={(e) => { e.stopPropagation(); moveSection(i, i - 1); }}
-                          title="上移"
-                        >
-                          <ChevronUp className="w-4 h-4" />
-                        </button>
-                        <button
-                          className={iconBtn}
-                          disabled={isLast}
-                          onClick={(e) => { e.stopPropagation(); moveSection(i, i + 1); }}
-                          title="下移"
-                        >
-                          <ChevronDown className="w-4 h-4" />
-                        </button>
+                    <div key={vIdx} className="rounded-lg border border-[color-mix(in_srgb,var(--color-border-default)_40%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_30%,transparent)] p-2.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+                        <div className="sm:col-span-4">
+                          <label className={labelCls}>变量路径</label>
+                          <TextInput value={v.path} onChange={(e) => updateVariable(sIdx, vIdx, { path: e.target.value })} className={inputCls} placeholder="角色.好感度" />
+                        </div>
+                        <div className="sm:col-span-3">
+                          <label className={labelCls}>类型</label>
+                          <select
+                            value={typeKey}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const patch: Partial<MvuVariable> = {};
+                              if (val === 'z.coerce.number()') { patch.zodType = 'z.coerce.number()'; patch.range = v.range ?? { min: 0, max: 100 }; patch.initialValue = typeof v.initialValue === 'number' ? v.initialValue : 0; }
+                              else if (val === 'z.enum()') { patch.zodType = 'z.enum(["选项1","选项2"])'; patch.enumValues = v.enumValues ?? ['选项1', '选项2']; patch.initialValue = v.enumValues?.[0] ?? '选项1'; }
+                              else if (val === 'z.boolean()') { patch.zodType = 'z.boolean()'; patch.initialValue = false; }
+                              else if (val === 'z.record()') { patch.zodType = 'z.record(z.string(), z.any())'; patch.initialValue = {}; }
+                              else if (val === 'z.array()') { patch.zodType = 'z.array(z.string())'; patch.initialValue = []; }
+                              else { patch.zodType = 'z.string()'; patch.initialValue = typeof v.initialValue === 'string' ? v.initialValue : ''; }
+                              updateVariable(sIdx, vIdx, patch);
+                            }}
+                            className={inputCls}
+                          >
+                            {VAR_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        </div>
+                        <div className="sm:col-span-3">
+                          <label className={labelCls}>初始值</label>
+                          <TextInput
+                            value={typeof v.initialValue === 'object' ? JSON.stringify(v.initialValue) : String(v.initialValue ?? '')}
+                            onChange={(e) => {
+                              let val: unknown = e.target.value;
+                              if (v.zodType === 'z.coerce.number()') val = e.target.value === '' ? 0 : Number(e.target.value);
+                              else if (v.zodType === 'z.boolean()') val = e.target.value === 'true';
+                              updateVariable(sIdx, vIdx, { initialValue: val });
+                            }}
+                            className={inputCls}
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className={labelCls}>可见性</label>
+                          <select value={v.prefix} onChange={(e) => updateVariable(sIdx, vIdx, { prefix: e.target.value as MvuPrefix })} className={inputCls}>
+                            {PREFIX_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        </div>
                       </div>
-                      <button
-                        className={iconBtn}
-                        onClick={(e) => { e.stopPropagation(); toggleSectionExpanded(i); }}
-                        title={expanded ? '折叠' : '展开'}
-                      >
-                        {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                      </button>
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 mt-2">
+                        <div className="sm:col-span-7">
+                          <label className={labelCls}>描述</label>
+                          <TextInput value={v.description} onChange={(e) => updateVariable(sIdx, vIdx, { description: e.target.value })} className={inputCls} placeholder="变量用途说明" />
+                        </div>
+                        {v.zodType === 'z.coerce.number()' && (
+                          <div className="sm:col-span-3 flex items-end gap-2">
+                            <div className="flex-1">
+                              <label className={labelCls}>最小值</label>
+                              <TextInput value={String(v.range?.min ?? 0)} onChange={(e) => updateVariable(sIdx, vIdx, { range: { min: Number(e.target.value), max: v.range?.max ?? 100 } })} className={inputCls} />
+                            </div>
+                            <div className="flex-1">
+                              <label className={labelCls}>最大值</label>
+                              <TextInput value={String(v.range?.max ?? 100)} onChange={(e) => updateVariable(sIdx, vIdx, { range: { min: v.range?.min ?? 0, max: Number(e.target.value) } })} className={inputCls} />
+                            </div>
+                          </div>
+                        )}
+                        {v.zodType.startsWith('z.enum(') && (
+                          <div className="sm:col-span-3">
+                            <label className={labelCls}>枚举值（逗号分隔）</label>
+                            <TextInput
+                              value={(v.enumValues ?? []).join(',')}
+                              onChange={(e) => {
+                                const values = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+                                updateVariable(sIdx, vIdx, { enumValues: values, zodType: `z.enum(${JSON.stringify(values)})`, initialValue: values.includes(String(v.initialValue)) ? v.initialValue : values[0] ?? '' });
+                              }}
+                              className={inputCls}
+                            />
+                          </div>
+                        )}
+                        <div className="sm:col-span-2 flex items-end">
+                          <Button variant="danger" size="sm" onClick={() => removeVariable(sIdx, vIdx)} className="w-full">删除</Button>
+                        </div>
+                      </div>
                     </div>
                   );
                 })}
+                <Button variant="ghost" size="sm" onClick={() => addVariable(sIdx)}>+ 添加变量</Button>
               </div>
-
-              {/* 选中分区编辑卡片 */}
-              {section ? (
-                <div className={`${cardBase} space-y-4`}>
-                  <div className="flex flex-col sm:flex-row sm:items-start gap-3">
-                    <TextInput
-                      label="分区名称"
-                      value={section.name}
-                      onChange={(e) => updateSection(selectedSection, { name: e.target.value })}
-                      placeholder="例如：角色、世界、主角"
-                      className="flex-1"
-                    />
-                    <div className="flex items-center gap-2">
-                      <Button variant="ghost" size="sm" onClick={() => duplicateSection(selectedSection)} title="复制分区">复制</Button>
-                      {mvu.schemaSections.length > 1 && (
-                        <Button variant="danger" size="sm" onClick={() => removeSection(selectedSection)}>
-                          <Trash2 className="w-3.5 h-3.5" /> 删除
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-[var(--color-text-secondary)]">变量定义</span>
-                      <Button variant="secondary" size="sm" onClick={() => addVariable(selectedSection)}>
-                        <span className="text-base leading-none">+</span> 添加变量
-                      </Button>
-                    </div>
-
-                    {section.variables.length === 0 && (
-                      <div className={emptyBox}>
-                        <FileText className="w-8 h-8 text-[var(--color-text-muted)] mb-2" />
-                        <p className="text-sm font-medium text-[var(--color-text-secondary)]">该分区还没有变量</p>
-                        <p className="text-xs text-[var(--color-text-muted)] mt-1">点击右上角按钮添加第一个变量</p>
-                      </div>
-                    )}
-
-                    {expandedSections.has(selectedSection) && section.variables.map((v, vi) => {
-                      const isDuplicate = (pathOccurrences.get(v.path) || 0) > 1;
-                      const isSelected = selectedVariables.has(v.path);
-                      const isExpanded = expandedVars.has(v.path);
-                      const isFirstVar = vi === 0;
-                      const isLastVar = vi === section.variables.length - 1;
-                      return (
-                        <div
-                          key={vi}
-                          draggable
-                          onDragStart={() => setDraggedVar({ sectionIdx: selectedSection, varIdx: vi })}
-                          onDragOver={(e) => { e.preventDefault(); setDragOverVar({ sectionIdx: selectedSection, varIdx: vi }); }}
-                          onDragLeave={() => setDragOverVar(null)}
-                          onDrop={(e) => { e.preventDefault(); if (draggedVar) moveVariable(draggedVar.sectionIdx, draggedVar.varIdx, selectedSection, vi); setDraggedVar(null); setDragOverVar(null); }}
-                          className={`rounded-xl border bg-[color-mix(in_srgb,var(--input-bg)_30%,transparent)] overflow-hidden transition-all duration-200 cursor-grab active:cursor-grabbing ${
-                            isDuplicate
-                              ? 'border-[color-mix(in_srgb,var(--color-status-error)_60%,transparent)]'
-                              : 'border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] hover:border-[color-mix(in_srgb,var(--color-primary)_20%,transparent)]'
-                          } ${dragOverVar?.sectionIdx === selectedSection && dragOverVar?.varIdx === vi ? 'ring-2 ring-[var(--color-primary)]' : ''}`}
-                        >
-                          <div
-                            className="flex flex-col sm:flex-row sm:items-center gap-2 px-3 py-3 hover:bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] transition-colors"
-                            onClick={() => toggleExpanded(v.path)}
-                          >
-                            <div className="flex items-center gap-2 min-w-0 flex-1">
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={() => {
-                                  setSelectedVariables(prev => {
-                                    const next = new Set(prev);
-                                    if (next.has(v.path)) next.delete(v.path); else next.add(v.path);
-                                    return next;
-                                  });
-                                }}
-                                className="cursor-pointer h-4 w-4 rounded border-[var(--input-border)] text-[var(--color-primary)] focus:ring-[var(--color-primary)]"
-                              />
-                              <span className="hidden sm:inline text-[var(--color-text-muted)] select-none">⋮⋮</span>
-                              <ChevronDown className={`w-3.5 h-3.5 text-[var(--color-text-muted)] transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
-                              <span className={`text-sm font-mono truncate ${isDuplicate ? 'text-[var(--color-status-error)]' : 'text-[var(--text-color)]'}`}>
-                                {v.path || '(未命名变量)'}
-                              </span>
-                              {isDuplicate && (
-                                <span className={`${badgeBase} bg-danger-bg text-[var(--color-status-danger)] border border-danger-border`}>路径重复</span>
-                              )}
-                              {v.prefix && (
-                                <span className={`${badgeBase} bg-warning-bg text-[var(--color-status-warning)] border border-warning-border`}>{v.prefix}前缀</span>
-                              )}
-                              <span className={`${badgeBase} bg-[color-mix(in_srgb,var(--color-surface-elevated)_60%,transparent)] text-[var(--color-text-muted)]`}>
-                                {v.zodType.replace(/\(.*\)/, '(...)')}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1 self-end sm:self-auto">
-                              <div className="flex sm:hidden items-center gap-0.5">
-                                <button
-                                  className={iconBtn}
-                                  disabled={isFirstVar}
-                                  onClick={(e) => { e.stopPropagation(); moveVariable(selectedSection, vi, selectedSection, vi - 1); }}
-                                  title="上移"
-                                >
-                                  <ChevronUp className="w-4 h-4" />
-                                </button>
-                                <button
-                                  className={iconBtn}
-                                  disabled={isLastVar}
-                                  onClick={(e) => { e.stopPropagation(); moveVariable(selectedSection, vi, selectedSection, vi + 1); }}
-                                  title="下移"
-                                >
-                                  <ChevronDown className="w-4 h-4" />
-                                </button>
-                              </div>
-                              <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); duplicateVariable(selectedSection, vi); }} title="复制变量">
-                                复制
-                              </Button>
-                              <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); removeVariable(selectedSection, vi); }}>
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </Button>
-                            </div>
-                          </div>
-
-                          {isExpanded && (
-                            <div className="px-3 pb-4 space-y-3 border-t border-[var(--color-border-default)] pt-3 animate-slide-up">
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <TextInput
-                                  label="变量路径"
-                                  value={v.path}
-                                  onChange={(e) => updateVariable(selectedSection, vi, { path: e.target.value })}
-                                  error={isDuplicate ? '路径重复' : undefined}
-                                  placeholder="角色.好感度"
-                                  className="min-h-[44px]"
-                                />
-                                <div>
-                                  <label className={labelBase}>Zod 类型</label>
-                                  <select
-                                    value={v.zodType}
-                                    onChange={(e) => updateVariable(selectedSection, vi, { zodType: e.target.value, initialValue: getInitialValueForType(e.target.value, v.initialValue) })}
-                                    className={inputBase}
-                                  >
-                                    {ZOD_TYPE_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-                                  </select>
-                                </div>
-                              </div>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <div>
-                                  <label className={labelBase}>可见性前缀</label>
-                                  <select
-                                    value={v.prefix}
-                                    onChange={(e) => updateVariable(selectedSection, vi, { prefix: e.target.value as MvuPrefix })}
-                                    className={inputBase}
-                                  >
-                                    {PREFIX_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label} — {p.desc}</option>)}
-                                  </select>
-                                </div>
-                                <div>
-                                  <label className={labelBase}>初始值</label>
-                                  {renderInitialValueInput(v, selectedSection, vi)}
-                                </div>
-                              </div>
-                              <div>
-                                <label className={labelBase}>描述</label>
-                                <input
-                                  value={v.description}
-                                  onChange={(e) => updateVariable(selectedSection, vi, { description: e.target.value })}
-                                  placeholder="变量用途说明"
-                                  className={inputBase}
-                                />
-                              </div>
-                              {v.zodType === 'z.coerce.number()' && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                  <div>
-                                    <label className={labelBase}>最小值</label>
-                                    <input
-                                      type="number"
-                                      value={v.range?.min ?? 0}
-                                      onChange={(e) => { const parsed = Number(e.target.value); updateVariable(selectedSection, vi, { range: { min: Number.isNaN(parsed) ? (v.range?.min ?? 0) : parsed, max: v.range?.max ?? 100 } }); }}
-                                      className={inputBase}
-                                    />
-                                  </div>
-                                  <div>
-                                    <label className={labelBase}>最大值</label>
-                                    <input
-                                      type="number"
-                                      value={v.range?.max ?? 100}
-                                      onChange={(e) => { const parsed = Number(e.target.value); updateVariable(selectedSection, vi, { range: { min: v.range?.min ?? 0, max: Number.isNaN(parsed) ? (v.range?.max ?? 100) : parsed } }); }}
-                                      className={inputBase}
-                                    />
-                                  </div>
-                                </div>
-                              )}
-                              {v.zodType.startsWith('z.enum(') && (
-                                <div>
-                                  <label className={labelBase}>枚举值 (逗号分隔)</label>
-                                  <input
-                                    value={v.enumValues?.join(', ') ?? ''}
-                                    onChange={(e) => { const values = e.target.value.split(',').map(s => s.trim()).filter(Boolean); updateVariable(selectedSection, vi, { enumValues: values }); }}
-                                    placeholder="开心, 正常, 低落"
-                                    className={inputBase}
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <div className={`${cardBase} ${emptyBox}`}>
-                  <FileText className="w-10 h-10 text-[var(--color-text-muted)] mb-3" />
-                  <p className="text-sm font-medium text-[var(--color-text-secondary)]">还没有分区</p>
-                  <p className="text-xs text-[var(--color-text-muted)] mt-1">点击「新分区」或从模板市场开始</p>
-                </div>
-              )}
-
-              {/* 模板市场弹窗：移动端全屏，桌面端居中卡片 */}
-              {showTemplateMarket && (
-                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 p-0 sm:p-4">
-                  <div className="w-full sm:max-w-3xl h-[92dvh] sm:h-auto sm:max-h-[85dvh] flex flex-col rounded-t-2xl sm:rounded-xl border border-[var(--color-border-default)] bg-[var(--color-surface-raised)] shadow-xl animate-slide-up sm:animate-scale-in">
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-default)]">
-                      <h3 className="text-lg font-bold flex items-center gap-2 text-[var(--text-color)]">
-                        <Sparkles className="w-5 h-5 text-primary" /> 模板市场
-                      </h3>
-                      <Button variant="ghost" size="sm" onClick={() => setShowTemplateMarket(false)}>
-                        <X className="w-5 h-5" />
-                      </Button>
-                    </div>
-                    <div className="p-4 overflow-y-auto space-y-4">
-                      <p className="text-xs text-[var(--color-text-secondary)]">选择一个模板追加到当前配置。已存在的变量路径不会被重复添加。</p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                        {EXPERT_TEMPLATES.map(tmpl => (
-                          <div key={tmpl.id} className={`${cardBase} ${cardHover} flex flex-col`}>
-                            <div className="text-2xl mb-2">{tmpl.icon}</div>
-                            <div className="text-sm font-bold text-[var(--text-color)]">{tmpl.name}</div>
-                            <div className="text-xs text-[var(--color-text-muted)] mt-1 flex-1">{tmpl.description}</div>
-                            <div className="mt-3 flex items-center gap-2">
-                              <Button variant="secondary" size="sm" className="flex-1" onClick={() => applyExpertTemplate(tmpl, false)}>追加</Button>
-                              <Button variant="ghost" size="sm" className="flex-1" onClick={() => applyExpertTemplate(tmpl, true)}>覆盖</Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
-          )}
-
-          {/* ── Update Rules Tab ── */}
-          {activeTab === 'updateRules' && (
-            <div className="space-y-4">
-              <div className={`${cardBase} flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3`}>
-                <p className="text-sm text-[var(--color-text-secondary)]">告诉 AI 如何更新变量。自明变量不需写规则。</p>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button variant="secondary" size="sm" loading={aiRuleGenerating} onClick={handleAiGenerateRules}>
-                    <Wand2 className="w-3.5 h-3.5" /> AI 生成规则
-                  </Button>
-                  <Button variant="secondary" size="sm" onClick={addUpdateRule}>
-                    <span className="text-base leading-none">+</span> 添加规则
-                  </Button>
-                </div>
-              </div>
-
-              {typeMismatchedRules.length > 0 && (
-                <div className="rounded-lg border border-warning-border bg-warning-bg p-3">
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-[var(--color-status-warning)] shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-medium text-[var(--color-status-warning)] mb-1">规则类型与变量类型可能不匹配</p>
-                      <ul className="text-[11px] text-[var(--color-status-warning)] list-disc list-inside space-y-0.5">
-                        {typeMismatchedRules.map(m => (<li key={m.path}>{m.path}：规则类型「{m.ruleType}」与变量类型「{m.varType}」不一致</li>))}
-                      </ul>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 无规则变量提示 */}
-              {mvu.schemaSections.flatMap(s => s.variables).filter(v => v.prefix !== '$' && !mvu.updateRules.some(r => r.path === v.path)).length > 0 && (
-                <div className="rounded-lg border border-warning-border bg-warning-bg p-3">
-                  <p className="text-xs font-medium text-[var(--color-status-warning)] mb-2">以下变量尚无更新规则，点击快速添加：</p>
-                  <div className="flex flex-wrap gap-2">
-                    {mvu.schemaSections.flatMap(s => s.variables).filter(v => v.prefix !== '$' && !mvu.updateRules.some(r => r.path === v.path)).map(v => (
-                      <button
-                        key={v.path}
-                        onClick={() => {
-                          const inferred = inferVariableType(v.zodType);
-                          const preset = CHECK_RULE_PRESETS.find(p => p.type === inferred) || CHECK_RULE_PRESETS.find(p => p.type === 'string');
-                          const newRule: MvuUpdateRule = {
-                            path: v.path,
-                            type: inferred,
-                            range: inferred === 'number' ? `${v.range?.min ?? 0}~${v.range?.max ?? 100}` : undefined,
-                            check: preset ? [...preset.check] : [],
-                          };
-                          onChange({ ...mvu, updateRules: [...mvu.updateRules, newRule] });
-                        }}
-                        className="inline-flex items-center gap-1 rounded-lg border border-[color-mix(in_srgb,var(--color-status-warning)_40%,transparent)] px-2.5 py-1.5 text-xs text-[var(--color-status-warning)] hover:bg-[color-mix(in_srgb,var(--color-status-warning)_20%,transparent)] transition-colors min-h-[44px]"
-                      >
-                        <span className="text-base leading-none">+</span> {v.path}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {mvu.updateRules.length === 0 && (
-                <div className={`${cardBase} ${emptyBox}`}>
-                  <Check className="w-10 h-10 text-[var(--color-text-muted)] mb-3" />
-                  <p className="text-sm font-medium text-[var(--color-text-secondary)]">暂无更新规则</p>
-                  <p className="text-xs text-[var(--color-text-muted)] mt-1">使用 AI 生成或手动添加规则</p>
-                </div>
-              )}
-
-              {mvu.updateRules.map((rule, ri) => (
-                <div key={ri} className={`${cardBase} space-y-3 ${invalidRulePaths.has(rule.path) ? 'border-[color-mix(in_srgb,var(--color-status-error)_60%,transparent)]' : ''}`}>
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={`text-sm font-mono truncate ${invalidRulePaths.has(rule.path) ? 'text-[var(--color-status-error)]' : 'text-primary'}`}>
-                        {rule.path || '(新规则)'}
-                      </span>
-                      {invalidRulePaths.has(rule.path) && (
-                        <span className={`${badgeBase} bg-danger-bg text-[var(--color-status-danger)] border border-danger-border`}>变量路径不存在</span>
-                      )}
-                    </div>
-                    <Button variant="danger" size="sm" onClick={() => removeUpdateRule(ri)}>
-                      <Trash2 className="w-3.5 h-3.5" /> 删除
-                    </Button>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className={labelBase}>变量路径</label>
-                      <select
-                        value={rule.path}
-                        onChange={(e) => {
-                          const newPath = e.target.value;
-                          const matchedVar = mvu.schemaSections.flatMap(s => s.variables).find(v => v.path === newPath);
-                          const inferredType = matchedVar ? inferVariableType(matchedVar.zodType) : rule.type;
-                          const inferredRange = matchedVar?.range ? `${matchedVar.range.min}~${matchedVar.range.max}` : rule.range;
-                          updateUpdateRule(ri, { path: newPath, type: rule.type || inferredType, range: rule.range || inferredRange });
-                        }}
-                        className={`${inputBase} ${invalidRulePaths.has(rule.path) ? errorCls : ''}`}
-                      >
-                        <option value="">-- 选择变量 --</option>
-                        {mvu.schemaSections.map((s, si) => (
-                          <optgroup key={si} label={s.name}>
-                            {s.variables.filter(v => v.prefix !== '$').map(v => (
-                              <option key={v.path} value={v.path}>{v.path} {v.prefix === '_' ? '(只读)' : ''}</option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className={labelBase}>类型</label>
-                      <input value={rule.type || ''} onChange={(e) => updateUpdateRule(ri, { type: e.target.value })} placeholder="number / string" className={inputBase} />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className={labelBase}>范围</label>
-                      <input value={rule.range || ''} onChange={(e) => updateUpdateRule(ri, { range: e.target.value })} placeholder="0~100" className={inputBase} />
-                    </div>
-                    <div>
-                      <label className={labelBase}>格式</label>
-                      <input value={rule.format || ''} onChange={(e) => updateUpdateRule(ri, { format: e.target.value })} placeholder="YYYY/MM/DD-HH:MM" className={inputBase} />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className={labelBase}>值描述</label>
-                    <input value={rule.value || ''} onChange={(e) => updateUpdateRule(ri, { value: e.target.value })} placeholder="主角对变量内容的即时感受" className={inputBase} />
-                  </div>
-
-                  <div>
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
-                      <label className={labelBase}>更新条件 (check)</label>
-                      <div className="flex items-center gap-2">
-                        <select
-                          onChange={(e) => {
-                            const preset = CHECK_RULE_PRESETS.find(p => p.label === e.target.value);
-                            if (preset) {
-                              const existing = rule.check || [];
-                              updateUpdateRule(ri, { check: [...existing, ...preset.check] });
-                            }
-                            e.target.value = '';
-                          }}
-                          className={`${inputBase} text-xs py-1.5`}
-                        >
-                          <option value="">预设规则...</option>
-                          {CHECK_RULE_PRESETS.filter(p => rule.type ? p.type === rule.type : true).map(p => (
-                            <option key={p.label} value={p.label}>{p.label}</option>
-                          ))}
-                        </select>
-                        <Button variant="ghost" size="sm" onClick={() => addCheckRule(ri)}>
-                          <span className="text-base leading-none">+</span> 添加
-                        </Button>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      {(rule.check || []).map((c, ci) => (
-                        <div key={ci} className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                          <input value={c} onChange={(e) => updateCheckRule(ri, ci, e.target.value)} placeholder="根据角色行为调整 ±(3~6)" className={`${inputBase} flex-1`} />
-                          <Button variant="danger" size="sm" onClick={() => removeCheckRule(ri, ci)}>
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ── EJS Tab ── */}
-          {activeTab === 'ejs' && (
-            <div className="space-y-4">
-              <div className={`${cardBase} flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3`}>
-                <p className="text-sm text-[var(--color-text-secondary)]">配置世界书条目的 EJS 动态渲染。</p>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button variant="secondary" size="sm" loading={aiEjsGenerating} disabled={selectedEjsEntries.size === 0} onClick={handleAiGenerateEjs}>
-                    <Wand2 className="w-3.5 h-3.5" /> AI 生成 EJS
-                  </Button>
-                  <Button variant="secondary" size="sm" onClick={addEjsConfig}>
-                    <span className="text-base leading-none">+</span> 添加 EJS 配置
-                  </Button>
-                </div>
-              </div>
-
-              {/* 世界书条目选择器 */}
-              <div className={`${cardBase} p-3`}>
-                <p className="text-xs text-[var(--color-text-secondary)] mb-2">选择要应用 EJS 的世界书条目（用于 AI 生成）：</p>
-                <div className="flex flex-wrap gap-2 max-h-[160px] overflow-y-auto p-0.5 -m-0.5">
-                  {lorebookEntries.length === 0 && (
-                    <span className="text-[11px] text-[var(--color-text-muted)]">暂无世界书条目</span>
-                  )}
-                  {lorebookEntries.map(e => {
-                    const checked = selectedEjsEntries.has(e.id);
-                    return (
-                      <label key={e.id} className={`${chipBase} cursor-pointer ${
-                        checked
-                          ? 'border-[color-mix(in_srgb,var(--color-status-success)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-status-success)_30%,transparent)] text-[var(--color-status-success)]'
-                          : 'border-[color-mix(in_srgb,var(--input-border)_50%,transparent)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)]'
-                      }`}>
-                        <input type="checkbox" className="sr-only" checked={checked} onChange={() => {
-                          setSelectedEjsEntries(prev => {
-                            const next = new Set(prev);
-                            if (next.has(e.id)) next.delete(e.id); else next.add(e.id);
-                            return next;
-                          });
-                        }} />
-                        {e.name || e.comment || `条目 ${e.id}`}
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {invalidEjsVarNames.size > 0 && (
-                <div className="rounded-lg border border-danger-border bg-danger-bg p-3">
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-[var(--color-status-danger)] shrink-0 mt-0.5" />
-                    <p className="text-xs text-[var(--color-status-danger)]">
-                      以下 EJS 使用的变量未在 schema 中定义：{Array.from(invalidEjsVarNames).join(', ')}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {mvu.ejsConfigs.length === 0 && (
-                <div className={`${cardBase} ${emptyBox}`}>
-                  <Code2 className="w-10 h-10 text-[var(--color-text-muted)] mb-3" />
-                  <p className="text-sm font-medium text-[var(--color-text-secondary)]">暂无 EJS 配置</p>
-                  <p className="text-xs text-[var(--color-text-muted)] mt-1">选择世界书条目后使用 AI 生成，或手动添加</p>
-                </div>
-              )}
-
-              {mvu.ejsConfigs.map((cfg, ci) => (
-                <div key={ci} className={`${cardBase} space-y-3`}>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-mono text-[var(--color-status-success)]">EJS 配置 #{ci + 1}</span>
-                    <Button variant="danger" size="sm" onClick={() => removeEjsConfig(ci)}>
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                  <div>
-                    <label className={labelBase}>关联世界书条目</label>
-                    <select value={cfg.entryId} onChange={(e) => updateEjsConfig(ci, { entryId: e.target.value })} className={inputBase}>
-                      <option value="">-- 选择条目 --</option>
-                      {lorebookEntries.map(e => <option key={e.id} value={e.id}>{e.name || e.comment || `条目 ${e.id}`}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelBase}>复杂度</label>
-                    <select value={cfg.complexity} onChange={(e) => updateEjsConfig(ci, { complexity: e.target.value as EjsEntryConfig['complexity'] })} className={inputBase}>
-                      {EJS_COMPLEXITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label} — {o.desc}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelBase}>{cfg.complexity === '显隐' ? '@@if 条件表达式' : cfg.complexity === '段落控制' ? 'if/else 条件表达式' : 'EJS 模板代码'}</label>
-                    <TextArea
-                      value={cfg.condition}
-                      onChange={(e) => updateEjsConfig(ci, { condition: e.target.value })}
-                      placeholder={cfg.complexity === '显隐' ? 'current_location?.includes("万剑山")' : cfg.complexity === '段落控制' ? 'affection >= 60' : '<%= variable %>'}
-                      rows={cfg.complexity === '动态文本' ? 4 : 2}
-                    />
-                  </div>
-                  {/* 使用变量多选 */}
-                  <div>
-                    <label className={labelBase}>使用的变量</label>
-                    <div className="flex flex-wrap gap-2 mt-1">
-                      {mvu.schemaSections.flatMap(s => s.variables).filter(v => v.prefix !== '$').map(v => {
-                        const varName = v.path.split('.').pop() || v.path;
-                        const isChecked = cfg.usedVariables.includes(varName);
-                        const isInvalid = invalidEjsVarNames.has(varName);
-                        return (
-                          <label key={varName} className={`${chipBase} cursor-pointer ${
-                            isInvalid
-                              ? 'border-[color-mix(in_srgb,var(--color-status-error)_60%,transparent)] bg-[color-mix(in_srgb,var(--color-status-error)_20%,transparent)] text-[var(--color-status-error)]'
-                              : isChecked
-                                ? 'border-[color-mix(in_srgb,var(--color-status-success)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-status-success)_30%,transparent)] text-[var(--color-status-success)]'
-                                : 'border-[color-mix(in_srgb,var(--input-border)_50%,transparent)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)]'
-                          }`}>
-                            <input
-                              type="checkbox"
-                              className="sr-only"
-                              checked={isChecked}
-                              onChange={() => {
-                                const current = cfg.usedVariables;
-                                const next = isChecked
-                                  ? current.filter(n => n !== varName)
-                                  : [...current, varName];
-                                updateEjsConfig(ci, { usedVariables: next });
-                              }}
-                            />
-                            {varName}
-                          </label>
-                        );
-                      })}
-                    </div>
-                    <p className="text-[10px] text-[var(--color-text-muted)] mt-1.5">这些变量名将在 EJS 预处理中通过 define() 注册</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ── Output Tab ── */}
-          {activeTab === 'output' && (
-            <div className="space-y-4">
-              <div className={`${cardBase} flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3`}>
-                <p className="text-sm text-[var(--color-text-secondary)]">预览生成的 MVU 文件内容（修改变量后自动同步更新）。</p>
-                <Button variant="secondary" size="sm" onClick={generateAll}>
-                  <RefreshCw className="w-3.5 h-3.5" /> 强制重新生成
-                </Button>
-              </div>
-
-              {/* 状态栏实时预览 */}
-              <div className={`${cardBase} border-primary-tint bg-primary-tint-light space-y-4`}>
-                <div className="flex items-center gap-2">
-                  <Eye className="w-4 h-4 text-primary" />
-                  <h3 className="text-sm font-bold text-primary">状态栏实时预览</h3>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className={labelBase}>状态栏标题</label>
-                    <input
-                      value={statusBarTitle}
-                      onChange={(e) => { setStatusBarTitle(e.target.value); if (statusBarStyle !== 'ai-custom') { const html = generateStatusBarHtml(statusBarStyle, mvu.schemaSections, e.target.value); onChange({ ...mvu, statusBarHtml: html }); } }}
-                      placeholder="状态栏标题"
-                      className={inputBase}
-                    />
-                  </div>
-                  <div>
-                    <label className={labelBase}>模板风格</label>
-                    <select value={statusBarStyle} onChange={(e) => applyStatusBarTemplate(e.target.value)} className={inputBase}>
-                      {STATUS_BAR_TEMPLATES.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                      <option value="ai-custom">AI/手动定制</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="rounded-lg border border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_40%,transparent)] p-4">
-                  <div className="w-full" dangerouslySetInnerHTML={{ __html: statusBarPreviewHtml }} />
-                </div>
-              </div>
-
-              {/* 生成文件预览 */}
-              <details className={`${cardBase} overflow-hidden p-0`}>
-                <summary className="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] text-sm font-medium list-none select-none text-primary">
-                  <FileText className="w-4 h-4" /> schema.ts
-                </summary>
-                <pre className="px-4 pb-4 text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap overflow-x-auto max-h-[40vh] sm:max-h-[300px] overflow-y-auto font-mono border-t border-[var(--color-border-default)] pt-3">
-                  {mvu.schemaTsContent || '(请先添加变量分区和变量)'}
-                </pre>
-              </details>
-
-              <details className={`${cardBase} overflow-hidden p-0`}>
-                <summary className="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] text-sm font-medium list-none select-none text-[var(--color-status-warning)]">
-                  <FileText className="w-4 h-4" /> initvar.yaml
-                </summary>
-                <pre className="px-4 pb-4 text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap overflow-x-auto max-h-[40vh] sm:max-h-[300px] overflow-y-auto font-mono border-t border-[var(--color-border-default)] pt-3">
-                  {mvu.initvarYamlContent || '(请先添加变量分区和变量)'}
-                </pre>
-              </details>
-
-              <details className={`${cardBase} overflow-hidden p-0`}>
-                <summary className="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] text-sm font-medium list-none select-none text-[var(--color-status-success)]">
-                  <FileText className="w-4 h-4" /> 变量更新规则.yaml
-                </summary>
-                <pre className="px-4 pb-4 text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap overflow-x-auto max-h-[40vh] sm:max-h-[300px] overflow-y-auto font-mono border-t border-[var(--color-border-default)] pt-3">
-                  {mvu.updateRulesYamlContent || '(请先添加更新规则)'}
-                </pre>
-              </details>
-
-              <details className={`${cardBase} overflow-hidden p-0`}>
-                <summary className="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] text-sm font-medium list-none select-none text-[var(--color-info)]">
-                  <Code2 className="w-4 h-4" /> EJS 预处理
-                </summary>
-                <pre className="px-4 pb-4 text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap overflow-x-auto max-h-[40vh] sm:max-h-[300px] overflow-y-auto font-mono border-t border-[var(--color-border-default)] pt-3">
-                  {mvu.ejsPreprocessContent || '(未配置 EJS 条目或使用的变量为空)'}
-                </pre>
-              </details>
-
-              {mvu.schemaTsContent && (
-                <details className={`${cardBase} overflow-hidden p-0`}>
-                  <summary className="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] text-sm font-medium list-none select-none text-primary">
-                    <FileText className="w-4 h-4" /> Zod.txt (SillyTavern 运行时)
-                  </summary>
-                  <pre className="px-4 pb-4 text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap overflow-x-auto max-h-[40vh] sm:max-h-[300px] overflow-y-auto font-mono border-t border-[var(--color-border-default)] pt-3">
-                    {buildZodTxt(mvu.schemaTsContent)}
-                  </pre>
-                </details>
-              )}
-            </div>
-          )}
+          ))}
+          <Button variant="secondary" size="sm" onClick={addSection}>+ 添加分区</Button>
         </div>
-      </div>
-    );
-  }
+      )}
 
-  // ────────────────────────────────────────────────────────────────────────
-  // Beginner mode renderer
-  // ────────────────────────────────────────────────────────────────────────
-  function renderBeginnerMode() {
-    const hasVariables = mvu.schemaSections.some(s => s.variables.length > 0);
-    const totalVars = mvu.schemaSections.reduce((sum, s) => sum + s.variables.length, 0);
-
-    return (
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-xl font-bold text-[var(--text-color)]">MVU 变量系统</h2>
-            <p className="text-sm text-[var(--color-text-secondary)] mt-1">
-              <span className="text-[var(--color-status-success)]">小白模式</span> — 预设模板 + AI 辅助，无需懂代码
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={toggleMode} title="切换到大神模式（手搓代码）">
-              🧙 切换到大神模式
-            </Button>
-            <Button variant="ghost" size="sm" onClick={toggleMvu}>禁用 MVU</Button>
-          </div>
-        </div>
-
-        {/* Step 1: Choose template */}
-        <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-status-success)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-status-success)_20%,transparent)] p-4 mb-4">
-          <h3 className="text-sm font-bold text-[var(--color-status-success)] mb-3">📋 第一步：选择场景模板</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {BEGINNER_TEMPLATES.map(tmpl => (
-              <button
-                key={tmpl.id}
-                onClick={() => handleApplyTemplate(tmpl.id)}
-                className={`rounded-xl border p-3 text-left transition-all hover:border-[color-mix(in_srgb,var(--color-status-success)_50%,transparent)] ${
-                  selectedTemplate === tmpl.id
-                    ? 'border-[var(--color-status-success)] bg-[color-mix(in_srgb,var(--color-status-success)_30%,transparent)]'
-                    : 'border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)]'
-                }`}
-              >
-                <div className="text-2xl mb-1">{tmpl.icon}</div>
-                <div className="text-sm font-medium text-[var(--text-color)]">{tmpl.name}</div>
-                <div className="text-[10px] text-[var(--color-text-muted)] mt-0.5">{tmpl.description}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Step 2: AI generate or manual tweak */}
-        <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-status-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-status-warning)_20%,transparent)] p-4 mb-4">
-          <h3 className="text-sm font-bold text-[var(--color-status-warning)] mb-3">🤖 第二步：AI 生成（可选）</h3>
-          <p className="text-xs text-[var(--color-status-warning)] mb-2">
-            用自然语言描述你想要的变量系统，AI 会自动生成。例如："我想追踪角色好感度、当前情绪、以及两人的关系阶段"
+      {/* ── Tab 2: 游戏元素（技能/功法）── */}
+      {activeTab === 'elements' && (
+        <div className="space-y-4">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            以可视化方式管理技能、功法等游戏元素，自动映射为 MVU 记录变量，可在状态栏中展示并由 AI 追踪更新。
           </p>
-          <div className="flex gap-2">
-            <input
-              value={aiInput}
-              onChange={(e) => setAiInput(e.target.value)}
-              placeholder="描述你想要的变量，例如：好感度、情绪、位置、时间..."
-              className={fieldCls}
+          {GAME_ELEMENT_CATEGORIES.map(cat => (
+            <GameElementEditor
+              key={cat.key}
+              category={cat}
+              elements={getElements(cat)}
+              onChange={(els) => setElements(cat, els)}
             />
-            <Button onClick={handleAiGenerate} disabled={aiGenerating}>
-              {aiGenerating ? '⏳ 生成中...' : '✨ AI 生成'}
-            </Button>
-          </div>
-          <div className="mt-3 pt-3 border-t border-[color-mix(in_srgb,var(--color-status-warning)_20%,transparent)]">
-            <p className="text-xs text-[var(--color-status-warning)] mb-2">
-              多角色卡？可直接为每个角色套用纯爱 / NTR / 双路线模板，并统一生成阶段轴。
-            </p>
-            <Button variant="secondary" size="sm" onClick={() => setShowMultiCharModal(true)}>
-              👥 {t('multiCharTemplate.entryButton')}
-            </Button>
-          </div>
+          ))}
         </div>
+      )}
 
-        {/* Step 3: Variable cards */}
-        {hasVariables && (
-          <div className="rounded-xl border border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)] p-4 mb-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-bold text-[var(--text-color)]">📐 变量列表 ({totalVars}个)</h3>
-              <div className="flex items-center gap-2">
-                <Button variant="ghost" size="sm" onClick={addSection}>+ 新分区</Button>
-              </div>
-            </div>
-
-            {mvu.schemaSections.map((section, si) => (
-              <div key={si} className="mb-3">
-                <div className="flex items-center gap-2 mb-2">
-                  <input
-                    value={section.name}
-                    onChange={(e) => updateSection(si, { name: e.target.value })}
-                    className="text-sm font-medium text-[color-mix(in_srgb,var(--color-primary)_80%,var(--text-color))] bg-transparent border-b border-transparent hover:border-[color-mix(in_srgb,var(--color-primary)_40%,transparent)] focus:border-[color-mix(in_srgb,var(--color-primary)_40%,transparent)] focus:outline-none px-1"
-                    style={{ width: `${Math.max(4, section.name.length + 2)}ch` }}
-                  />
-                  {mvu.schemaSections.length > 1 && (
-                    <Button variant="danger" size="sm" onClick={() => removeSection(si)}>×</Button>
-                  )}
+      {/* ── Tab 3: 更新规则 ── */}
+      {activeTab === 'rules' && (
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--color-text-secondary)]">告诉 AI 如何更新变量。自明变量（名称即说明更新方式）可不写规则。</p>
+          {mvu.updateRules.map((rule, idx) => (
+            <div key={idx} className={cardCls}>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+                <div className="sm:col-span-4">
+                  <label className={labelCls}>变量路径</label>
+                  <TextInput value={rule.path} onChange={(e) => updateRule(idx, { path: e.target.value })} className={inputCls} placeholder="角色.好感度" />
                 </div>
-                <div className="space-y-1.5">
-                  {section.variables.map((v, vi) => {
-                    const isExpanded = expandedVars.has(v.path);
-                    const isNumber = v.zodType === 'z.coerce.number()';
-                    const isEnum = v.zodType.startsWith('z.enum(');
-                    const typeLabel = isNumber ? '数字' : isEnum ? '枚举' : '字符串';
-                    const typeBadgeColor = isNumber ? 'bg-[color-mix(in_srgb,var(--color-status-success)_40%,transparent)] text-[var(--color-status-success)]' : isEnum ? 'bg-[color-mix(in_srgb,var(--color-primary)_40%,transparent)] text-[var(--color-primary)]' : 'bg-[color-mix(in_srgb,var(--color-info)_40%,transparent)] text-[var(--color-info)]';
-                    return (
-                      <div key={vi} className="rounded-lg border border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_30%,transparent)] overflow-hidden">
-                        {/* Collapsed row */}
-                        <div
-                          className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)] transition-colors"
-                          onClick={() => toggleExpanded(v.path)}
-                        >
-                          <span className="text-[10px] text-[var(--color-text-muted)]">{isExpanded ? '▼' : '▶'}</span>
-                          <span className="text-sm font-mono text-[var(--text-color)] truncate flex-1 min-w-0">{v.path.split('.').pop()}</span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${typeBadgeColor}`}>{typeLabel}</span>
-                          {v.prefix && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[color-mix(in_srgb,var(--color-status-warning)_40%,transparent)] text-[var(--color-status-warning)]">{v.prefix}前缀</span>}
-                          <input
-                            value={String(v.initialValue ?? '')}
-                            onChange={(e) => {
-                              let val: unknown = e.target.value;
-                              if (isNumber) {
-                                const parsed = e.target.value === '' ? 0 : Number(e.target.value);
-                                val = Number.isNaN(parsed) ? v.initialValue : parsed;
-                              }
-                              updateVariable(si, vi, { initialValue: val });
-                            }}
-                            className="w-16 text-center rounded border border-[var(--input-border)] bg-[var(--color-surface-raised)] text-xs text-[color-mix(in_srgb,var(--color-primary)_80%,var(--text-color))] py-0.5"
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                          <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); removeVariable(si, vi); }}>×</Button>
-                        </div>
-                        {/* Expanded editor */}
-                        {isExpanded && (
-                          <div className="px-3 pb-3 space-y-2 border-t border-[color-mix(in_srgb,var(--color-border-default)_30%,transparent)] pt-2">
-                            <div className="grid grid-cols-2 gap-2">
-                              <div><label className={labelCls}>变量路径</label><input value={v.path} onChange={(e) => updateVariable(si, vi, { path: e.target.value })} placeholder="角色.好感度" className={fieldCls} /></div>
-                              <div><label className={labelCls}>Zod 类型</label><select value={v.zodType} onChange={(e) => updateVariable(si, vi, { zodType: e.target.value })} className={fieldCls}>{ZOD_TYPE_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></div>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <div><label className={labelCls}>可见性前缀</label><select value={v.prefix} onChange={(e) => updateVariable(si, vi, { prefix: e.target.value as MvuPrefix })} className={fieldCls}>{PREFIX_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label} — {p.desc}</option>)}</select></div>
-                              <div><label className={labelCls}>描述</label><input value={v.description} onChange={(e) => updateVariable(si, vi, { description: e.target.value })} placeholder="变量用途说明" className={fieldCls} /></div>
-                            </div>
-                            {isNumber && (
-                              <div className="grid grid-cols-2 gap-2">
-                                <div><label className={labelCls}>最小值</label><input type="number" value={v.range?.min ?? 0} onChange={(e) => { const parsed = Number(e.target.value); updateVariable(si, vi, { range: { min: Number.isNaN(parsed) ? (v.range?.min ?? 0) : parsed, max: v.range?.max ?? 100 } }); }} className={fieldCls} /></div>
-                                <div><label className={labelCls}>最大值</label><input type="number" value={v.range?.max ?? 100} onChange={(e) => { const parsed = Number(e.target.value); updateVariable(si, vi, { range: { min: v.range?.min ?? 0, max: Number.isNaN(parsed) ? (v.range?.max ?? 100) : parsed } }); }} className={fieldCls} /></div>
-                              </div>
-                            )}
-                            {isEnum && (
-                              <div><label className={labelCls}>枚举值 (逗号分隔)</label><input value={v.enumValues?.join(', ') ?? ''} onChange={(e) => { const values = e.target.value.split(',').map(s => s.trim()).filter(Boolean); updateVariable(si, vi, { enumValues: values, zodType: values.length > 0 ? `z.enum(${JSON.stringify(values)})` : 'z.string()' }); }} placeholder="开心, 正常, 低落" className={fieldCls} /></div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                <div className="sm:col-span-3">
+                  <label className={labelCls}>类型</label>
+                  <TextInput value={rule.type ?? ''} onChange={(e) => updateRule(idx, { type: e.target.value })} className={inputCls} placeholder="number / string" />
                 </div>
-                <div className="mt-2">
-                  <Button variant="ghost" size="sm" onClick={() => addVariable(si)}>+ 空变量</Button>
+                <div className="sm:col-span-3">
+                  <label className={labelCls}>范围</label>
+                  <TextInput value={rule.range ?? ''} onChange={(e) => updateRule(idx, { range: e.target.value })} className={inputCls} placeholder="0~100" />
+                </div>
+                <div className="sm:col-span-2 flex items-end">
+                  <Button variant="danger" size="sm" onClick={() => removeRule(idx)} className="w-full">删除</Button>
                 </div>
               </div>
-            ))}
-
-            {/* Variable presets library */}
-            <div className="mt-3 pt-3 border-t border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)]">
-              <details className="rounded-lg border border-[color-mix(in_srgb,var(--color-status-success)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-success)_10%,transparent)]">
-                <summary className="px-3 py-2 cursor-pointer hover:bg-[color-mix(in_srgb,var(--color-status-success)_10%,transparent)] text-xs font-medium text-[var(--color-status-success)] flex items-center gap-1.5">
-                  📚 一键添加常用变量
-                  <span className="text-[var(--color-status-success)]">点击展开</span>
-                </summary>
-                <div className="px-3 pb-3 space-y-2">
-                  {VARIABLE_PRESETS.map(presetCat => (
-                    <div key={presetCat.category}>
-                      <div className="text-[10px] text-[var(--color-text-muted)] mb-1">{presetCat.category}</div>
-                      <div className="flex flex-wrap gap-1">
-                        {presetCat.items.map(preset => {
-                          // 检查该变量路径是否已存在
-                          const alreadyExists = mvu.schemaSections.some(s =>
-                            s.variables.some(v => v.path === preset.path)
-                          );
-                          const targetSectionIdx = 0; // 默认加到第一个分区
-                          return (
-                            <button
-                              key={preset.path}
-                              onClick={() => quickAddVar(targetSectionIdx, preset)}
-                              disabled={alreadyExists}
-                              className={`text-[11px] px-2 py-1 rounded border transition-colors ${
-                                alreadyExists
-                                  ? 'border-[color-mix(in_srgb,var(--color-border-default)_30%,transparent)] text-[var(--color-text-muted)] cursor-not-allowed'
-                                  : 'border-[color-mix(in_srgb,var(--input-border)_50%,transparent)] text-[var(--color-text-secondary)] hover:border-[color-mix(in_srgb,var(--color-status-success)_50%,transparent)] hover:text-[var(--color-status-success)] hover:bg-[color-mix(in_srgb,var(--color-status-success)_20%,transparent)]'
-                              }`}
-                              title={alreadyExists ? '已存在' : `添加 ${preset.path}`}
-                            >
-                              {preset.path.split('.').pop()}
-                              {alreadyExists && <span className="ml-0.5 text-[var(--color-text-muted)]">✓</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            </div>
-          </div>
-        )}
-
-        {/* Step 4: Status bar styling & preview */}
-        <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-primary)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-primary)_20%,transparent)] p-4 mb-4">
-          <div className="flex items-start justify-between gap-3 mb-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-bold text-[var(--color-primary)]">🎨 状态栏美化</h3>
-                <span className="rounded border border-[color-mix(in_srgb,var(--color-primary)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-primary)_10%,transparent)] px-1.5 py-0.5 text-[10px] text-[var(--color-primary)]">{statusBarModeLabel}</span>
+              <div className="mt-2">
+                <label className={labelCls}>更新条件（每行一条）</label>
+                <TextArea
+                  value={(rule.check ?? []).join('\n')}
+                  onChange={(e) => updateRule(idx, { check: e.target.value.split('\n') })}
+                  rows={2}
+                  className={inputCls}
+                  placeholder="正面互动增加，负面互动减少&#10;单次变化 ±(3~8)"
+                />
               </div>
-              <p className="mt-1 text-[10px] text-[var(--color-primary)]">{statusBarModeHint}</p>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" onClick={regenerateStatusBar} title="根据当前变量重新生成">
-                🔄 刷新
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setShowBarCode(!showBarCode)}>
-                {showBarCode ? '👁️ 预览' : '📝 代码'}
-              </Button>
-            </div>
-          </div>
+          ))}
+          <Button variant="secondary" size="sm" onClick={addRule}>+ 添加规则</Button>
+        </div>
+      )}
+      </>)}
+    </div>
+  );
+}
 
-          {/* Template selector */}
-          <div className="mb-3">
-            <label className="text-xs text-[var(--color-text-secondary)] mb-1.5 block">选择风格模板</label>
-            <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
-              {STATUS_BAR_TEMPLATES.map(tmpl => (
-                <button
-                  key={tmpl.id}
-                  onClick={() => applyStatusBarTemplate(tmpl.id)}
-                  className={`rounded-lg border p-2 text-center transition-all ${
-                    statusBarStyle === tmpl.id
-                      ? 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_40%,transparent)]'
-                      : 'border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)] hover:border-[color-mix(in_srgb,var(--color-primary)_40%,transparent)]'
-                  }`}
-                  title={tmpl.description}
-                >
-                  <div className="text-lg">{tmpl.icon}</div>
-                  <div className="text-[10px] text-[var(--color-text-secondary)] mt-0.5">{tmpl.name}</div>
-                </button>
-              ))}
-              {mvu.statusBarStyle === 'ai-custom' && (
-                <div className="rounded-lg border border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_40%,transparent)] p-2 text-center">
-                  <div className="text-lg">🤖</div>
-                  <div className="text-[10px] text-[var(--color-primary)] mt-0.5">AI 定制</div>
-                </div>
-              )}
-            </div>
-          </div>
+// ════════════════════════════════════════════════════════════════════════════
+// 游戏元素编辑器子组件（技能/功法 增删改查 + 图标）
+// ════════════════════════════════════════════════════════════════════════════
 
-          {/* Visual Novel 图片配置 - 仅在选择visual-novel模板时显示 */}
-          {statusBarStyle === 'visual-novel' && (
-            <div className="mb-3 rounded-lg border border-[color-mix(in_srgb,var(--color-primary)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-primary)_10%,transparent)] p-3">
-              <label className="text-xs text-[var(--color-primary)] mb-1.5 block">🖼️ 图片配置（可选，留空使用占位图）</label>
-              <p className="text-[10px] text-[var(--color-primary)] mb-2">外部图片依赖网络环境，导入 SillyTavern 后可能因跨域或资源失效而无法显示。</p>
+const EMOJI_PRESETS = ['⚔️', '🔥', '❄️', '⚡', '🌪️', '☠️', '✨', '🛡️', '🏹', '🗡️', '💫', '🌟', '📿', '🧿', '☯️', '🔮', '📜', '🎯'];
+
+function GameElementEditor({ category, elements, onChange }: {
+  category: GameElementCategory;
+  elements: GameElement[];
+  onChange: (els: GameElement[]) => void;
+}) {
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+
+  const addElement = () => {
+    const next = [...elements, { name: '', icon: category.icon, level: '', description: '' }];
+    onChange(next);
+    setEditingIdx(next.length - 1);
+  };
+  const updateElement = (idx: number, patch: Partial<GameElement>) => {
+    onChange(elements.map((e, i) => (i === idx ? { ...e, ...patch } : e)));
+  };
+  const removeElement = (idx: number) => {
+    onChange(elements.filter((_, i) => i !== idx));
+    if (editingIdx === idx) setEditingIdx(null);
+  };
+
+  return (
+    <div className={cardCls}>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-lg">{category.icon}</span>
+        <h3 className="text-sm font-bold text-[var(--text-color)]">{category.label}</h3>
+        <span className="text-xs text-[var(--color-text-muted)]">{elements.length} 项</span>
+        <div className="flex-1" />
+        <Button variant="secondary" size="sm" onClick={addElement}>+ 添加{category.label}</Button>
+      </div>
+
+      {elements.length === 0 && (
+        <p className="text-xs text-[var(--color-text-muted)] py-2">暂无{category.label}，点击右上添加。</p>
+      )}
+
+      <div className="space-y-2">
+        {elements.map((el, idx) => (
+          <div key={idx} className="rounded-lg border border-[color-mix(in_srgb,var(--color-border-default)_40%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_30%,transparent)] p-2.5">
+            {editingIdx === idx ? (
               <div className="space-y-2">
-                <div>
-                  <label className="text-[10px] text-[var(--color-text-muted)] mb-0.5 block">背景图 URL</label>
-                  <input
-                    value={bgImageUrl}
-                    onChange={(e) => {
-                      setBgImageUrl(e.target.value);
-                      const html = generateStatusBarHtml(statusBarStyle, mvu.schemaSections, statusBarTitle)
-                        .replace(/https:\/\/placehold\.co\/800x400\/ffb6c1\/fff\?background/g, e.target.value || 'https://placehold.co/800x400/ffb6c1/fff?background');
-                      onChange({ ...mvu, statusBarHtml: html });
-                    }}
-                    placeholder="https://example.com/background.jpg"
-                    className={fieldCls}
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+                  <div className="sm:col-span-4">
+                    <label className={labelCls}>名称</label>
+                    <TextInput value={el.name} onChange={(e) => updateElement(idx, { name: e.target.value })} className={inputCls} placeholder={`${category.label}名称`} />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <label className={labelCls}>{category.levelLabel}</label>
+                    <TextInput value={el.level} onChange={(e) => updateElement(idx, { level: e.target.value })} className={inputCls} placeholder="如：Lv.3 / 筑基期" />
+                  </div>
+                  <div className="sm:col-span-5">
+                    <label className={labelCls}>图标</label>
+                    <div className="flex items-center gap-1.5">
+                      <TextInput value={el.icon} onChange={(e) => updateElement(idx, { icon: e.target.value })} className={`${inputCls} w-16 text-center`} />
+                      <div className="flex flex-wrap gap-0.5">
+                        {EMOJI_PRESETS.slice(0, 8).map(em => (
+                          <button key={em} onClick={() => updateElement(idx, { icon: em })} className="text-base hover:scale-125 transition-transform leading-none">{em}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <div>
-                  <label className="text-[10px] text-[var(--color-text-muted)] mb-0.5 block">角色立绘 URL</label>
-                  <input
-                    value={tachieImageUrl}
-                    onChange={(e) => {
-                      setTachieImageUrl(e.target.value);
-                      const html = generateStatusBarHtml(statusBarStyle, mvu.schemaSections, statusBarTitle)
-                        .replace(/https:\/\/placehold\.co\/300x500\/transparent\/fff\?text=立绘/g, e.target.value || 'https://placehold.co/300x500/transparent/fff?text=立绘');
-                      onChange({ ...mvu, statusBarHtml: html });
-                    }}
-                    placeholder="https://example.com/character.png"
-                    className={fieldCls}
-                  />
+                  <label className={labelCls}>描述 / 效果</label>
+                  <TextArea value={el.description} onChange={(e) => updateElement(idx, { description: e.target.value })} rows={2} className={inputCls} placeholder="效果说明" />
                 </div>
-                <div>
-                  <label className="text-[10px] text-[var(--color-text-muted)] mb-0.5 block">头像 URL</label>
-                  <input
-                    value={avatarImageUrl}
-                    onChange={(e) => {
-                      setAvatarImageUrl(e.target.value);
-                      const html = generateStatusBarHtml(statusBarStyle, mvu.schemaSections, statusBarTitle)
-                        .replace(/https:\/\/placehold\.co\/80x80\/e87a90\/fff\?text=头像/g, e.target.value || 'https://placehold.co/80x80/e87a90/fff?text=头像');
-                      onChange({ ...mvu, statusBarHtml: html });
-                    }}
-                    placeholder="https://example.com/avatar.jpg"
-                    className={fieldCls}
-                  />
+                <div className="flex justify-end">
+                  <Button variant="primary" size="sm" onClick={() => setEditingIdx(null)}>完成</Button>
                 </div>
               </div>
-            </div>
-          )}
-
-          {/* Title input */}
-          <div className="mb-3">
-            <label className="text-xs text-[var(--color-text-secondary)] mb-1 block">状态栏标题</label>
-            <input
-              value={statusBarTitle}
-              onChange={(e) => {
-                setStatusBarTitle(e.target.value);
-                if (statusBarStyle !== 'ai-custom') {
-                  const html = generateStatusBarHtml(statusBarStyle, mvu.schemaSections, e.target.value);
-                  onChange({ ...mvu, statusBarHtml: html });
-                }
-              }}
-              placeholder="例如：💕 关系状态"
-              className={fieldCls}
-            />
+            ) : (
+              <div className="flex items-center gap-3">
+                <span className="text-2xl leading-none w-8 text-center">{el.icon || category.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-[var(--text-color)]">{el.name || '（未命名）'}</span>
+                    {el.level && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[color-mix(in_srgb,var(--color-primary)_20%,transparent)] text-[var(--color-primary)]">{el.level}</span>}
+                  </div>
+                  {el.description && <p className="text-xs text-[var(--color-text-muted)] mt-0.5 truncate">{el.description}</p>}
+                </div>
+                <Button variant="ghost" size="sm" onClick={() => setEditingIdx(idx)}>编辑</Button>
+                <Button variant="danger" size="sm" onClick={() => removeElement(idx)}>删除</Button>
+              </div>
+            )}
           </div>
-
-          {/* AI generate */}
-          <div className="mb-3 rounded-lg border border-[color-mix(in_srgb,var(--color-status-warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-warning)_10%,transparent)] p-3">
-            <label className="text-xs text-[var(--color-status-warning)] mb-1.5 block">🤖 AI 生成状态栏（可选）</label>
-            <p className="text-[10px] text-[var(--color-status-warning)] mb-2">
-              描述你想要的状态栏风格，AI 会根据当前变量生成。约束已内置：变量必须用 {'{{getvar::stat_data.路径}}'} 宏读取
-            </p>
-            <div className="flex gap-2">
-              <input
-                value={aiBarStyle}
-                onChange={(e) => setAiBarStyle(e.target.value)}
-                placeholder="例如：赛博朋克霓虹风格，带进度条动画，紫色发光边框"
-                className={fieldCls}
-              />
-              <Button
-                onClick={handleAiGenerateStatusBar}
-                disabled={aiBarGenerating || mvu.schemaSections.length === 0}
-                variant="secondary"
-                size="sm"
-              >
-                {aiBarGenerating ? '⏳ 生成中' : '✨ AI 生成'}
-              </Button>
-            </div>
-          </div>
-
-          {/* AI modify */}
-          <div className="mb-3 rounded-lg border border-[color-mix(in_srgb,var(--color-info)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-info)_10%,transparent)] p-3">
-            <label className="text-xs text-[var(--color-info)] mb-1.5 block">✏️ AI 修改状态栏（可选）</label>
-            <p className="text-[10px] text-[var(--color-info)] mb-2">
-              用自然语言描述想怎么改当前状态栏，AI 会在保留变量宏的基础上调整样式和布局
-            </p>
-            <div className="flex gap-2">
-              <input
-                value={aiBarModifyInstruction}
-                onChange={(e) => setAiBarModifyInstruction(e.target.value)}
-                placeholder="例如：把标题居中、加大字号、给进度条加圆角、换成粉色系"
-                className={fieldCls}
-              />
-              <Button
-                onClick={handleAiModifyStatusBar}
-                disabled={aiBarModifying || mvu.schemaSections.length === 0 || !(mvu.statusBarHtml || statusBarHtml)}
-                variant="secondary"
-                size="sm"
-              >
-                {aiBarModifying ? '⏳ 修改中' : '✏️ AI 修改'}
-              </Button>
-            </div>
-          </div>
-
-          {/* Preview or Code view */}
-          {showBarCode ? (
-            <div>
-              <label className="text-xs text-[var(--color-text-secondary)] mb-1 block">HTML 代码（可手动编辑）</label>
-              <textarea
-                value={mvu.statusBarHtml || statusBarHtml}
-                onChange={(e) => onChange({ ...mvu, statusBarHtml: e.target.value, statusBarStyle: 'ai-custom' })}
-                rows={10}
-                className="w-full rounded border border-[var(--input-border)] bg-[var(--input-bg)] px-2 py-1 text-xs text-[var(--color-text-secondary)] font-mono"
-                placeholder="状态栏 HTML 代码..."
-              />
-              <p className="text-[10px] text-[var(--color-text-muted)] mt-1">
-                提示：编辑时用 <code className="text-[var(--color-status-warning)]">{'{{getvar::stat_data.路径}}'}</code> 宏读取变量，导出时会自动转换为 SillyTavern 可显示的宏。
-              </p>
-            </div>
-          ) : (
-            <div className="rounded-lg border border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_40%,transparent)] p-4">
-              <div className="w-full" dangerouslySetInnerHTML={{ __html: statusBarPreviewHtml }} />
-            </div>
-          )}
-
-          <p className="text-[10px] text-[var(--color-primary)] mt-3 text-center">
-            导出时状态栏 HTML 会通过 regex_scripts 替换 first_mes 中的占位符，在 SillyTavern 前端显示
-          </p>
-        </div>
-
-        {/* Generated code preview — auto-synced */}
-        {mvu.schemaTsContent && (
-          <details className="rounded-xl border border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)] overflow-hidden">
-            <summary className="px-4 py-2 cursor-pointer hover:bg-[color-mix(in_srgb,var(--color-surface-raised)_30%,transparent)] text-sm font-medium text-[var(--color-text-secondary)]">
-              🔧 查看生成的代码 (schema.ts + initvar.yaml + 更新规则) — 自动同步
-            </summary>
-            <div className="px-4 pb-3 space-y-2">
-              <pre className="text-xs text-[var(--color-text-secondary)] bg-[color-mix(in_srgb,var(--input-bg)_50%,transparent)] p-2 rounded max-h-[200px] overflow-y-auto font-mono whitespace-pre-wrap">{mvu.schemaTsContent || '(空)'}</pre>
-              <pre className="text-xs text-[var(--color-text-secondary)] bg-[color-mix(in_srgb,var(--input-bg)_50%,transparent)] p-2 rounded max-h-[200px] overflow-y-auto font-mono whitespace-pre-wrap">{mvu.initvarYamlContent || '(空)'}</pre>
-              <pre className="text-xs text-[var(--color-text-secondary)] bg-[color-mix(in_srgb,var(--input-bg)_50%,transparent)] p-2 rounded max-h-[200px] overflow-y-auto font-mono whitespace-pre-wrap">{mvu.updateRulesYamlContent || '(空)'}</pre>
-            </div>
-          </details>
-        )}
-
-        {/* 多角色套模板弹窗 */}
-        <MultiCharTemplateModal
-          isOpen={showMultiCharModal}
-          onClose={() => setShowMultiCharModal(false)}
-          cardName={cardName}
-          lorebookEntries={lorebookEntries}
-          onApplyMvu={(newMvu) => {
-            onChange(newMvu);
-          }}
-          onApplyStageAxes={onApplyStageAxes}
-        />
+        ))}
       </div>
-    );
-  }
+    </div>
+  );
 }

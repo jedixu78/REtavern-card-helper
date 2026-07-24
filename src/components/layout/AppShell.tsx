@@ -81,12 +81,12 @@ export function AppShell() {
       />
 
       {/* Main content */}
-      <main className="flex-1 h-full min-h-0 overflow-y-auto" {...(sidebarOpen ? { inert: true } : {})}>
+      <main className="flex-1 h-full min-h-0 overflow-hidden flex flex-col" {...(sidebarOpen ? { inert: true } : {})}>
         {/* Mobile header bar */}
-        <div className="md:hidden sticky top-0 z-30 flex items-center gap-3 px-4 py-3 glass-header">
+        <div className="md:hidden shrink-0 z-30 flex items-center gap-3 px-4 py-3 glass-header">
           <button
             onClick={toggleSidebar}
-            className="p-1.5 -ml-1 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--text-color)] hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)] transition-colors"
+            className="p-1.5 -ml-1 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--text-color)] hover:bg-[color-mix(in_srgb,var(--color-text-color)_5%,transparent)] transition-colors"
             aria-label={t('sidebar.openMenu')}
           >
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -98,8 +98,8 @@ export function AppShell() {
           <span className="text-sm font-semibold" style={{ color: 'var(--color-primary)' }}>{t('common.appName')}</span>
         </div>
 
-        <div className="w-full max-w-7xl mx-auto px-3 sm:px-5 lg:px-8 py-4 sm:py-7">
-          <div key={location.key} className="route-transition">
+        <div className="w-full max-w-7xl mx-auto px-3 sm:px-5 lg:px-8 py-4 sm:py-7 flex-1 min-h-0 flex flex-col overflow-y-auto">
+          <div key={location.key} className="route-transition flex-1 flex flex-col min-h-0">
             <Suspense fallback={<RouteFallback />}>
               <Outlet />
             </Suspense>

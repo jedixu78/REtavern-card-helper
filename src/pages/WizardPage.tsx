@@ -18,9 +18,10 @@ import { StepWorldBook } from '../components/wizard/StepWorldBook';
 import { StepFirstMessage } from '../components/wizard/StepFirstMessage';
 import { StepMvuVariables } from '../components/wizard/StepMvuVariables';
 import { StepStagedMode } from '../components/wizard/StepStagedMode';
+import { StepLiveStreamChat } from '../components/wizard/StepLiveStreamChat';
 import { StepPolishExport } from '../components/wizard/StepPolishExport';
 import { generateId, createEmptyDraft, createEmptyLorebookEntry, createEmptyMvuConfig, MVU_LOREBOOK_ENTRY_NAMES } from '../constants/defaults';
-import type { LorebookEntry, WizardCharacter, WizardDraft, StagedModeConfig } from '../constants/defaults';
+import type { LorebookEntry, WizardCharacter, WizardDraft } from '../constants/defaults';
 import { consumeAnalysisLorebookImport } from '../services/novel-analysis-service';
 import { consumeWorkshopLorebookImport, mergeVariableBlueprintsIntoMvu } from '../services/novel-workshop-bridge';
 import { findStagedLorebookEntryIndices } from '../services/card-exporter';
@@ -836,33 +837,8 @@ ${e.content || ''}`)
         return (
           <StepMvuVariables
             mvu={draft.mvu ?? createEmptyMvuConfig()}
-            lorebookEntries={draft.lorebookEntries}
             onChange={(mvu) => updateDraft({ mvu })}
             cardName={draft.cardName}
-            characterDescriptions={characterDescriptions}
-            onApplyStageAxes={(axes, templateId) => {
-              const existing = draft.stagedMode?.characters || [];
-              const existingMap = new Map(existing.map((c) => [c.name, c]));
-              const newCharacters = axes.map((a) => {
-                const existingChar = existingMap.get(a.characterName);
-                return existingChar
-                  ? { ...existingChar, axisPath: a.axisPath }
-                  : {
-                      name: a.characterName,
-                      axisPath: a.axisPath,
-                      summary: '',
-                      axisType: 'number' as const,
-                      stages: [],
-                    };
-              });
-              updateDraft({
-                stagedMode: {
-                  ...(draft.stagedMode || { enabled: false, templateId: 'pure-love', dispatcherPrefix: '分阶段人设', characters: [] }),
-                  templateId: templateId as StagedModeConfig['templateId'],
-                  characters: newCharacters,
-                },
-              });
-            }}
           />
         );
       case 6:
@@ -906,6 +882,13 @@ ${e.content || ''}`)
         );
       case 8:
         return (
+          <StepLiveStreamChat
+            config={draft.liveStreamChat ?? { enabled: false, html: '', themeId: 'terminal', title: '直播间', maxVisible: 10, initialComments: [] }}
+            onChange={(liveStreamChat) => updateDraft({ liveStreamChat })}
+          />
+        );
+      case 9:
+        return (
           <StepPolishExport
             draft={draft}
             cardName={draft.cardName}
@@ -938,11 +921,11 @@ ${e.content || ''}`)
   ) : undefined;
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold mb-1" style={textPrimaryStyle}>
+    <div className="flex flex-col flex-1 min-h-0">
+      <h1 className="text-2xl font-bold mb-1 shrink-0" style={textPrimaryStyle}>
         {isEditMode ? t('wizard.titleEdit') : t('wizard.titleCreate')}
       </h1>
-      <p className="text-sm mb-6" style={textMutedStyle}>
+      <p className="text-sm mb-6 shrink-0" style={textMutedStyle}>
         {isEditMode ? t('wizard.subtitleEdit') : t('wizard.subtitleCreate')}
       </p>
 

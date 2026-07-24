@@ -37,6 +37,13 @@ function migrateStepV4ToV5(oldStep: number, _draft: Partial<WizardDraft>): numbe
   return stepMap[oldStep] ?? Math.min(oldStep, 1);
 }
 
+/** V5 → V6: 新增「直播包装」步骤（step 8），原「美化导出」从 step 8 移到 step 9。 */
+function migrateStepV5ToV6(oldStep: number): number {
+  // Steps 1-7 不变；原 step 8（美化导出）→ step 9
+  if (oldStep >= 8) return oldStep + 1;
+  return oldStep;
+}
+
 /**
  * Normalize a loaded draft by merging with defaults.
  * Handles data from older versions or IndexedDB deserialization where
@@ -65,7 +72,7 @@ function normalizeDraft(raw: Partial<DraftState>): DraftState {
     tags: raw.tags ?? defaults.tags,
     alternate_greetings: raw.alternate_greetings ?? defaults.alternate_greetings,
     mvu: raw.mvu ? { ...defaults.mvu, ...raw.mvu } : defaults.mvu,
-    useMvuExport: raw.useMvuExport ?? defaults.useMvuExport,
+    liveStreamChat: raw.liveStreamChat ? { ...defaults.liveStreamChat, ...raw.liveStreamChat } : defaults.liveStreamChat,
     worldRules: raw.worldRules ?? defaults.worldRules,
     // Shared UI state between Step 2 & Step 4 — fall back to defaults for old drafts
     skeletonTopic: raw.skeletonTopic ?? defaults.skeletonTopic,
@@ -131,6 +138,14 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
             setDraft(normalizeDraft({ ...migratedData, worldRules: migratedData.worldRules ?? '' }));
             setCurrentStep(newStep);
             addToast('info', t('draftMigrated', { oldVersion: 'V4', newVersion: 'V5' }));
+          } else if (saved && saved.version === 5) {
+            // V5 → V6 migration: 新增直播包装步骤，原 step 8（导出）→ step 9
+            const migratedData = saved.data as Partial<DraftState>;
+            const oldStep = saved.currentStep || 1;
+            const newStep = migrateStepV5ToV6(oldStep);
+            setDraft(normalizeDraft(migratedData));
+            setCurrentStep(newStep);
+            addToast('info', t('draftMigrated', { oldVersion: 'V5', newVersion: 'V6' }));
           } else if (saved) {
             // Stale draft from an older app version: discard it to avoid shape mismatches.
             await clearAutoDraft();
@@ -232,7 +247,10 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
         // Step 7: First message — required
         return draft.firstMessage?.trim() ? null : '开场白不能为空';
       case 8:
-        // Step 8: Polish & Export — always valid
+        // Step 8: Live Stream Chat — optional
+        return null;
+      case 9:
+        // Step 9: Polish & Export — always valid
         return null;
       default:
         return null;
