@@ -99,7 +99,6 @@ export function StepWorldBook({
   characterContext,
   mode = 'detail',
   nsfw,
-  onNsfwChange,
   worldAnchor,
   onWorldAnchorChange,
   mvu,
@@ -876,9 +875,6 @@ export function StepWorldBook({
         generating={generating}
         onTopicChange={setTopic}
         onWorldRulesChange={(val) => setWorldRules(val)}
-        cardName={effectiveCardName}
-        characterSummaries={effectiveCharacterContext}
-        existingWorldbookContext={effectiveExistingContext}
         skeletonMode={mode === 'skeleton' ? true : skeletonMode}
         skeletonCount={skeletonCount}
         batchCount={batchCount}
@@ -886,8 +882,6 @@ export function StepWorldBook({
         onSkeletonCountChange={setSkeletonCount}
         onBatchCountChange={setBatchCount}
         onGenerate={handleBatchGenerate}
-        nsfw={nsfw}
-        onNsfwChange={onNsfwChange}
       />
 
       {/* Streaming progress panel */}
