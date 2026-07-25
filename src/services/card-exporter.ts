@@ -69,6 +69,17 @@ const STATUS_BAR_PLACEHOLDER = '<StatusPlaceHolderImpl/>';
 /** Placeholder appended to first_mes for live stream chat panel rendering (independent of MVU) */
 const LIVE_CHAT_PLACEHOLDER = '<LiveStreamChatImpl/>';
 
+/** Prompt rule instructing AI to emit the live chat placeholder at the end of every reply.
+ *  Without this, the placeholder only exists in first_mes and the panel vanishes after
+ *  the first message because AI never outputs it again. */
+const LIVE_CHAT_PROMPT_RULE = `---
+<live_chat_rule>
+- after any <UpdateVariable> block (if present), output the literal token \`<LiveStreamChatImpl/>\` on a new line at the very end of every reply
+- this token renders the live stream chat panel; never omit it, never translate or modify it
+- if the reply already ends with \`<StatusPlaceHolderImpl/>\`, place \`<LiveStreamChatImpl/>\` right after it on a new line
+</live_chat_rule>
+---`;
+
 /** Default creator notes used when draft.creator_notes is empty */
 const DEFAULT_CREATOR_NOTES = '本卡由「吟游手册」制作。\n请尊重创作者的劳动成果，本卡仅供个人娱乐与学习交流使用，严禁任何形式的商业用途、倒卖、转载售卖或未经授权的二次分发。';
 
@@ -125,6 +136,19 @@ function buildFirstMessage(draft: WizardDraft): string {
       result = result ? `${setvarBlock}\n${result}` : setvarBlock;
     }
   }
+
+  return appendPlaceholders(draft, result);
+}
+
+/**
+ * Append status bar and live chat placeholders to a message string.
+ * Used for both first_mes and alternate_greetings so that every opening
+ * message renders the status bar / live chat panel consistently.
+ * - Enables placeholders when the feature is active (and not already present).
+ * - Strips residual placeholders when the feature is disabled (user toggled off).
+ */
+function appendPlaceholders(draft: WizardDraft, base: string): string {
+  let result = base;
 
   // 只要状态栏已启用且存在模板/样式选择，就保留占位符；HTML 可在导出前由模板重新生成。
   const mvuStatusBarActive = draft.mvu?.enabled &&
@@ -235,11 +259,12 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
   const tavernHelperScripts: unknown[] = [];
 
   if (mvuEnabled && draft.mvu) {
-    // MVU 主脚本：从 CDN 加载 MagVarUpdate bundle（与可用卡一致）
+    // MVU 主脚本：从 CDN 加载 MagVarUpdate bundle
+    // 使用 @beta 分支（与参考卡「二十一人会」一致），支持 delta/move 操作
     tavernHelperScripts.push({
       type: 'script',
       name: 'MVU',
-      content: "import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate/artifact/bundle.js'",
+      content: "import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@beta/artifact/bundle.js'",
       enabled: true,
       id: 'd0311ca6-5e9a-498e-a777-f74dc4dc6b12',
       info: '',
@@ -248,10 +273,10 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
         buttons: [
           { name: '重新处理变量', visible: true },
           { name: '重新读取初始变量', visible: true },
+          { name: '清除旧楼层变量', visible: false },
           { name: '快照楼层', visible: false },
           { name: '重演楼层', visible: false },
           { name: '重试额外模型解析', visible: false },
-          { name: '清除旧楼层变量', visible: false },
         ],
       },
       data: {},
@@ -331,18 +356,22 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
     // 使用 SillyTavern 内置的 {{format_message_variable::}} 宏直接读取 stat_data 值
     // （与可用卡「银帷骑士团」方案一致，不依赖 MVU InitVar 或 JS 渲染脚本）
     if (draft.mvu.statusBarHtml && draft.mvu.statusBarHtml.trim()) {
-      const cleanHtml = draft.mvu.statusBarHtml
+      const cleanedBase = draft.mvu.statusBarHtml
         .replace(/^@@render_after\s*\n?/m, '')
-        .replace(/\n/g, '')
-        // 兼容旧版 AI 生成的 EJS getvar（单双引号）→ SillyTavern 内置 format_message_variable 宏
+        // 兼容旧版 AI 生成的 EJS getvar -> SillyTavern 内置 format_message_variable 宏
         .replace(/<%-\s*getvar\(\s*(['"])stat_data\.([^'"]+)\1\s*,\s*\{\s*defaults:\s*[^}]+\}\s*\)\s*%>/g, '{{format_message_variable::stat_data.$2}}')
         .replace(/<%-\s*getvar\(\s*(['"])stat_data\.([^'"]+)\1\s*\)\s*%>/g, '{{format_message_variable::stat_data.$2}}')
-        // {{getvar::}} → {{format_message_variable::}}（AI 可能生成 getvar 宏）
+        // {{getvar::}} -> {{format_message_variable::}}（AI 可能生成 getvar 宏）
         .replace(/\{\{getvar::(stat_data\.[^}]+)\}\}/g, '{{format_message_variable::$1}}')
-        // 旧版写卡站自定义 __MVU_VAR::...__ 标记 → ST 内置 format_message_variable 宏
+        // 旧版写卡站自定义 __MVU_VAR::...__ 标记 -> ST 内置 format_message_variable 宏
         .replace(/__MVU_VAR::(stat_data\.[^_]+)__/g, '{{format_message_variable::$1}}')
         // CSS 中的 calc(... * 1%) 替换为直接使用宏输出的百分比
         .replace(/width:\s*max\s*\(\s*0%\s*,\s*calc\s*\(\s*\{\{format_message_variable::([^}]+)\}\}\s*\*\s*1%\s*\)\s*\)/gi, 'width:{{format_message_variable::$1}}%');
+      // 确保 ```html 围栏存在：SillyTavern 只在 ```html 代码块中执行 <script type="module">
+      // （与参考卡「二十一人会」状态栏美化脚本一致）
+      const cleanHtml = /^```html/i.test(cleanedBase.trim())
+        ? cleanedBase
+        : '```html\n' + cleanedBase + '\n```';
       // 注意：状态栏的 findRegex 必须用纯字符串（非 /.../gi 正则），
       // 与参考卡「银帷骑士团」一致。SillyTavern 对纯字符串做字面替换。
       regexScripts.push({
@@ -384,9 +413,13 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
   // 2 个正则脚本：把 <LiveStreamChatImpl/> 占位符替换为面板 HTML（界面显示），
   // 并从 AI prompt 中移除占位符。
   if (liveChatEnabled && draft.liveStreamChat) {
-    const liveChatHtml = draft.liveStreamChat.html
-      .replace(/^```html\s*/i, '')
-      .replace(/\s*```\s*$/i, '');
+    // SillyTavern 只在 ```html 代码块中执行 <script type="module">
+    // （与参考卡「二十一人会」状态栏美化脚本一致，replaceString 以 ```html 开头）
+    // 导入时围栏被剥离（便于编辑），导出时重新包裹。
+    const rawHtml = draft.liveStreamChat.html;
+    const liveChatHtml = /^```html/i.test(rawHtml.trim())
+      ? rawHtml
+      : '```html\n' + rawHtml + '\n```';
     // 直播间界面 — 替换占位符为面板 HTML（仅界面显示，AI 不可见）
     regexScripts.push({
       id: 'e1a2b3c4-5678-9abc-def0-1234567890ab',
@@ -429,6 +462,13 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
     result.mvu_schema_sections = draft.mvu.schemaSections.length;
     result.mvu_has_status_bar = Boolean(draft.mvu.statusBarHtml);
     result.mvu_has_ejs_preprocess = Boolean(draft.mvu.ejsPreprocessContent);
+    // 持久化状态栏样式与选项，导入时不再丢失原始配置（旧版导入仅靠 mvu_has_status_bar
+    // 布尔值推断会得到无效的 'minimal-dark'，导致 UI 找不到模板）
+    result.mvu_status_bar_style = draft.mvu.statusBarStyle || '';
+    result.mvu_status_bar_show_icons = Boolean(draft.mvu.statusBarShowIcons);
+    if (draft.mvu.statusBarOptions) {
+      result.mvu_status_bar_options = draft.mvu.statusBarOptions;
+    }
     // 酒馆助手脚本注册
     if (tavernHelperScripts.length > 0) {
       result.tavern_helper = { scripts: tavernHelperScripts, variables: {} };
@@ -475,6 +515,7 @@ function buildSTExtensions(overrides: {
   cooldown?: number;
   delay?: number;
   ignoreBudget?: boolean;
+  matchWholeWords?: boolean | null;
 } = {
   position: 'after_char',
   displayIndex: 0,
@@ -493,7 +534,8 @@ function buildSTExtensions(overrides: {
     exclude_recursion: overrides.excludeRecursion ?? false,
     prevent_recursion: overrides.preventRecursion ?? true,
     delay_until_recursion: false,
-    match_whole_words: null,
+    // 保留用户在 UI 中设置的整词匹配偏好；未指定时回退到 null（让 ST 使用其默认）。
+    match_whole_words: overrides.matchWholeWords === undefined ? null : overrides.matchWholeWords,
     use_group_scoring: false,
     case_sensitive: overrides.caseSensitive ?? null,
     automation_id: '',
@@ -577,6 +619,7 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
       cooldown: entry.cooldown,
       delay: entry.delay,
       ignoreBudget: entry.ignore_budget ?? false,
+      matchWholeWords: entry.match_whole_words,
     }),
   }));
 
@@ -615,8 +658,14 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
   // buildMvuScriptBundle 内部会兜底生成缺失的 schemaTs/initvar/updateRules
   let mvuEntryOffset = entries.length;
   let mvuBundle: ReturnType<typeof buildMvuScriptBundle> | null = null;
+  // 直播间面板启用时，需要让 AI 在每条回复末尾输出占位符，否则面板只在 first_mes 出现一次。
+  const liveChatEnabled = Boolean(draft.liveStreamChat?.enabled && draft.liveStreamChat.html?.trim());
   if (mvuEnabled && draft.mvu) {
     const bundle = buildMvuScriptBundle(draft.mvu);
+    // MVU 启用 + 直播间启用：把直播间规则追加到变量输出格式条目末尾，让 AI 同时输出两个占位符
+    if (liveChatEnabled) {
+      bundle.variableOutputFormat = `${bundle.variableOutputFormat}\n${LIVE_CHAT_PROMPT_RULE}`;
+    }
     mvuBundle = bundle;
 
     // EJS预处理 — EJS preprocess entry (only when there are EJS configs using variables)
@@ -768,6 +817,35 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
     // 状态栏通过 regex_scripts 实现，不放在世界书条目里
   }
 
+  // 直播间面板启用但 MVU 未启用时：创建独立的常驻世界书条目注入 <live_chat_rule>，
+  // 让 AI 在每条回复末尾输出 <LiveStreamChatImpl/> 占位符。
+  if (!mvuEnabled && liveChatEnabled) {
+    mvuEntryOffset++;
+    entries.push({
+      id: mvuEntryOffset,
+      keys: [],
+      secondary_keys: [],
+      content: LIVE_CHAT_PROMPT_RULE,
+      name: '直播间面板规则',
+      enabled: true,
+      insertion_order: 2002,
+      case_sensitive: false,
+      selective: false,
+      constant: true,
+      position: 'after_char',
+      priority: 100,
+      comment: '直播间面板规则',
+      use_regex: false,
+      extensions: buildSTExtensions({
+        position: 'after_char',
+        displayIndex: mvuEntryOffset,
+        depth: 4,
+        preventRecursion: true,
+        excludeRecursion: false,
+      }),
+    });
+  }
+
   const now = new Date();
 
   return {
@@ -789,7 +867,7 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
       creator_notes: draft.creator_notes?.trim() || DEFAULT_CREATOR_NOTES,
       system_prompt: draft.system_prompt || '',
       post_history_instructions: draft.post_history_instructions || '',
-      alternate_greetings: draft.alternate_greetings || [],
+      alternate_greetings: (draft.alternate_greetings || []).map((g) => appendPlaceholders(draft, g)),
       character_book: {
         name: `${draft.cardName}的世界书`,
         description: '',
@@ -808,6 +886,8 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
         // world info file. Without it, ST doesn't auto-load the world book
         // on character selection, forcing a manual reload each time.
         world: `${draft.cardName}的世界书`,
+        // depth_prompt: 空内容占位，保持与 SillyTavern V3 规范一致（参考卡「二十一人会」含此字段）
+        depth_prompt: { prompt: '', depth: 4, role: 'system' },
       },
     },
 
@@ -1013,8 +1093,12 @@ function reconstructMvuConfig(
     initvarYamlContent,
     updateRulesYamlContent,
     statusBarHtml,
-    statusBarStyle: (ext.mvu_has_status_bar ? 'minimal-dark' : ''),
-    statusBarOptions: {}, // Options are not recoverable from exported HTML; reset to defaults
+    // 优先读取持久化的 mvu_status_bar_style；旧卡没有该字段时回退到基于
+    // mvu_has_status_bar 推断（保留旧行为以兼容历史卡片）
+    statusBarStyle: (ext.mvu_status_bar_style as string)
+      ?? (ext.mvu_has_status_bar ? 'minimal-dark' : ''),
+    statusBarShowIcons: ext.mvu_status_bar_show_icons === true,
+    statusBarOptions: (ext.mvu_status_bar_options as MvuConfig['statusBarOptions']) ?? {},
   };
 }
 

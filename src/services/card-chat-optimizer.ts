@@ -6,7 +6,7 @@
  */
 
 import type { WizardDraft } from '../constants/defaults';
-import { generateId, createEmptyLorebookEntry } from '../constants/defaults';
+import { generateId, createEmptyLorebookEntry, createEmptyMvuConfig } from '../constants/defaults';
 import { parseAIJson } from '../constants/prompts';
 import { editableLorebookEntries } from './card-exporter';
 
@@ -228,7 +228,7 @@ export function parseCardChatEdits(text: string): CardChatProposals | null {
       }
     } else if (field === 'characters') {
       const action = change.action as 'replace' | 'add' | 'delete' | undefined;
-      if (action === 'replace' || action === 'add') {
+      if (action === 'replace' || action === 'add' || action === 'delete') {
         base.action = action;
         if (typeof change.id === 'string') base.id = change.id;
         if (typeof change.name === 'string') base.name = change.name;
@@ -309,12 +309,20 @@ export function computeCardChatDiffs(draft: WizardDraft, proposals: CardChatProp
       if (change.action === 'replace' && change.id) {
         const ch = draft.characters.find((c) => c.id === change.id);
         before = ch ? { name: ch.name, description: ch.description } : null;
-        after = { name: change.name ?? ch?.name ?? '', description: change.description ?? '' };
-        hasChange = !!ch && (ch.description !== change.description || ch.name !== change.name);
+        after = { name: change.name ?? ch?.name ?? '', description: change.description ?? ch?.description ?? '' };
+        hasChange = !!ch && (
+          (change.description !== undefined && ch.description !== change.description) ||
+          (change.name !== undefined && ch.name !== change.name)
+        );
       } else if (change.action === 'add') {
         before = null;
         after = { name: change.name || '', description: change.description || '' };
         hasChange = true;
+      } else if (change.action === 'delete' && change.id) {
+        const ch = draft.characters.find((c) => c.id === change.id);
+        before = ch ? { name: ch.name, description: ch.description } : null;
+        after = null;
+        hasChange = !!ch;
       }
     } else if (change.field === 'lorebookEntries') {
       const entries = editableLorebookEntries(draft);
@@ -324,9 +332,9 @@ export function computeCardChatDiffs(draft: WizardDraft, proposals: CardChatProp
         before = { comment: match.comment, content: match.content, keys: match.keys };
         after = { comment: change.newComment || match.comment, content: change.content ?? match.content, keys: change.keys ?? match.keys };
         hasChange = matches.some((m) =>
-          m.content !== change.content ||
-          m.comment !== change.newComment ||
-          JSON.stringify(m.keys.slice().sort()) !== JSON.stringify((change.keys || m.keys).slice().sort())
+          (change.content !== undefined && m.content !== change.content) ||
+          (change.newComment !== undefined && m.comment !== change.newComment) ||
+          JSON.stringify(m.keys.slice().sort()) !== JSON.stringify((change.keys ?? m.keys).slice().sort())
         );
       } else if (change.action === 'add') {
         before = null;
@@ -370,7 +378,12 @@ export function applyCardChatPatch(draft: WizardDraft, proposals: CardChatPropos
     } else if (change.field === 'creator_notes' && typeof change.value === 'string') {
       next.creator_notes = change.value;
     } else if (change.field === 'mvu.statusBarHtml' && typeof change.value === 'string') {
-      next.mvu = next.mvu ? { ...next.mvu, statusBarHtml: change.value } : undefined;
+      // MVU 不存在时创建一个空配置并启用，保证 statusBarHtml 能被实际写入与导出
+      // （与 liveStreamChat.html 行为一致，避免 diff 显示有变更但 apply 静默丢弃）
+      if (!next.mvu) {
+        next.mvu = createEmptyMvuConfig();
+      }
+      next.mvu = { ...next.mvu, statusBarHtml: change.value };
     } else if (change.field === 'liveStreamChat.html' && typeof change.value === 'string') {
       next.liveStreamChat = next.liveStreamChat
         ? { ...next.liveStreamChat, html: change.value, enabled: true }
@@ -388,6 +401,8 @@ export function applyCardChatPatch(draft: WizardDraft, proposals: CardChatPropos
           ...next.characters,
           { id: generateId(), name: change.name || '', description: change.description! },
         ];
+      } else if (change.action === 'delete' && change.id) {
+        next.characters = next.characters.filter((c) => c.id !== change.id);
       }
     } else if (change.field === 'lorebookEntries') {
       const entries = next.lorebookEntries || [];
@@ -458,6 +473,7 @@ export function applyCardChatPatch(draft: WizardDraft, proposals: CardChatPropos
  * 用于在应用补丁前复制原始 cardData，避免修改底版。
  */
 function deepClone<T>(obj: T): T {
+  if (obj === undefined || obj === null) return obj;
   if (typeof structuredClone === 'function') {
     try {
       return structuredClone(obj);
@@ -546,11 +562,19 @@ export function applyPatchToCardData(
         description: change.description,
         entryIds: [],
       });
+    } else if (change.action === 'delete' && change.id) {
+      const idx = characters.findIndex((c) => String(c.id) === String(change.id));
+      if (idx >= 0) characters.splice(idx, 1);
     }
     meta.characters = characters;
     next._meta = meta;
   } else if (change.field === 'lorebookEntries') {
-    const charBook = (data.character_book || {}) as Record<string, unknown>;
+    // 仅在原卡确实存在 character_book 时才操作；否则跳过，避免向原本没有
+    // character_book 的卡片注入空对象（违反"不新增未涉及依赖"原则）。
+    const charBook = (data.character_book || undefined) as Record<string, unknown> | undefined;
+    if (!charBook) {
+      return next;
+    }
     const entries = Array.isArray(charBook.entries) ? (charBook.entries as Array<Record<string, unknown>>) : [];
 
     if (change.action === 'replace' && change.comment) {
@@ -601,8 +625,8 @@ export function applyPatchToCardData(
       data.character_book = charBook;
     }
 
-    // replace/add 也需要确保 charBook.entries 被回写
-    if (change.action === 'replace' || change.action === 'add') {
+    // replace 也需要确保 charBook.entries 被回写（仅当确有修改时）
+    if (change.action === 'replace') {
       charBook.entries = entries;
       data.character_book = charBook;
     }

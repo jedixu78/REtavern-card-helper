@@ -491,75 +491,85 @@ async function streamAIOnce(
       let buffer = '';
       let finishReason: string | null = null;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() || '';
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() || '';
 
-        for (const rawLine of lines) {
-          const line = rawLine.trimEnd();
-          if (!line) continue;
+          for (const rawLine of lines) {
+            const line = rawLine.trimEnd();
+            if (!line) continue;
 
-          if (line.startsWith('data:')) {
-            const data = line.slice(5).trim();
-            if (data === '[DONE]') {
-              if (!fullText.trim()) {
-                throw new Error('AI 返回了空内容（流式响应无数据）');
-              }
-              return { fullText, finishReason };
-            }
-            try {
-              const parsed = JSON.parse(data);
-
-              if (parsed.error) {
-                const errMsg = typeof parsed.error === 'string'
-                  ? parsed.error
-                  : (parsed.error as Record<string, unknown>)?.message || JSON.stringify(parsed.error);
-                throw new Error(`AI API 返回错误：${errMsg}`);
-              }
-
-              const choice = parsed.choices?.[0];
-              // Capture finish_reason if present
-              if (choice?.finish_reason && typeof choice.finish_reason === 'string') {
-                finishReason = choice.finish_reason;
-              }
-
-              const content =
-                textFromContentParts(choice?.delta?.content) ||
-                textFromContentParts(choice?.message?.content) ||
-                textFromContentParts(choice?.delta?.text) ||
-                textFromContentParts(choice?.text) ||
-                textFromContentParts(parsed.text) ||
-                textFromContentParts(parsed.output_text) ||
-                textFromContentParts(parsed.response) ||
-                textFromContentParts(parsed.choices?.[0]?.message?.content);
-
-
-
-              if (content) {
-                fullText += content;
-                if (fullText.length > deliveredLength) {
-                  onChunk(fullText.slice(deliveredLength), existingFullText + fullText);
-                  deliveredLength = fullText.length;
+            if (line.startsWith('data:')) {
+              const data = line.slice(5).trim();
+              if (data === '[DONE]') {
+                if (!fullText.trim()) {
+                  throw new Error('AI 返回了空内容（流式响应无数据）');
                 }
+                return { fullText, finishReason };
               }
-            } catch (parseErr) {
-              if (parseErr instanceof Error && parseErr.message.startsWith('AI API 返回错误')) {
-                throw parseErr;
+              try {
+                const parsed = JSON.parse(data);
+
+                if (parsed.error) {
+                  const errMsg = typeof parsed.error === 'string'
+                    ? parsed.error
+                    : (parsed.error as Record<string, unknown>)?.message || JSON.stringify(parsed.error);
+                  throw new Error(`AI API 返回错误：${errMsg}`);
+                }
+
+                const choice = parsed.choices?.[0];
+                // Capture finish_reason if present
+                if (choice?.finish_reason && typeof choice.finish_reason === 'string') {
+                  finishReason = choice.finish_reason;
+                }
+
+                const content =
+                  textFromContentParts(choice?.delta?.content) ||
+                  textFromContentParts(choice?.message?.content) ||
+                  textFromContentParts(choice?.delta?.text) ||
+                  textFromContentParts(choice?.text) ||
+                  textFromContentParts(parsed.text) ||
+                  textFromContentParts(parsed.output_text) ||
+                  textFromContentParts(parsed.response) ||
+                  textFromContentParts(parsed.choices?.[0]?.message?.content);
+
+
+
+                if (content) {
+                  fullText += content;
+                  if (fullText.length > deliveredLength) {
+                    onChunk(fullText.slice(deliveredLength), existingFullText + fullText);
+                    deliveredLength = fullText.length;
+                  }
+                }
+              } catch (parseErr) {
+                if (parseErr instanceof Error && parseErr.message.startsWith('AI API 返回错误')) {
+                  throw parseErr;
+                }
+                // skip other malformed JSON
               }
-              // skip other malformed JSON
             }
           }
         }
-      }
 
-      if (!fullText.trim()) {
-        throw new Error('AI 返回了空内容（流结束但无数据）');
+        if (!fullText.trim()) {
+          throw new Error('AI 返回了空内容（流结束但无数据）');
+        }
+        return { fullText, finishReason };
+      } finally {
+        // 确保流式 reader 在任何路径下（成功返回、抛错、重试）都被释放，
+        // 避免底层 TCP 连接保持打开状态直至 GC（长时间运行的 SPA 中可能累积资源）
+        try {
+          reader.cancel();
+        } catch {
+          // reader 已关闭或被释放，忽略
+        }
       }
-      return { fullText, finishReason };
     } catch (err: unknown) {
       // 已向消费者投递了部分内容后不能重试：模型会从头重新生成，
       // 拼接两次不同生成的内容会产生乱码。

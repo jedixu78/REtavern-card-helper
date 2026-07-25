@@ -196,11 +196,15 @@ function lcPopulate() {
 }
 
 // ── 初始化：立即渲染内置评论，再尝试订阅 MVU 动态更新 ──
-function lcInit() {
+async function lcInit() {
   // 1. 立即渲染内置评论（无需任何外部依赖）
   if (LC_INITIAL.length > 0) lcRender(LC_INITIAL);
 
-  // 2. 可选：若 MVU 运行时可用，订阅变量更新事件实现动态刷新
+  // 2. 可选：等待 MVU 运行时就绪后订阅变量更新事件实现动态刷新
+  //    不等待会导致 MVU 尚未初始化时订阅失败，后续 AI 更新评论无法动态显示
+  try {
+    if (typeof waitGlobalInitialized === 'function') { await waitGlobalInitialized('Mvu'); }
+  } catch (e) { /* MVU 不可用不影响静态展示 */ }
   try {
     if (typeof eventOn === 'function' && typeof Mvu !== 'undefined' && Mvu.events) {
       eventOn(Mvu.events.VARIABLE_UPDATE_ENDED, lcPopulate);

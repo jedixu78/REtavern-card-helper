@@ -566,8 +566,9 @@ function appendCompactRuleFields(lines: string[], r: MvuUpdateRule, indent: numb
 /**
  * Build 变量输出格式.txt (output format for SillyTavern).
  *
- * Matches the reference card convention (e.g. 「银帷骑士团」):
+ * Matches the reference card convention (e.g. 「二十一人会」):
  *   - <update_variable_rules>: instruct AI to emit <UpdateVariable> JSON Patch blocks
+ *     with delta/insert/move/replace/remove operations (aligned with @beta MVU)
  *   - <status_bar_rule>: instruct AI to append <StatusPlaceHolderImpl/> at the end of every reply
  *   - <status_current_variable>: show current stat_data for reference
  *
@@ -591,7 +592,13 @@ export function buildVariableOutputFormat(sections: MvuSchemaSection[], rules: M
 <update_variable_rules>
 rule:
   - you must output the update analysis and the actual update commands at once in the end of the next reply
-  - 'the update commands must strictly follow the **JSON Patch (RFC 6902)** standard, but can only use the following operations: \`replace\` (replace the value of existing paths), \`add\` (only used to insert new items into an object or array), \`remove\`; that is, the output must be a valid JSON array containing operation objects'
+  - 'the update commands works like the **JSON Patch (RFC 6902)** standard, must be a valid JSON array containing operation objects, but supports the following operations instead:'
+  - replace: replace the value of existing paths
+  - delta: update the value of existing number paths by a delta value
+  - insert: insert new items into an object or array (using \`-\` as array index intends appending to the end)
+  - remove
+  - move
+  - don't update field names starts with \`_\` as they are readonly, such as \`_变量\`
 format: |-
   <UpdateVariable>
   <Analysis>$(IN ENGLISH, no more than 80 words)
@@ -603,8 +610,11 @@ format: |-
   <JSONPatch>
   [
     { "op": "replace", "path": "/stat_data/\${section/variable}", "value": \${new_value} },
-    { "op": "add", "path": "/stat_data/\${section/object}/newKey", "value": \${content} },
-    { "op": "remove", "path": "/stat_data/\${section/array}/0" },
+    { "op": "delta", "path": "/stat_data/\${section/number_variable}", "value": \${positive_or_negative_delta} },
+    { "op": "insert", "path": "/stat_data/\${section/object}/newKey", "value": \${content} },
+    { "op": "insert", "path": "/stat_data/\${section/array}/-", "value": \${new_value} },
+    { "op": "remove", "path": "/stat_data/\${section/object/key}" },
+    { "op": "move", "from": "/stat_data/\${section/variable}", "to": "/stat_data/\${section/another/path}" },
     ...
   ]
   </JSONPatch>

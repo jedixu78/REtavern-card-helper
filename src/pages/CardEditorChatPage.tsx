@@ -29,7 +29,18 @@ import {
 } from '../services/card-chat-optimizer';
 import type { WizardDraft } from '../constants/defaults';
 import type { AIMessage } from '../services/ai-service';
-import { Upload, Save, FileJson, Image as ImageIcon, Check, X, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  saveCardEditorAutoDraft,
+  loadCardEditorAutoDraft,
+  clearCardEditorAutoDraft,
+  saveCardEditorDraft,
+  listCardEditorDrafts,
+  loadCardEditorDraft,
+  deleteCardEditorDraft,
+  type CardEditorChatMessage,
+} from '../services/draft-service';
+import type { WizardDraftRecord } from '../db/database';
+import { Upload, Save, FileJson, Image as ImageIcon, Check, X, ChevronDown, ChevronUp, FolderOpen, Trash2 } from 'lucide-react';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -63,6 +74,17 @@ export function CardEditorChatPage() {
   const [coverSource, setCoverSource] = useState<'imported' | 'custom' | 'default'>('default');
   const [expandedDiffs, setExpandedDiffs] = useState<Set<number>>(new Set());
 
+  // ── Draft box state (auto-save / manual save / drafts modal) ──
+  const [isDirty, setIsDirty] = useState(false);
+  const [showDraftsModal, setShowDraftsModal] = useState(false);
+  const [cardEditorDrafts, setCardEditorDrafts] = useState<WizardDraftRecord[]>([]);
+  const [isRestoringAutoDraft, setIsRestoringAutoDraft] = useState(false);
+  const isInitializedRef = useRef(false);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Skip the next mark-dirty trigger (set when importing/loading a draft,
+   *  so the state replacement itself doesn't flag the editor as unsaved). */
+  const skipNextDirtyRef = useRef(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -89,6 +111,216 @@ export function CardEditorChatPage() {
     });
     setCoverImageBuffer(buffer);
     setCoverSource(source);
+  }, []);
+
+  // ── Restore auto-draft on mount (crash/reload recovery) ───────────────
+  // Reads the fixed 'card-editor-new' record; if present, prompts the user
+  // to restore the draft + chat history + cover state.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const record = await loadCardEditorAutoDraft();
+        if (cancelled || !record || !record.data) {
+          isInitializedRef.current = true;
+          return;
+        }
+        const restoredDraft = record.data as WizardDraft;
+        const hasContent = (record.messages?.length ?? 0) > 0 || !!restoredDraft.cardName?.trim();
+        if (!hasContent) {
+          isInitializedRef.current = true;
+          return;
+        }
+        setIsRestoringAutoDraft(true);
+        const shouldRestore = window.confirm('检测到未保存的编辑室草稿，是否恢复？\n（取消将清除该自动草稿）');
+        if (cancelled) return;
+        if (shouldRestore) {
+          setDraft(restoredDraft);
+          setMessages((record.messages ?? []) as ChatMessage[]);
+          const restoredCoverSource = (record.coverSource ?? 'default') as 'imported' | 'custom' | 'default';
+          if (record.coverImageBlob) {
+            try {
+              const buffer = await record.coverImageBlob.arrayBuffer();
+              updateCoverImage(buffer, restoredCoverSource);
+            } catch {
+              updateCoverImage(null, restoredCoverSource);
+            }
+          } else {
+            updateCoverImage(null, restoredCoverSource);
+          }
+          // Restoring replaces the entire editor state — don't flag it as unsaved.
+          // The skip flag is consumed by the mark-dirty effect after isRestoringAutoDraft flips to false.
+          skipNextDirtyRef.current = true;
+          setIsDirty(false);
+          addToast('info', '已恢复上次未保存的编辑');
+        } else {
+          await clearCardEditorAutoDraft();
+        }
+      } catch {
+        // silent fail — don't block the editor on restore errors
+      } finally {
+        if (!cancelled) {
+          isInitializedRef.current = true;
+          setIsRestoringAutoDraft(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Mark dirty on changes (after initialization completes) ───────────
+  // Any user-driven change to draft/messages/coverSource flags the editor
+  // as unsaved, so the "●未保存" indicator shows and beforeunload can warn.
+  // skipNextDirtyRef is set by import/load-draft flows to suppress the
+  // false-positive dirty trigger caused by state replacement itself.
+  useEffect(() => {
+    if (!isInitializedRef.current || isRestoringAutoDraft) return;
+    if (!draft) return;
+    if (skipNextDirtyRef.current) {
+      skipNextDirtyRef.current = false;
+      return;
+    }
+    setIsDirty(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, messages, coverSource, coverImageBuffer]);
+
+  // ── Auto-save (debounced 800ms) ──────────────────────────────────────
+  // Persists draft + messages + cover to 'card-editor-new' for crash recovery.
+  // Clears isDirty on success so the unsaved indicator can disappear.
+  useEffect(() => {
+    if (!isInitializedRef.current || isRestoringAutoDraft) return;
+    if (!draft) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(async () => {
+      try {
+        const blob = coverImageBuffer ? new Blob([coverImageBuffer], { type: 'image/png' }) : null;
+        await saveCardEditorAutoDraft(
+          draft,
+          messages as CardEditorChatMessage[],
+          coverSource,
+          blob,
+        );
+        setIsDirty(false);
+      } catch {
+        // silent fail — auto-save errors shouldn't disrupt editing
+      }
+    }, 800);
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, messages, coverSource, coverImageBuffer]);
+
+  // ── beforeunload: warn when unsaved or streaming ─────────────────────
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirty || isStreaming) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty, isStreaming]);
+
+  // ── Manual save to drafts box ────────────────────────────────────────
+  const handleSaveDraft = useCallback(async () => {
+    if (!draft) return;
+    try {
+      const blob = coverImageBuffer ? new Blob([coverImageBuffer], { type: 'image/png' }) : null;
+      await saveCardEditorDraft(draft, messages as CardEditorChatMessage[], coverSource, blob);
+      setIsDirty(false);
+      addToast('success', '已存入草稿箱');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '保存失败';
+      addToast('error', msg);
+    }
+  }, [draft, messages, coverSource, coverImageBuffer, addToast]);
+
+  // ── Open drafts modal ────────────────────────────────────────────────
+  const handleOpenDrafts = useCallback(async () => {
+    try {
+      const drafts = await listCardEditorDrafts();
+      setCardEditorDrafts(drafts);
+      setShowDraftsModal(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '加载草稿箱失败';
+      addToast('error', msg);
+    }
+  }, [addToast]);
+
+  // ── Load a draft from drafts box ─────────────────────────────────────
+  const handleLoadDraft = useCallback(async (id: string) => {
+    try {
+      const record = await loadCardEditorDraft(id);
+      if (!record || !record.data) {
+        addToast('error', '草稿不存在');
+        return;
+      }
+      setDraft(record.data as WizardDraft);
+      setMessages((record.messages ?? []) as ChatMessage[]);
+      const restoredCoverSource = (record.coverSource ?? 'default') as 'imported' | 'custom' | 'default';
+      if (record.coverImageBlob) {
+        try {
+          const buffer = await record.coverImageBlob.arrayBuffer();
+          updateCoverImage(buffer, restoredCoverSource);
+        } catch {
+          updateCoverImage(null, restoredCoverSource);
+        }
+      } else {
+        updateCoverImage(null, restoredCoverSource);
+      }
+      setShowDraftsModal(false);
+      // Loading a draft replaces the entire editor state — don't flag it as unsaved.
+      skipNextDirtyRef.current = true;
+      setIsDirty(false);
+      addToast('success', '草稿已加载');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      addToast('error', msg);
+    }
+  }, [updateCoverImage, addToast]);
+
+  // ── Delete a draft ───────────────────────────────────────────────────
+  const handleDeleteDraft = useCallback(async (id: string) => {
+    try {
+      await deleteCardEditorDraft(id);
+      setCardEditorDrafts((prev) => prev.filter((d) => d.id !== id));
+      addToast('info', '草稿已删除');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '删除失败';
+      addToast('error', msg);
+    }
+  }, [addToast]);
+
+  // ── Load from drafts on empty state ──────────────────────────────────
+  const handleLoadFromDraftsOnEmpty = useCallback(async () => {
+    try {
+      const drafts = await listCardEditorDrafts();
+      if (drafts.length === 0) {
+        addToast('info', '草稿箱为空');
+        return;
+      }
+      setCardEditorDrafts(drafts);
+      setShowDraftsModal(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '加载草稿箱失败';
+      addToast('error', msg);
+    }
+  }, [addToast]);
+
+  // ── Reset editor (clears auto-draft so next visit won't re-prompt) ──
+  const handleResetEditor = useCallback(() => {
+    setDraft(null);
+    setMessages([]);
+    setImportedFileName(null);
+    setIsDirty(false);
+    setPendingProposals(null);
+    setChangeDiffs([]);
+    setDiffStatuses([]);
+    setShowDiffModal(false);
+    void clearCardEditorAutoDraft();
   }, []);
 
   const handleImport = useCallback(async () => {
@@ -123,6 +355,9 @@ export function CardEditorChatPage() {
         setChangeDiffs([]);
         setDiffStatuses([]);
         setShowDiffModal(false);
+        // Import replaces the entire editor state — don't flag it as unsaved.
+        skipNextDirtyRef.current = true;
+        setIsDirty(false);
         addToast('success', '卡片导入成功，开始和 AI 对话修改吧');
       } catch (err) {
         const msg = err instanceof Error ? err.message : '导入失败';
@@ -378,10 +613,25 @@ export function CardEditorChatPage() {
             <Upload size={18} />
             导入角色卡
           </Button>
+          <button
+            onClick={handleLoadFromDraftsOnEmpty}
+            className="mt-3 text-xs px-3 py-1.5 rounded-lg border transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)] inline-flex items-center gap-1.5"
+            style={{ borderColor, color: mutedText }}
+          >
+            <FolderOpen size={14} />
+            从草稿箱加载
+          </button>
           <p className="text-xs mt-4" style={{ color: faintText }}>
             支持 .json 文件和 SillyTavern 格式的 .png 卡片
           </p>
         </div>
+        <DraftsModal
+          isOpen={showDraftsModal}
+          onClose={() => setShowDraftsModal(false)}
+          drafts={cardEditorDrafts}
+          onLoad={handleLoadDraft}
+          onDelete={handleDeleteDraft}
+        />
       </div>
     );
   }
@@ -392,15 +642,22 @@ export function CardEditorChatPage() {
       <div className="shrink-0 px-4 sm:px-6 py-3 border-b flex flex-wrap items-center justify-between gap-3" style={{ borderColor }}>
         <div className="min-w-0 flex items-center gap-3">
           <button
-            onClick={() => { setDraft(null); setMessages([]); setImportedFileName(null); }}
+            onClick={handleResetEditor}
             className="text-xs px-2 py-1 rounded border transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
             style={{ borderColor, color: mutedText }}
           >
             重新导入
           </button>
           <div className="min-w-0">
-            <h1 className="text-base sm:text-lg font-semibold truncate" style={{ color: 'var(--text-color)' }}>
-              {draft.cardName || '未命名卡片'}
+            <h1 className="text-base sm:text-lg font-semibold truncate flex items-center gap-1.5" style={{ color: 'var(--text-color)' }}>
+              <span className="truncate">{draft.cardName || '未命名卡片'}</span>
+              {isDirty && (
+                <span
+                  title="有未保存的修改"
+                  className="inline-block w-2 h-2 rounded-full shrink-0"
+                  style={{ background: 'var(--color-warning, #e0a020)' }}
+                />
+              )}
             </h1>
             <p className="text-xs truncate" style={{ color: faintText }}>
               {importedFileName}
@@ -408,6 +665,14 @@ export function CardEditorChatPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <Button variant="ghost" size="sm" onClick={handleSaveDraft} className="gap-1" title="保存到草稿箱">
+            <Save size={14} />
+            存草稿
+          </Button>
+          <Button variant="ghost" size="sm" onClick={handleOpenDrafts} className="gap-1" title="打开草稿箱">
+            <FolderOpen size={14} />
+            草稿箱
+          </Button>
           <Button variant="secondary" size="sm" onClick={handleSaveToLibrary} className="gap-1">
             <Save size={14} />
             保存到卡库
@@ -664,6 +929,15 @@ export function CardEditorChatPage() {
           </div>
         </Modal>
       )}
+
+      {/* Drafts Modal */}
+      <DraftsModal
+        isOpen={showDraftsModal}
+        onClose={() => setShowDraftsModal(false)}
+        drafts={cardEditorDrafts}
+        onLoad={handleLoadDraft}
+        onDelete={handleDeleteDraft}
+      />
     </div>
   );
 }
@@ -693,5 +967,73 @@ function DiffValue({ label, value }: { label: string; value: unknown }) {
         {text}
       </pre>
     </div>
+  );
+}
+
+// ── Drafts Modal — lists card-editor drafts with load/delete actions ──────
+interface DraftsModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  drafts: WizardDraftRecord[];
+  onLoad: (id: string) => void;
+  onDelete: (id: string) => void;
+}
+
+function DraftsModal({ isOpen, onClose, drafts, onLoad, onDelete }: DraftsModalProps) {
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="草稿箱" maxWidth="max-w-lg">
+      <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+        {drafts.length === 0 ? (
+          <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-muted)' }}>
+            草稿箱为空
+          </p>
+        ) : (
+          drafts.map((d) => {
+            const draftData = d.data as WizardDraft;
+            const displayName = d.name || draftData.cardName || '未命名草稿';
+            const msgCount = d.messages?.length ?? 0;
+            const timeStr = d.updatedAt.toLocaleString('zh-CN', {
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+            return (
+              <div
+                key={d.id}
+                className="flex items-center gap-2 rounded-lg border px-3 py-2"
+                style={{ borderColor, backgroundColor: cardBgSemiTransparent }}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium truncate" style={{ color: 'var(--text-color)' }}>
+                    {displayName}
+                  </div>
+                  <div className="text-[10px] mt-0.5" style={{ color: faintText }}>
+                    {timeStr}{msgCount > 0 ? ` · ${msgCount} 条对话` : ''}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onLoad(d.id)}
+                  className="text-xs px-2 py-1 rounded border transition-colors hover:bg-[color-mix(in_srgb,var(--color-primary)_12%,transparent)]"
+                  style={{ borderColor: 'var(--color-primary)', color: 'var(--color-primary)' }}
+                >
+                  加载
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`删除草稿「${displayName}」？`)) onDelete(d.id);
+                  }}
+                  className="text-xs px-2 py-1 rounded border transition-colors hover:bg-[color-mix(in_srgb,var(--color-danger)_12%,transparent)]"
+                  style={{ borderColor: 'var(--color-danger)', color: 'var(--color-danger)' }}
+                  title="删除草稿"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </Modal>
   );
 }

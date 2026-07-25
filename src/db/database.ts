@@ -55,6 +55,12 @@ export interface WizardDraftRecord {
   updatedAt: Date;
   /** Display name for manually saved drafts */
   name?: string;
+  /** Card-editor-only: chat messages with AI (undefined for wizard drafts) */
+  messages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /** Card-editor-only: cover image source type */
+  coverSource?: 'imported' | 'custom' | 'default';
+  /** Card-editor-only: cover image blob for crash recovery (undefined for wizard drafts) */
+  coverImageBlob?: Blob;
 }
 
 export const db = new Dexie('TavernCardHelper') as Dexie & {

@@ -47,6 +47,9 @@ magvarupdate/
 st-prompt-template/
 stagedog-tavern-helper-template/
 
+# Reference cards (local only, not for distribution)
+参考/
+
 .vercel
 .env*
 

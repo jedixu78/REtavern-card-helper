@@ -81,6 +81,30 @@ describe('assembleCard', () => {
     expect(card.data.first_mes).toContain('<StatusPlaceHolderImpl/>');
   });
 
+  it('状态栏 HTML 导出时保留 ```html 围栏（SillyTavern 需要围栏才执行脚本）', () => {
+    const draft = makeDraft({
+      cardName: '测试',
+      firstMessage: '你好。',
+      mvu: {
+        enabled: true,
+        mode: 'expert',
+        schemaSections: [{ name: '测试', variables: [{ path: '测试.值', zodType: 'z.coerce.number()', description: '', prefix: '', initialValue: 0 }] }],
+        updateRules: [],
+        ejsConfigs: [],
+        ejsPreprocessContent: '',
+        schemaTsContent: '...',
+        initvarYamlContent: '',
+        updateRulesYamlContent: '',
+        statusBarHtml: '<div>状态栏</div>',
+        statusBarStyle: 'compact-panel',
+      },
+    });
+    const card = assembleCard(draft);
+    const scripts = ((card.data.extensions as unknown as Record<string, unknown>).regex_scripts as Array<Record<string, unknown>>);
+    const render = scripts.find((s) => s.scriptName === '状态栏界面');
+    expect(String(render?.replaceString)).toMatch(/^```html/i);
+  });
+
   it('直播间面板会注入独立占位符并导出界面/AI双正则', () => {
     const html = generateLiveChatHtml({ themeId: 'terminal', initialComments: ['测试评论'] });
     const draft = makeDraft({
@@ -101,7 +125,8 @@ describe('assembleCard', () => {
     const render = scripts.find((s) => s.scriptName === '直播间界面');
     const hide = scripts.find((s) => s.scriptName === '对AI隐藏直播间');
     expect(render?.findRegex).toBe('<LiveStreamChatImpl/>');
-    expect(String(render?.replaceString)).not.toMatch(/^```html/i);
+    // 导出时保留 ```html 围栏：SillyTavern 只在 ```html 代码块中执行 <script type="module">
+    expect(String(render?.replaceString)).toMatch(/^```html/i);
     expect(String(render?.replaceString)).toContain('lc-root');
     expect(hide?.promptOnly).toBe(true);
   });
@@ -171,6 +196,79 @@ describe('assembleCard', () => {
     const draft = makeDraft({ cardName: '测试', alternate_greetings: ['问候1', '问候2'] });
     const card = assembleCard(draft);
     expect(card.data.alternate_greetings).toEqual(['问候1', '问候2']);
+  });
+
+  it('启用直播间面板时 alternate_greetings 也追加占位符', () => {
+    const html = generateLiveChatHtml({ themeId: 'terminal', initialComments: ['测试评论'] });
+    const draft = makeDraft({
+      cardName: '测试',
+      alternate_greetings: ['问候1', '问候2'],
+      liveStreamChat: {
+        enabled: true,
+        html,
+        themeId: 'terminal',
+        title: '直播间',
+        maxVisible: 10,
+        initialComments: ['测试评论'],
+      },
+    });
+    const card = assembleCard(draft);
+    expect(card.data.alternate_greetings[0]).toContain('<LiveStreamChatImpl/>');
+    expect(card.data.alternate_greetings[1]).toContain('<LiveStreamChatImpl/>');
+  });
+
+  it('MVU 未启用但直播间启用时创建直播间面板规则世界书条目', () => {
+    const html = generateLiveChatHtml({ themeId: 'terminal', initialComments: ['测试评论'] });
+    const draft = makeDraft({
+      cardName: '测试',
+      firstMessage: '开播。',
+      liveStreamChat: {
+        enabled: true,
+        html,
+        themeId: 'terminal',
+        title: '直播间',
+        maxVisible: 10,
+        initialComments: ['测试评论'],
+      },
+    });
+    const card = assembleCard(draft);
+    const ruleEntry = card.data.character_book.entries.find((e: { name?: string; content?: string }) => e.name === '直播间面板规则');
+    expect(ruleEntry).toBeDefined();
+    expect(ruleEntry?.content).toContain('<live_chat_rule>');
+    expect(ruleEntry?.constant).toBe(true);
+  });
+
+  it('MVU 启用且直播间启用时 variableOutputFormat 包含 live_chat_rule', () => {
+    const html = generateLiveChatHtml({ themeId: 'terminal', initialComments: ['测试评论'] });
+    const draft = makeDraft({
+      cardName: '测试',
+      firstMessage: '开播。',
+      mvu: {
+        enabled: true,
+        mode: 'expert',
+        schemaSections: [{ name: '测试', variables: [{ path: '测试.值', zodType: 'z.coerce.number()', description: '', prefix: '', initialValue: 0 }] }],
+        updateRules: [],
+        ejsConfigs: [],
+        ejsPreprocessContent: '',
+        schemaTsContent: '...',
+        initvarYamlContent: '',
+        updateRulesYamlContent: '',
+        statusBarHtml: '',
+        statusBarStyle: 'none',
+      },
+      liveStreamChat: {
+        enabled: true,
+        html,
+        themeId: 'terminal',
+        title: '直播间',
+        maxVisible: 10,
+        initialComments: ['测试评论'],
+      },
+    });
+    const card = assembleCard(draft);
+    const outputFormat = card.data.character_book.entries.find((e: { name?: string; content?: string }) => e.name === 'MVU 变量输出格式');
+    expect(outputFormat).toBeDefined();
+    expect(outputFormat?.content).toContain('<live_chat_rule>');
   });
 });
 
