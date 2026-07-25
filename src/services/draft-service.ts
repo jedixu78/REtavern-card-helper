@@ -47,6 +47,19 @@ function defaultDraftName(draft: WizardDraft): string {
   return cardName ? `${cardName} ${timeStr}` : `未命名草稿 ${timeStr}`;
 }
 
+/**
+ * Strip the trailing time suffix that defaultDraftName / defaultCardEditorDraftName
+ * append to auto-generated names (e.g. "卡片名 07/26 14:30" → "卡片名").
+ * Used when displaying draft titles so the save time isn't duplicated — the small
+ * subtitle below the title already shows updatedAt.
+ *
+ * User-renamed drafts are unaffected unless they happen to end with a matching
+ * "MM/DD HH:MM" pattern, which is rare.
+ */
+export function stripTrailingTime(name: string): string {
+  return (name || '').replace(/\s+\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}\s*$/, '').trim();
+}
+
 export async function saveManualDraft(
   draft: WizardDraft,
   currentStep: number,
@@ -87,6 +100,23 @@ export async function renameDraft(id: string, name: string): Promise<void> {
     name: name.trim() || draft.name,
     updatedAt: new Date(),
   });
+}
+
+/** Update the cover image of a wizard draft (null clears it). */
+export async function updateDraftCover(id: string, blob: Blob | null): Promise<void> {
+  const draft = await db.wizard_drafts.get(id);
+  if (!draft) return;
+  if (blob) {
+    await db.wizard_drafts.put({
+      ...draft,
+      coverImageBlob: blob,
+      updatedAt: new Date(),
+    });
+  } else {
+    const next = { ...draft, updatedAt: new Date() } as Partial<WizardDraftRecord>;
+    delete next.coverImageBlob;
+    await db.wizard_drafts.put(next as WizardDraftRecord);
+  }
 }
 
 export async function saveAutoDraft(draft: WizardDraft, currentStep: number): Promise<void> {
@@ -192,4 +222,22 @@ export async function loadCardEditorDraft(id: string): Promise<WizardDraftRecord
 export async function deleteCardEditorDraft(id: string): Promise<void> {
   if (!id.startsWith(CARD_EDITOR_DRAFT_PREFIX)) return;
   await db.wizard_drafts.delete(id);
+}
+
+/** Update the cover image of a card-editor draft (null clears it). */
+export async function updateCardEditorDraftCover(id: string, blob: Blob | null): Promise<void> {
+  if (!id.startsWith(CARD_EDITOR_DRAFT_PREFIX)) return;
+  const draft = await db.wizard_drafts.get(id);
+  if (!draft) return;
+  if (blob) {
+    await db.wizard_drafts.put({
+      ...draft,
+      coverImageBlob: blob,
+      updatedAt: new Date(),
+    });
+  } else {
+    const next = { ...draft, updatedAt: new Date() } as Partial<WizardDraftRecord>;
+    delete next.coverImageBlob;
+    await db.wizard_drafts.put(next as WizardDraftRecord);
+  }
 }

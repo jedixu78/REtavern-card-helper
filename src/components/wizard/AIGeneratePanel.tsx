@@ -20,7 +20,10 @@ interface AIGeneratePanelProps {
   onSkeletonCountChange: (count: number) => void;
   onBatchCountChange: (count: number) => void;
   onGenerate: () => void;
-  
+  /** When true, hides the topic input and skeleton-mode toggle section.
+   *  Used in step 4 (detail mode) where only full-mode generation is offered. */
+  hideTopicAndSkeleton?: boolean;
+
 }
 
 export function AIGeneratePanel({
@@ -36,6 +39,7 @@ export function AIGeneratePanel({
   onSkeletonCountChange,
   onBatchCountChange,
   onGenerate,
+  hideTopicAndSkeleton = false,
 }: AIGeneratePanelProps) {
   const { t } = useTranslation();
 
@@ -56,17 +60,20 @@ export function AIGeneratePanel({
 
   return (
     <div className="mb-6 rounded-xl border border-primary-tint-light bg-primary-tint-light p-4 space-y-3">
-      <div>
-        <label className="text-sm font-medium text-primary-bright">{t('aiPanel.topicLabel')}</label>
-        <TextInput
-          value={topic}
-          onChange={(e) => onTopicChange(e.target.value)}
-          placeholder={t('aiPanel.topicPlaceholder')}
-        />
-      </div>
+      {!hideTopicAndSkeleton && (
+        <div>
+          <label className="text-sm font-medium text-primary-bright">{t('aiPanel.topicLabel')}</label>
+          <TextInput
+            value={topic}
+            onChange={(e) => onTopicChange(e.target.value)}
+            placeholder={t('aiPanel.topicPlaceholder')}
+          />
+        </div>
+      )}
 
-      {/* Skeleton mode */}
-      <div className="p-3 rounded-lg border space-y-2" style={{ backgroundColor: themeAlpha('success', 20), borderColor: themeAlpha('success', 30) }}>
+      {/* Skeleton mode — hidden in detail mode (step 4) */}
+      {!hideTopicAndSkeleton && (
+        <div className="p-3 rounded-lg border space-y-2" style={{ backgroundColor: themeAlpha('success', 20), borderColor: themeAlpha('success', 30) }}>
         <div className="flex items-center justify-between">
           <div>
             <label className="text-sm font-medium flex items-center gap-2 cursor-pointer select-none" style={{ color: C.success }}>
@@ -114,6 +121,7 @@ export function AIGeneratePanel({
           </div>
         )}
       </div>
+      )}
 
       {/* Full mode batch count */}
       {!skeletonMode && (

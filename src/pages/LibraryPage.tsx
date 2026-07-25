@@ -1,23 +1,28 @@
 /**
  * LibraryPage - Character card library management.
- * Lists all saved cards with search, sort, edit, delete, and JSON/PNG export/import.
+ * Lists all saved cards as a responsive card grid with search, sort,
+ * edit, delete, JSON/PNG export/import, and replaceable card covers.
  */
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCardLibrary } from '../hooks/useCardLibrary';
+import { useViewPrefs } from '../hooks/useViewPrefs';
 import { db } from '../db/database';
 import { useToast } from '../components/shared/Toast';
 import { Button } from '../components/shared/Button';
 import { TextInput } from '../components/shared/TextInput';
 import { Modal } from '../components/shared/Modal';
+import { CardCover } from '../components/shared/CardCover';
+import { ViewToolbar } from '../components/shared/ViewToolbar';
 import { useTranslation } from '../i18n/I18nContext';
 import { WIZARD_DRAFT_VERSION } from '../constants/defaults';
 import { cardToDraft, assembleCard, exportAsJson, exportAsPng, importFromPng } from '../services/card-exporter';
 import { resizeImageToPngBuffer } from '../services/image-processing';
+import { Trash2, Edit2, MoreVertical, Image as ImageIcon } from 'lucide-react';
 
 export function LibraryPage() {
   const { t } = useTranslation();
-  const { cards, trashCards, loading, deleteCard, restoreCard, permanentDelete, emptyTrash, loadCards } = useCardLibrary();
+  const { cards, trashCards, loading, deleteCard, restoreCard, permanentDelete, emptyTrash, loadCards, updateCardCover } = useCardLibrary();
   const navigate = useNavigate();
   const { addToast } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
@@ -27,6 +32,14 @@ export function LibraryPage() {
   const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState<number | null>(null);
   const [exportMenuCard, setExportMenuCard] = useState<Record<string, unknown> | null>(null);
   const [showTrash, setShowTrash] = useState(false);
+  const { mode: viewMode, size: viewSize, setMode: setViewMode, setSize: setViewSize } = useViewPrefs('library');
+
+  // Grid column classes per size — bigger size = fewer columns.
+  const gridColsBySize = {
+    sm: 'grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-8',
+    md: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6',
+    lg: 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5',
+  } as const;
 
   const filteredCards = useMemo(() => {
     let result = [...cards];
@@ -130,6 +143,36 @@ export function LibraryPage() {
     setExportMenuCard(null);
   };
 
+  const handleChangeCover = useCallback(async (id: number) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/*';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      try {
+        const buffer = await resizeImageToPngBuffer(file, { maxDimension: 600 });
+        const blob = new Blob([buffer], { type: 'image/png' });
+        await updateCardCover(id, blob);
+        addToast('success', t('library.coverUpdated'));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : t('library.coverUpdateFailed');
+        addToast('error', msg);
+      }
+    };
+    input.click();
+  }, [updateCardCover, addToast, t]);
+
+  const handleRemoveCover = useCallback(async (id: number) => {
+    try {
+      await updateCardCover(id, null);
+      addToast('info', t('library.coverRemoved'));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : t('library.coverUpdateFailed');
+      addToast('error', msg);
+    }
+  }, [updateCardCover, addToast, t]);
+
   const handleImport = async () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -139,6 +182,7 @@ export function LibraryPage() {
       if (!file) return;
       try {
         let cardData: Record<string, unknown>;
+        let coverBlob: Blob | null = null;
         if (file.name.endsWith('.png') || file.type === 'image/png') {
           const buffer = await file.arrayBuffer();
           const extracted = await importFromPng(buffer);
@@ -147,6 +191,13 @@ export function LibraryPage() {
             return;
           }
           cardData = extracted;
+          // Use the imported PNG itself as the cover image (downsized for grid display).
+          try {
+            const resized = await resizeImageToPngBuffer(file, { maxDimension: 600 });
+            coverBlob = new Blob([resized], { type: 'image/png' });
+          } catch {
+            coverBlob = null;
+          }
         } else {
           const text = await file.text();
           cardData = JSON.parse(text);
@@ -160,6 +211,7 @@ export function LibraryPage() {
           name: card.data.name || card.name || t('library.importedCardName'),
           createdAt: new Date(),
           updatedAt: new Date(),
+          ...(coverBlob ? { coverImageBlob: coverBlob } : {}),
         };
         await db.cards.add(cardToSave as Record<string, unknown>);
         await loadCards();
@@ -239,28 +291,30 @@ export function LibraryPage() {
               <p className="text-sm" style={{ color: faintText }}>{t('library.trashEmptySubtitle')}</p>
             </div>
           )}
-          <div className="space-y-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
             {trashCards.map((card) => (
               <div
                 key={card.id}
-                className="rounded-xl border p-5 opacity-70"
+                className="rounded-xl border overflow-hidden opacity-70 flex flex-col"
                 style={{ borderColor, backgroundColor: surfaceBg }}
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-lg font-semibold truncate" style={{ color: mutedText }}>
-                      {card.name || t('library.untitled')}
-                    </h3>
-                    <p className="text-xs mt-1" style={{ color: faintText }}>
-                      {t('library.deletedAt')}: {formatDate(card.deletedAt || card.updatedAt)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 ml-4 shrink-0">
-                    <Button variant="secondary" size="sm" onClick={() => handleRestore(card.id!)}>
+                <CardCover
+                  blob={card.coverImageBlob ?? null}
+                  name={(card.name as string) || t('library.untitled')}
+                />
+                <div className="p-3 flex-1 flex flex-col">
+                  <h3 className="text-sm font-semibold truncate" style={{ color: mutedText }}>
+                    {card.name || t('library.untitled')}
+                  </h3>
+                  <p className="text-[10px] mt-1" style={{ color: faintText }}>
+                    {t('library.deletedAt')}: {formatDate(card.deletedAt || card.updatedAt)}
+                  </p>
+                  <div className="flex items-center gap-1.5 mt-3 pt-2 border-t" style={{ borderColor: 'color-mix(in srgb, var(--color-border-default) 50%, transparent)' }}>
+                    <Button variant="secondary" size="sm" className="flex-1 text-xs" onClick={() => handleRestore(card.id!)}>
                       ♻️ {t('library.restore')}
                     </Button>
-                    <Button variant="danger" size="sm" onClick={() => setPermanentDeleteConfirm(card.id!)}>
-                      🗑️ {t('library.permanentDelete')}
+                    <Button variant="danger" size="sm" className="text-xs px-2" onClick={() => setPermanentDeleteConfirm(card.id!)} title={t('library.permanentDelete')}>
+                      <Trash2 size={14} />
                     </Button>
                   </div>
                 </div>
@@ -274,8 +328,8 @@ export function LibraryPage() {
       {!showTrash && (<>
 
       {/* Search and sort bar */}
-      <div className="flex gap-3 mb-6">
-        <div className="flex-1">
+      <div className="flex flex-wrap gap-3 mb-6">
+        <div className="flex-1 min-w-[180px]">
           <TextInput
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -294,6 +348,12 @@ export function LibraryPage() {
         <Button variant="ghost" size="sm" onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}>
           {sortDir === 'asc' ? '↑' : '↓'}
         </Button>
+        <ViewToolbar
+          mode={viewMode}
+          size={viewSize}
+          onModeChange={setViewMode}
+          onSizeChange={setViewSize}
+        />
       </div>
 
       {/* Loading state */}
@@ -316,110 +376,300 @@ export function LibraryPage() {
         </div>
       )}
 
-      {/* Card list */}
-      <div className="space-y-3">
+      {/* Card grid (grid mode) */}
+      {viewMode === 'grid' && (
+      <div className={`grid ${gridColsBySize[viewSize]} gap-4`}>
         {filteredCards.map((card) => {
           const data = (card.data || {}) as Record<string, unknown>;
-          const meta = (card._meta || {}) as Record<string, unknown>;
-          const charCount = Array.isArray(meta.characters) ? meta.characters.length : 1;
-          const lorebookEntries = ((data.character_book as Record<string, unknown>)?.entries as unknown[]) || [];
           const cardTags = (data.tags as string[]) || [];
+          const cardId = card.id as number;
+          const cardName = (card.name as string) || t('library.untitled');
+          const hasCustomCover = !!card.coverImageBlob;
 
           return (
             <div
               key={card.id}
-              className="rounded-xl border p-5 transition-colors"
-              style={{
-                borderColor,
-                backgroundColor: surfaceBg,
-              }}
+              className="group rounded-xl border overflow-hidden flex flex-col transition-transform hover:-translate-y-0.5 hover:shadow-lg"
+              style={{ borderColor, backgroundColor: surfaceBg }}
             >
-              <div className="flex items-start justify-between">
-                <div className="flex-1 min-w-0">
-                  <h3 className="text-lg font-semibold truncate" style={{ color: 'var(--text-color)' }}>
-                    {card.name || t('library.untitled')}
-                  </h3>
-                  <div className="flex items-center gap-3 mt-1 text-xs" style={{ color: faintText }}>
-                    <span>👤 {t('library.characterCount', { count: String(charCount) })}</span>
-                    <span>📖 {t('library.entryCount', { count: String(lorebookEntries.length) })}</span>
-                    <span>🕐 {formatDate(card.updatedAt)}</span>
-                  </div>
-                  {cardTags.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {cardTags.slice(0, 6).map((tag, i) => (
-                        <span
-                          key={i}
-                          className="px-1.5 py-0.5 text-[10px] rounded"
-                          style={{
-                            backgroundColor: 'color-mix(in srgb, var(--color-text-secondary) 16%, transparent)',
-                            color: mutedText,
-                          }}
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {(data.description as string) && (
-                    <p className="mt-2 text-sm line-clamp-2" style={{ color: mutedText }}>
-                      {data.description as string}
-                    </p>
+              {/* Cover with hover actions */}
+              <div className="relative">
+                <CardCover blob={card.coverImageBlob ?? null} name={cardName} />
+
+                {/* Top-right quick actions */}
+                <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => setExportMenuCard(
+                      exportMenuCard?.id === card.id ? null : (card as unknown as Record<string, unknown>),
+                    )}
+                    title={t('library.exportButton')}
+                    className="w-7 h-7 rounded-md backdrop-blur-sm bg-black/55 text-white flex items-center justify-center hover:bg-black/75 transition-colors"
+                  >
+                    <MoreVertical size={14} />
+                  </button>
+                  <button
+                    onClick={() => setDeleteConfirm(cardId)}
+                    title={t('common.delete')}
+                    className="w-7 h-7 rounded-md backdrop-blur-sm bg-black/55 text-white flex items-center justify-center hover:bg-red-600/80 transition-colors"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+
+                {/* Bottom cover-replace action */}
+                <div className="absolute bottom-1.5 left-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => handleChangeCover(cardId)}
+                    title={t('library.changeCover')}
+                    className="flex-1 h-7 rounded-md backdrop-blur-sm bg-black/55 text-white text-[11px] flex items-center justify-center gap-1 hover:bg-black/75 transition-colors"
+                  >
+                    <ImageIcon size={12} />
+                    {t('library.changeCover')}
+                  </button>
+                  {hasCustomCover && (
+                    <button
+                      onClick={() => handleRemoveCover(cardId)}
+                      title={t('library.removeCover')}
+                      className="w-7 h-7 rounded-md backdrop-blur-sm bg-black/55 text-white flex items-center justify-center hover:bg-black/75 transition-colors"
+                    >
+                      <Trash2 size={12} />
+                    </button>
                   )}
                 </div>
-                <div className="flex items-center gap-2 ml-4 shrink-0">
-                  <Button variant="secondary" size="sm" onClick={() => handleEditAsNewDraft(card as unknown as Record<string, unknown>)}>
-                    ✏️ {t('common.edit')}
-                  </Button>
-                  <div className="relative">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setExportMenuCard(
-                        exportMenuCard?.id === card.id ? null : (card as unknown as Record<string, unknown>),
-                      )}
+
+                {/* Export dropdown */}
+                {exportMenuCard?.id === card.id && (
+                  <div
+                    className="absolute right-1.5 top-9 w-44 rounded-lg border shadow-xl z-20 py-1"
+                    style={{ borderColor, backgroundColor: 'var(--color-surface-raised)' }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                      style={{ color: 'var(--text-color)' }}
+                      onClick={() => handleExportJson(card as unknown as Record<string, unknown>)}
                     >
-                      📤
-                    </Button>
-                    {exportMenuCard?.id === card.id && (
-                      <div
-                        className="absolute right-0 top-full mt-1 w-48 rounded-lg border shadow-xl z-10 py-1"
-                        style={{ borderColor, backgroundColor: 'var(--color-surface-raised)' }}
+                      📄 {t('library.exportJson')}
+                    </button>
+                    <button
+                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                      style={{ color: 'var(--text-color)' }}
+                      onClick={() => handleExportPng(card as unknown as Record<string, unknown>)}
+                    >
+                      🖼️ {t('library.exportPngAuto')}
+                    </button>
+                    <button
+                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                      style={{ color: 'var(--text-color)' }}
+                      onClick={() => handleExportPngWithImage(card as unknown as Record<string, unknown>)}
+                    >
+                      🎨 {t('library.exportPngChoose')}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Body */}
+              <div className="p-3 flex-1 flex flex-col">
+                <h3 className="text-sm font-semibold truncate" style={{ color: 'var(--text-color)' }} title={cardName}>
+                  {cardName}
+                </h3>
+                <div className="text-[10px] mt-1 truncate" style={{ color: faintText }}>
+                  🕐 {formatDate(card.updatedAt)}
+                </div>
+                {cardTags.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {cardTags.slice(0, 3).map((tag, i) => (
+                      <span
+                        key={i}
+                        className="px-1.5 py-0.5 text-[10px] rounded"
+                        style={{
+                          backgroundColor: 'color-mix(in srgb, var(--color-text-secondary) 16%, transparent)',
+                          color: mutedText,
+                        }}
                       >
-                        <button
-                          className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                          style={{ color: 'var(--text-color)' }}
-                          onClick={() => handleExportJson(card as unknown as Record<string, unknown>)}
-                        >
-                          📄 {t('library.exportJson')}
-                        </button>
-                        <button
-                          className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                          style={{ color: 'var(--text-color)' }}
-                          onClick={() => handleExportPng(card as unknown as Record<string, unknown>)}
-                        >
-                          🖼️ {t('library.exportPngAuto')}
-                        </button>
-                        <button
-                          className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                          style={{ color: 'var(--text-color)' }}
-                          onClick={() => handleExportPngWithImage(card as unknown as Record<string, unknown>)}
-                        >
-                          🎨 {t('library.exportPngChoose')}
-                        </button>
-                      </div>
+                        {tag}
+                      </span>
+                    ))}
+                    {cardTags.length > 3 && (
+                      <span className="px-1.5 py-0.5 text-[10px] rounded" style={{ color: faintText }}>
+                        +{cardTags.length - 3}
+                      </span>
                     )}
                   </div>
-                  <Button variant="ghost" size="sm" onClick={() => setDeleteConfirm(card.id!)}>
-                    🗑️
-                  </Button>
-                </div>
+                )}
+                {(data.description as string) && (
+                  <p className="mt-2 text-xs line-clamp-2" style={{ color: mutedText }}>
+                    {data.description as string}
+                  </p>
+                )}
+
+                {/* Bottom action — mt-auto so short cards don't show blank body background */}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="mt-auto pt-2 text-xs w-full"
+                  onClick={() => handleEditAsNewDraft(card as unknown as Record<string, unknown>)}
+                >
+                  <Edit2 size={12} className="mr-1" />
+                  {t('common.edit')}
+                </Button>
               </div>
             </div>
           );
         })}
       </div>
+      )}
+
+      {/* List view (list mode) */}
+      {viewMode === 'list' && (
+      <div className="flex flex-col gap-2">
+        {filteredCards.map((card) => {
+          const data = (card.data || {}) as Record<string, unknown>;
+          const cardTags = (data.tags as string[]) || [];
+          const cardId = card.id as number;
+          const cardName = (card.name as string) || t('library.untitled');
+          const hasCustomCover = !!card.coverImageBlob;
+          // Size affects row thumbnail size and padding
+          const thumbSize = viewSize === 'sm' ? 'w-10 h-12' : viewSize === 'lg' ? 'w-16 h-20' : 'w-12 h-16';
+          const rowPad = viewSize === 'sm' ? 'p-2' : viewSize === 'lg' ? 'p-3.5' : 'p-3';
+
+          return (
+            <div
+              key={card.id}
+              className="group relative rounded-xl border flex items-center gap-3 transition-colors hover:shadow-md"
+              style={{ borderColor, backgroundColor: surfaceBg }}
+            >
+              {/* Thumbnail */}
+              <div className="relative shrink-0">
+                <CardCover
+                  blob={card.coverImageBlob ?? null}
+                  name={cardName}
+                  aspectClass={thumbSize}
+                  roundedClass="rounded-lg"
+                />
+                <div className="absolute inset-0 flex gap-1 items-start justify-end p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => handleChangeCover(cardId)}
+                    title={t('library.changeCover')}
+                    className="w-5 h-5 rounded backdrop-blur-sm bg-black/55 text-white flex items-center justify-center hover:bg-black/75"
+                  >
+                    <ImageIcon size={10} />
+                  </button>
+                  {hasCustomCover && (
+                    <button
+                      onClick={() => handleRemoveCover(cardId)}
+                      title={t('library.removeCover')}
+                      className="w-5 h-5 rounded backdrop-blur-sm bg-black/55 text-white flex items-center justify-center hover:bg-black/75"
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Main content */}
+              <div className={`min-w-0 flex-1 ${rowPad} flex items-center gap-3`}>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-semibold truncate" style={{ color: 'var(--text-color)' }} title={cardName}>
+                    {cardName}
+                  </h3>
+                  <div className="text-[10px] mt-0.5 truncate" style={{ color: faintText }}>
+                    🕐 {formatDate(card.updatedAt)}
+                  </div>
+                  {cardTags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {cardTags.slice(0, 4).map((tag, i) => (
+                        <span key={i} className="px-1.5 py-0.5 text-[10px] rounded" style={{ backgroundColor: 'color-mix(in srgb, var(--color-text-secondary) 16%, transparent)', color: mutedText }}>
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {(data.description as string) && viewSize !== 'sm' && (
+                    <p className="mt-1 text-xs line-clamp-1" style={{ color: mutedText }}>
+                      {data.description as string}
+                    </p>
+                  )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => setExportMenuCard(
+                      exportMenuCard?.id === card.id ? null : (card as unknown as Record<string, unknown>),
+                    )}
+                    title={t('library.exportButton')}
+                    className="w-7 h-7 rounded-md border flex items-center justify-center transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_6%,transparent)]"
+                    style={{ borderColor, color: mutedText }}
+                  >
+                    <MoreVertical size={14} />
+                  </button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="text-xs"
+                    onClick={() => handleEditAsNewDraft(card as unknown as Record<string, unknown>)}
+                  >
+                    <Edit2 size={12} className="mr-1" />
+                    {t('common.edit')}
+                  </Button>
+                  <button
+                    onClick={() => setDeleteConfirm(cardId)}
+                    title={t('common.delete')}
+                    className="w-7 h-7 rounded-md border flex items-center justify-center transition-colors hover:bg-red-600/10 hover:border-red-500/50"
+                    style={{ borderColor, color: mutedText }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Inline export dropdown */}
+              {exportMenuCard?.id === card.id && (
+                <div
+                  className="absolute right-4 top-12 w-44 rounded-lg border shadow-xl z-20 py-1"
+                  style={{ borderColor, backgroundColor: 'var(--color-surface-raised)' }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                    style={{ color: 'var(--text-color)' }}
+                    onClick={() => handleExportJson(card as unknown as Record<string, unknown>)}
+                  >
+                    📄 {t('library.exportJson')}
+                  </button>
+                  <button
+                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                    style={{ color: 'var(--text-color)' }}
+                    onClick={() => handleExportPng(card as unknown as Record<string, unknown>)}
+                  >
+                    🖼️ {t('library.exportPngAuto')}
+                  </button>
+                  <button
+                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                    style={{ color: 'var(--text-color)' }}
+                    onClick={() => handleExportPngWithImage(card as unknown as Record<string, unknown>)}
+                  >
+                    🎨 {t('library.exportPngChoose')}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      )}
 
       </>)}
+
+      {/* Click-away handler for export menu */}
+      {exportMenuCard && (
+        <div
+          className="fixed inset-0 z-10"
+          onClick={() => setExportMenuCard(null)}
+        />
+      )}
 
       {/* Delete confirmation modal */}
       <Modal isOpen={deleteConfirm !== null} onClose={() => setDeleteConfirm(null)} title={t('library.deleteTitle')}>

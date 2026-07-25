@@ -4,6 +4,11 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    // 防止间接依赖带入第二份 React 副本导致 "Invalid hook call"。
+    // 这也是 Vite + React 项目的官方推荐配置。
+    dedupe: ['react', 'react-dom'],
+  },
   server: {
     proxy: {
       '/api': {

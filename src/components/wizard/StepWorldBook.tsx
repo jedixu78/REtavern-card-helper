@@ -109,7 +109,6 @@ export function StepWorldBook({
   onSkeletonCountPersist,
   batchCountValue: externalBatchCount,
   onBatchCountPersist,
-  skeletonModeValue: externalSkeletonMode,
   onSkeletonModePersist,
   onJumpToStep,
   // Legacy
@@ -129,10 +128,9 @@ export function StepWorldBook({
   const effectiveWorldRules = onWorldRulesChange ? externalWorldRules : localWorldRules;
   const setWorldRules = onWorldRulesChange || setLocalWorldRules;
   // Skeleton mode: default true in skeleton mode step.
-  // When controlled (step 4), use external value; otherwise local state.
-  const [localSkeletonMode, setLocalSkeletonMode] = useState(mode === 'skeleton');
-  const skeletonMode = externalSkeletonMode !== undefined ? externalSkeletonMode : localSkeletonMode;
-  const setSkeletonMode = onSkeletonModePersist || setLocalSkeletonMode;
+  // In detail mode (step 4) the toggle is hidden, so always use full generation.
+  const skeletonMode = mode === 'skeleton';
+  const setSkeletonMode = onSkeletonModePersist || (() => {});
   // Skeleton count: shared between step 2 & step 4
   const [localSkeletonCount, setLocalSkeletonCount] = useState(mode === 'skeleton' ? 8 : 6);
   const skeletonCount = externalSkeletonCount !== undefined ? externalSkeletonCount : localSkeletonCount;
@@ -386,74 +384,6 @@ export function StepWorldBook({
     }
   };
 
-  // ── Batch AI Expand: expand every un-expanded skeleton entry sequentially ──
-  // Used by the "一键展开所有未展开骨架" button in step 4's skeleton progress row.
-  // Runs expansions one-by-one to avoid API rate limits and so each result feeds
-  // into the next call's `effectiveExistingContext` for cross-entry consistency.
-  const [batchExpanding, setBatchExpanding] = useState(false);
-  const [batchExpandProgress, setBatchExpandProgress] = useState({ current: 0, total: 0 });
-  const handleBatchExpandSkeletons = async () => {
-    // Snapshot the targets — only entries flagged as skeleton-origin AND not yet expanded.
-    const targets: number[] = [];
-    entries.forEach((e, i) => {
-      if (e.fromSkeleton && !e.skeletonExpanded && e.content?.trim()) targets.push(i);
-    });
-    if (targets.length === 0) return;
-
-    setBatchExpanding(true);
-    setBatchExpandProgress({ current: 0, total: targets.length });
-    let successCount = 0;
-    let failCount = 0;
-    try {
-      for (let i = 0; i < targets.length; i++) {
-        const idx = targets[i];
-        setBatchExpandProgress({ current: i + 1, total: targets.length });
-        setExpandingIndex(idx);
-        try {
-          const entry = entries[idx];
-          if (!entry) continue;
-          const result = await expandLorebookEntry(
-            {
-              comment: entry.comment || entry.name || '',
-              content: entry.content,
-              keys: entry.keys,
-              strategy: entry.constant ? 'constant' : 'selective',
-              position: entry.insertion_order,
-            },
-            effectiveExistingContext
-              ? `${effectiveCharacterContext}\n\n${t('worldBook.existingWorldbookHeaderBrief')}\n${effectiveExistingContext}`
-              : effectiveCharacterContext,
-            undefined,
-            entry.expandNsfw,
-          );
-          updateEntry(idx, {
-            comment: result.comment,
-            content: result.content,
-            keys: result.keys,
-            constant: result.strategy === 'constant',
-            skeletonExpanded: true,
-          });
-          successCount++;
-        } catch {
-          failCount++;
-        }
-        // Small delay between API calls to avoid rate limiting
-        if (i < targets.length - 1) await new Promise((r) => setTimeout(r, 300));
-      }
-      if (successCount > 0 && failCount > 0) {
-        addToast('success', t('worldBook.batchExpandPartial', { success: String(successCount), fail: String(failCount) }));
-      } else if (successCount > 0) {
-        addToast('success', t('worldBook.batchExpandDone', { count: String(successCount) }));
-      } else if (failCount > 0) {
-        addToast('error', t('worldBook.batchExpandAllFailed', { count: String(failCount) }));
-      }
-    } finally {
-      setExpandingIndex(null);
-      setBatchExpanding(false);
-      setBatchExpandProgress({ current: 0, total: 0 });
-    }
-  };
-
   // ── AI Organize handler ────────────────────────────────────────
   const handleOrganize = async () => {
     if (entries.length === 0) return;
@@ -619,7 +549,7 @@ export function StepWorldBook({
     <div>
       {/* ── Skeleton ↔ Detail continuity banner ──────────────────────────
           In skeleton mode: tell the user their setup flows to step 4.
-          In detail mode: summarize what was set up in step 2, or warn if empty. */}
+          In detail mode: the banner is removed per request — step 4 stands alone. */}
       {mode === 'skeleton' ? (
         onJumpToStep && (entries.length > 0 || effectiveWorldRules.trim()) ? (
           <div className="mb-4 flex justify-end">
@@ -634,152 +564,7 @@ export function StepWorldBook({
             </button>
           </div>
         ) : null
-      ) : (
-        <div
-          className="mb-4 rounded-xl border p-3 flex items-start gap-3"
-          style={
-            entries.length === 0 && !effectiveWorldRules.trim() && !topic.trim()
-              ? { backgroundColor: themeAlpha('warning', 10), borderColor: themeAlpha('warning', 35) }
-              : { backgroundColor: themeAlpha('info', 8), borderColor: themeAlpha('info', 25) }
-          }
-        >
-          <span className="text-base shrink-0" aria-hidden>{entries.length === 0 && !effectiveWorldRules.trim() ? '⚠️' : '🔗'}</span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <p
-                  className="text-xs font-semibold"
-                  style={{ color: entries.length === 0 && !effectiveWorldRules.trim() ? C.warning : C.info }}
-                >
-                  {t('worldBook.skeletonContinuityTitle')}
-                </p>
-                {entries.length === 0 && !effectiveWorldRules.trim() ? (
-                  <p className="text-[11px] mt-0.5" style={{ color: 'color-mix(in srgb, var(--color-status-warning) 80%, transparent)' }}>
-                    {t('worldBook.skeletonMissingHint')}
-                  </p>
-                ) : (
-                  <>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
-                      <span
-                        className="rounded-full border px-2 py-0.5"
-                        style={{ borderColor: themeAlpha('info', 30), backgroundColor: themeAlpha('info', 10), color: C.info }}
-                      >
-                        {t('worldBook.skeletonStatEntries', { count: String(entries.length) })}
-                      </span>
-                      {topic.trim() && (
-                        <span
-                          className="rounded-full border px-2 py-0.5 max-w-[260px] truncate"
-                          style={{ borderColor: themeAlpha('info', 30), backgroundColor: themeAlpha('info', 10), color: C.info }}
-                          title={topic}
-                        >
-                          {t('worldBook.skeletonStatTopic', { topic: topic.trim().slice(0, 40) })}
-                        </span>
-                      )}
-                      {effectiveWorldRules.trim() && (
-                        <span
-                          className="rounded-full border px-2 py-0.5"
-                          style={{ borderColor: themeAlpha('info', 30), backgroundColor: themeAlpha('info', 10), color: C.info }}
-                        >
-                          {t('worldBook.skeletonStatRules', { count: String(effectiveWorldRules.length) })}
-                        </span>
-                      )}
-                      {characterContext?.trim() && (
-                        <span
-                          className="rounded-full border px-2 py-0.5"
-                          style={{ borderColor: themeAlpha('success', 30), backgroundColor: themeAlpha('success', 10), color: C.success }}
-                        >
-                          {t('worldBook.skeletonStatChars')}
-                        </span>
-                      )}
-                    </div>
-                    {/* Skeleton expand progress — count entries flagged fromSkeleton and
-                        show how many have been expanded by AI. Includes a one-click
-                        batch-expand button for the remaining un-expanded skeletons. */}
-                    {(() => {
-                      const skeletonTotal = entries.filter(e => e.fromSkeleton === true).length;
-                      if (skeletonTotal === 0) return null;
-                      const expanded = entries.filter(e => e.fromSkeleton === true && e.skeletonExpanded === true).length;
-                      const remaining = skeletonTotal - expanded;
-                      const allExpanded = remaining === 0;
-                      return (
-                        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
-                          <span
-                            className="rounded-full border px-2 py-0.5"
-                            style={
-                              allExpanded
-                                ? { borderColor: themeAlpha('success', 35), backgroundColor: themeAlpha('success', 10), color: C.success }
-                                : { borderColor: themeAlpha('warning', 40), backgroundColor: themeAlpha('warning', 12), color: C.warning }
-                            }
-                          >
-                            {allExpanded
-                              ? t('worldBook.skeletonProgressAllDone', { count: String(skeletonTotal) })
-                              : t('worldBook.skeletonProgress', { expanded: String(expanded), total: String(skeletonTotal) })}
-                          </span>
-                          {!allExpanded && (
-                            <button
-                              type="button"
-                              onClick={handleBatchExpandSkeletons}
-                              disabled={batchExpanding || generating}
-                              className="rounded-lg border px-2 py-0.5 text-[11px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                              style={{ borderColor: themeAlpha('success', 40), backgroundColor: themeAlpha('success', 12), color: C.success }}
-                              title={t('worldBook.batchExpandTooltip')}
-                            >
-                              {batchExpanding
-                                ? t('worldBook.batchExpanding', { current: String(batchExpandProgress.current), total: String(batchExpandProgress.total) })
-                                : `🚀 ${t('worldBook.batchExpand')}`}
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })()}
-                    {/* Data quality warnings — surface integrity issues from skeleton so
-                        users can fix them before exporting. */}
-                    {(() => {
-                      const emptyContent = entries.filter(e => !e.content?.trim()).length;
-                      const missingKeys = entries.filter(e => !e.constant && e.keys.length === 0).length;
-                      if (emptyContent === 0 && missingKeys === 0) return null;
-                      return (
-                        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
-                          {emptyContent > 0 && (
-                            <span
-                              className="rounded-full border px-2 py-0.5"
-                              style={{ borderColor: themeAlpha('warning', 40), backgroundColor: themeAlpha('warning', 12), color: C.warning }}
-                            >
-                              {t('worldBook.skeletonQualityEmpty', { count: String(emptyContent) })}
-                            </span>
-                          )}
-                          {missingKeys > 0 && (
-                            <span
-                              className="rounded-full border px-2 py-0.5"
-                              style={{ borderColor: themeAlpha('warning', 40), backgroundColor: themeAlpha('warning', 12), color: C.warning }}
-                            >
-                              {t('worldBook.skeletonQualityMissingKeys', { count: String(missingKeys) })}
-                            </span>
-                          )}
-                          <span className="text-[10px]" style={{ color: 'color-mix(in srgb, var(--color-status-warning) 70%, transparent)' }}>
-                            {t('worldBook.skeletonQualityHint')}
-                          </span>
-                        </div>
-                      );
-                    })()}
-                  </>
-                )}
-              </div>
-              {onJumpToStep && (
-                <button
-                  type="button"
-                  onClick={() => onJumpToStep(2)}
-                  className="shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors"
-                  style={{ borderColor: themeAlpha('info', 40), backgroundColor: themeAlpha('info', 12), color: C.info }}
-                  title={t('worldBook.jumpToSkeletonTooltip')}
-                >
-                  ← {t('worldBook.jumpToSkeleton')}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      ) : null}
 
       {/* Batch tools bar — hidden in skeleton mode */}
       {mode !== 'skeleton' && entries.length > 0 && (
@@ -882,6 +667,7 @@ export function StepWorldBook({
         onSkeletonCountChange={setSkeletonCount}
         onBatchCountChange={setBatchCount}
         onGenerate={handleBatchGenerate}
+        hideTopicAndSkeleton={mode !== 'skeleton'}
       />
 
       {/* Streaming progress panel */}

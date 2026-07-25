@@ -37,9 +37,12 @@ import {
   listCardEditorDrafts,
   loadCardEditorDraft,
   deleteCardEditorDraft,
+  updateCardEditorDraftCover,
+  stripTrailingTime,
   type CardEditorChatMessage,
 } from '../services/draft-service';
 import type { WizardDraftRecord } from '../db/database';
+import { CardCover } from '../components/shared/CardCover';
 import { Upload, Save, FileJson, Image as ImageIcon, Check, X, ChevronDown, ChevronUp, FolderOpen, Trash2 } from 'lucide-react';
 
 interface ChatMessage {
@@ -290,6 +293,44 @@ export function CardEditorChatPage() {
       addToast('info', '草稿已删除');
     } catch (err) {
       const msg = err instanceof Error ? err.message : '删除失败';
+      addToast('error', msg);
+    }
+  }, [addToast]);
+
+  // ── Change/remove a draft cover ──────────────────────────────────────
+  const handleChangeDraftCover = useCallback(async (id: string) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/*';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      try {
+        const buffer = await resizeImageToPngBuffer(file, { maxDimension: 600 });
+        const blob = new Blob([buffer], { type: 'image/png' });
+        await updateCardEditorDraftCover(id, blob);
+        setCardEditorDrafts((prev) => prev.map((d) => d.id === id ? { ...d, coverImageBlob: blob } : d));
+        addToast('success', '封面已更换');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '封面更换失败';
+        addToast('error', msg);
+      }
+    };
+    input.click();
+  }, [addToast]);
+
+  const handleRemoveDraftCover = useCallback(async (id: string) => {
+    try {
+      await updateCardEditorDraftCover(id, null);
+      setCardEditorDrafts((prev) => prev.map((d) => {
+        if (d.id !== id) return d;
+        const next = { ...d } as Partial<WizardDraftRecord>;
+        delete next.coverImageBlob;
+        return next as WizardDraftRecord;
+      }));
+      addToast('info', '已恢复为默认封面');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '封面更换失败';
       addToast('error', msg);
     }
   }, [addToast]);
@@ -631,6 +672,8 @@ export function CardEditorChatPage() {
           drafts={cardEditorDrafts}
           onLoad={handleLoadDraft}
           onDelete={handleDeleteDraft}
+          onChangeCover={handleChangeDraftCover}
+          onRemoveCover={handleRemoveDraftCover}
         />
       </div>
     );
@@ -937,6 +980,8 @@ export function CardEditorChatPage() {
         drafts={cardEditorDrafts}
         onLoad={handleLoadDraft}
         onDelete={handleDeleteDraft}
+        onChangeCover={handleChangeDraftCover}
+        onRemoveCover={handleRemoveDraftCover}
       />
     </div>
   );
@@ -970,68 +1015,98 @@ function DiffValue({ label, value }: { label: string; value: unknown }) {
   );
 }
 
-// ── Drafts Modal — lists card-editor drafts with load/delete actions ──────
+// ── Drafts Modal — lists card-editor drafts with load/delete/cover actions ──
 interface DraftsModalProps {
   isOpen: boolean;
   onClose: () => void;
   drafts: WizardDraftRecord[];
   onLoad: (id: string) => void;
   onDelete: (id: string) => void;
+  onChangeCover: (id: string) => void;
+  onRemoveCover: (id: string) => void;
 }
 
-function DraftsModal({ isOpen, onClose, drafts, onLoad, onDelete }: DraftsModalProps) {
+function DraftsModal({ isOpen, onClose, drafts, onLoad, onDelete, onChangeCover, onRemoveCover }: DraftsModalProps) {
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="草稿箱" maxWidth="max-w-lg">
-      <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+    <Modal isOpen={isOpen} onClose={onClose} title="草稿箱" maxWidth="max-w-3xl">
+      <div className="max-h-[70vh] overflow-y-auto pr-1">
         {drafts.length === 0 ? (
           <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-muted)' }}>
             草稿箱为空
           </p>
         ) : (
-          drafts.map((d) => {
-            const draftData = d.data as WizardDraft;
-            const displayName = d.name || draftData.cardName || '未命名草稿';
-            const msgCount = d.messages?.length ?? 0;
-            const timeStr = d.updatedAt.toLocaleString('zh-CN', {
-              month: '2-digit',
-              day: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-            });
-            return (
-              <div
-                key={d.id}
-                className="flex items-center gap-2 rounded-lg border px-3 py-2"
-                style={{ borderColor, backgroundColor: cardBgSemiTransparent }}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium truncate" style={{ color: 'var(--text-color)' }}>
-                    {displayName}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {drafts.map((d) => {
+              const draftData = d.data as WizardDraft;
+              // Strip the auto-generated time suffix from the title; the small
+              // subtitle below already shows the save time.
+              const displayName = stripTrailingTime(d.name || '') || draftData.cardName || '未命名草稿';
+              const msgCount = d.messages?.length ?? 0;
+              const timeStr = d.updatedAt.toLocaleString('zh-CN', {
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+              const hasCustomCover = !!d.coverImageBlob;
+              return (
+                <div
+                  key={d.id}
+                  className="group rounded-lg border overflow-hidden flex flex-col"
+                  style={{ borderColor, backgroundColor: cardBgSemiTransparent }}
+                >
+                  <div className="relative">
+                    <CardCover blob={d.coverImageBlob ?? null} name={displayName} />
+                    <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`删除草稿「${displayName}」？`)) onDelete(d.id);
+                        }}
+                        title="删除草稿"
+                        className="w-6 h-6 rounded-md backdrop-blur-sm bg-black/55 text-white flex items-center justify-center hover:bg-red-600/80 transition-colors"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                    <div className="absolute bottom-1.5 left-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => onChangeCover(d.id)}
+                        title="更换封面"
+                        className="flex-1 h-6 rounded-md backdrop-blur-sm bg-black/55 text-white text-[10px] flex items-center justify-center gap-1 hover:bg-black/75 transition-colors"
+                      >
+                        <ImageIcon size={10} />
+                        更换封面
+                      </button>
+                      {hasCustomCover && (
+                        <button
+                          onClick={() => onRemoveCover(d.id)}
+                          title="移除封面"
+                          className="w-6 h-6 rounded-md backdrop-blur-sm bg-black/55 text-white flex items-center justify-center hover:bg-black/75 transition-colors"
+                        >
+                          <Trash2 size={10} />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div className="text-[10px] mt-0.5" style={{ color: faintText }}>
-                    {timeStr}{msgCount > 0 ? ` · ${msgCount} 条对话` : ''}
+                  <div className="p-2 flex-1 flex flex-col">
+                    <div className="text-xs font-medium truncate" style={{ color: 'var(--text-color)' }} title={displayName}>
+                      {displayName}
+                    </div>
+                    <div className="text-[10px] mt-0.5" style={{ color: faintText }}>
+                      {timeStr}{msgCount > 0 ? ` · ${msgCount} 条对话` : ''}
+                    </div>
+                    <button
+                      onClick={() => onLoad(d.id)}
+                      className="mt-auto pt-2 text-[11px] px-2 py-1 rounded border transition-colors hover:bg-[color-mix(in_srgb,var(--color-primary)_12%,transparent)]"
+                      style={{ borderColor: 'var(--color-primary)', color: 'var(--color-primary)' }}
+                    >
+                      加载
+                    </button>
                   </div>
                 </div>
-                <button
-                  onClick={() => onLoad(d.id)}
-                  className="text-xs px-2 py-1 rounded border transition-colors hover:bg-[color-mix(in_srgb,var(--color-primary)_12%,transparent)]"
-                  style={{ borderColor: 'var(--color-primary)', color: 'var(--color-primary)' }}
-                >
-                  加载
-                </button>
-                <button
-                  onClick={() => {
-                    if (window.confirm(`删除草稿「${displayName}」？`)) onDelete(d.id);
-                  }}
-                  className="text-xs px-2 py-1 rounded border transition-colors hover:bg-[color-mix(in_srgb,var(--color-danger)_12%,transparent)]"
-                  style={{ borderColor: 'var(--color-danger)', color: 'var(--color-danger)' }}
-                  title="删除草稿"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            );
-          })
+              );
+            })}
+          </div>
         )}
       </div>
     </Modal>

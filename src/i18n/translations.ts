@@ -233,6 +233,11 @@ export const translations = {
       draftLoadFailed: '草稿加载失败',
       draftDeleted: '草稿已删除',
       draftDeleteFailed: '草稿删除失败',
+      changeCover: '更换封面',
+      removeCover: '移除封面',
+      coverUpdated: '封面已更换',
+      coverRemoved: '已恢复为默认封面',
+      coverUpdateFailed: '封面更换失败',
       createNewCard: '创建新卡',
       deleteDraftConfirm: '确定要删除这条草稿吗？此操作不可恢复。',
       stepLabel: '第 {{step}} 步',
@@ -772,6 +777,11 @@ export const translations = {
       deleteConfirmPrompt: '确定要清空回收站吗？此操作无法撤销。',
       permanentDeleteSuccess: '卡片已彻底删除',
       untitled: '未命名',
+      changeCover: '更换封面',
+      removeCover: '移除封面',
+      coverUpdated: '封面已更换',
+      coverRemoved: '已恢复为默认封面',
+      coverUpdateFailed: '封面更换失败',
     },
     // Dialogue creator
     dialogue: {

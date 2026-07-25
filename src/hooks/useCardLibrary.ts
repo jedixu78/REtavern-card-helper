@@ -16,6 +16,8 @@ interface CardRecord {
   createdAt: Date;
   updatedAt: Date;
   deletedAt?: Date | null;
+  /** Optional cover image shown in the library grid (PNG blob). */
+  coverImageBlob?: Blob;
   [key: string]: unknown;
 }
 
@@ -48,18 +50,35 @@ export function useCardLibrary() {
 
   /** Save a card (create or update) */
   const saveCard = useCallback(async (draft: Parameters<typeof assembleCard>[0], existingId?: number) => {
-    const card = assembleCard(draft, existingId);
+    const card = assembleCard(draft, existingId) as CardRecord;
     if (existingId) {
       const existing = (await db.cards.get(existingId)) as CardRecord;
       if (existing) {
-        // Preserve original timestamps and soft-delete status
+        // Preserve original timestamps, soft-delete status, and custom cover image
         card.createdAt = existing.createdAt || new Date();
         card.deletedAt = existing.deletedAt ?? null;
+        if (existing.coverImageBlob) card.coverImageBlob = existing.coverImageBlob;
       }
     }
     const id = await db.cards.put(card);
     await loadCards();
     return id;
+  }, [loadCards]);
+
+  /** Update the cover image of a saved card (null clears it). */
+  const updateCardCover = useCallback(async (id: number, blob: Blob | null) => {
+    if (blob) {
+      await db.cards.update(id, { coverImageBlob: blob });
+    } else {
+      // Dexie's update can't unset fields by setting null for indexed fields,
+      // but coverImageBlob isn't indexed — set to undefined via put merge.
+      const existing = (await db.cards.get(id)) as CardRecord | undefined;
+      if (existing) {
+        delete existing.coverImageBlob;
+        await db.cards.put(existing);
+      }
+    }
+    await loadCards();
   }, [loadCards]);
 
   /** Get a card by ID */
@@ -108,5 +127,5 @@ export function useCardLibrary() {
     return filtered as CardRecord[];
   }, []);
 
-  return { cards, trashCards, loading, saveCard, getCard, deleteCard, restoreCard, permanentDelete, emptyTrash, searchCards, loadCards };
+  return { cards, trashCards, loading, saveCard, getCard, deleteCard, restoreCard, permanentDelete, emptyTrash, searchCards, loadCards, updateCardCover };
 }
