@@ -39,6 +39,7 @@ Always run `npm run typecheck` and `npm test` after changes. The test suite is t
 - `png-service.ts` — PNG tEXt chunk read/write for embedding card JSON (`chara` V2, `ccv3` V3).
 - `card-validator.ts`, `quality-checker.ts` — pre-export checks and quality scoring.
 - `ai-json.ts` — parses JSON out of AI replies (`parseAIJson`, `stripMarkdownFences`). Zero deps; keep it that way so callers don't pull in the prompt constants. Note `ai-service.ts` deliberately does **not** use `stripMarkdownFences` — it needs lenient, unpaired fence stripping for truncation detection.
+- `mvu-sim.ts` — MVU (MagVarUpdate) variable engine simulator for the test chat: parses `[InitVar]` / `setvar` initial values, replays `_.set/insert/delete/add` + `<JSONPatch>` commands per message, and substitutes `{{get|format_message_variable::}}` macros. Pure functions, zero deps. The module header documents every intentional deviation from the real runtime — **keep that list in sync** when changing behavior. Reference sources live in gitignored local clones (`magvarupdate/`, `js-slash-runner/`, `st-prompt-template/`).
 
 ## Conventions & gotchas
 
@@ -47,7 +48,9 @@ Always run `npm run typecheck` and `npm test` after changes. The test suite is t
   - HTML escaping (app-side rendering) → `escapeHtml(str, { quotes })` from `utils/html.ts`. (The `lcEsc` inside `live-chat-templates.ts` is *generated runtime code that ships inside the card* — leave it.)
   - Deep clone → `deepClone` from `utils/deep-clone.ts`.
   - Regex-script names → `REGEX_SCRIPT_NAMES` in `constants/defaults.ts` (`状态栏界面` / `直播间界面`). These strings are matched by name on import/validate/patch — never hard-code the literals.
+  - **World book name** → `resolveBookName(draft)` in `constants/defaults.ts`. The exported `character_book.name`, `extensions.world`, and the `getWorldInfo("书名", …)` argument inside staged dispatcher entries must all come from it. ST's `loadWorldInfo` matches the name **exactly**; any divergence makes dispatcher entries fetch nothing — that is the root cause of the "阶段不切换" class of bugs. Export additionally runs `alignStagedDispatcherBookName` so dispatcher entries baked with an older name get rewritten.
 - **EJS escaping is a security boundary**: user/AI text is embedded into generated EJS/JS templates. Any new embedding must go through the escapers above (neutralizes `%>`, quotes, line separators).
+- **Untrusted input reaches `mvu-sim.ts` directly** (AI reply text, third-party card contents) and its results are computed synchronously inside React render. Path writes go through the `FORBIDDEN_KEYS` guard (prototype pollution), value depth is capped (`MAX_VALUE_DEPTH`), command scanning has a character budget, and the ChatPage/useAIChat call sites wrap it in try/catch — a throw during render would take down the whole app via the root ErrorBoundary. Keep new regexes free of nested-quantifier ambiguity.
 - **Card spec versions**: fields live under `data.*` for V2/V3 and at the top level for V1 — mapping code must handle both.
 - **Service worker** `public/sw.js` uses a manual `CACHE_NAME` version (`...-vNN`). Bump it when shipping changes that must invalidate cached assets.
 - **TS strict mode IS on** — not via `tsconfig.json` (which never sets `strict`), but because TypeScript 6 defaults it to `true`. Verified by probe: `noImplicitAny` (TS7006) and `strictNullChecks` (TS2322) both fire. The codebase is strict-clean today, so keep it that way — don't "fix" a type error by widening to `any`. `noUnusedLocals`/`noUnusedParameters` are also on.
