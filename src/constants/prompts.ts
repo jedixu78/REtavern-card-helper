@@ -153,7 +153,7 @@ ${hasOtherChars ? '- 必须参考其他角色信息，在关系设定中建立�
  * Lorebook batch generation prompt (Step 4).
  * Generates world book entries with FULL SillyTavern V2 + runtime parameters.
  */
-export const LOREBOOK_GENERATE_PROMPT = (cardName: string, characterSummaries: string, topic: string, batchCount: number, rules?: string, nsfw?: boolean, _lang: Language = 'zh') => {
+export const LOREBOOK_GENERATE_PROMPT = (cardName: string, characterSummaries: string, topic: string, batchCount: number, rules?: string, nsfw?: boolean, worldAnchor?: string, _lang: Language = 'zh') => {
   const nsfwBlock = nsfw
     ? `\n\n## NSFW 内容指令\n本角色卡允许生成成人内容（NSFW）。在生成世界书条目时：\n- 可以包含成人向的场景、关系、物品描述\n- 可以包含成人向的背景设定和事件\n- 写作风格应当自然融入世界观，不要刻意强调或过度描写`
     : `\n\n## 内容安全指令\n本角色卡不允许生成成人内容（NSFW）。在生成世界书条目时：\n- 禁止包含任何成人向、性暗示或色情内容\n- 场景和关系描述应当符合全年龄标准\n- 如果世界观中可能涉及敏感内容，请以隐晦、含蓄的方式处理或直接跳过`;
@@ -195,6 +195,7 @@ ${nsfwBlock}
 角色：${characterSummaries}
 ${topic ? `主题/方向：${topic}` : ''}
 ${rules ? `\n## 世界观约束与运行规则（必须严格遵守）\n${rules}` : ''}
+${worldAnchor ? `\n【世界观锚定（绝对约束，不可偏离）】：\n${worldAnchor}\n生成的所有条目必须严格遵守以上锚定，不得偏离时代背景或违反核心规则。` : ''}
 
 返回一个 JSON 数组，每个对象包含以下全部字段：
 {

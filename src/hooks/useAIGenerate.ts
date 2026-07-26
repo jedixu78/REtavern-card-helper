@@ -230,8 +230,9 @@ export function useAIGenerate() {
     onChunk: StreamCallback,
     rules?: string,
     nsfw?: boolean,
+    worldAnchor?: string,
   ): Promise<string> => {
-    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, rules, nsfw, lang);
+    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, rules, nsfw, worldAnchor, lang);
     return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.8, presetMode: 'force' });
   }, [lang]);
 
@@ -256,8 +257,9 @@ export function useAIGenerate() {
     onChunk: StreamCallback,
     rules?: string,
     nsfw?: boolean,
+    worldAnchor?: string,
   ) => {
-    const text = await generateLorebookStreaming(cardName, characterSummaries, topic, batchCount, onChunk, rules, nsfw);
+    const text = await generateLorebookStreaming(cardName, characterSummaries, topic, batchCount, onChunk, rules, nsfw, worldAnchor);
     const parsed = parseAIJson(text) as AIGeneratedLorebookEntry[] | null;
     return parsed || [];
   }, [generateLorebookStreaming]);

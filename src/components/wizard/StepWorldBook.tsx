@@ -321,6 +321,7 @@ export function StepWorldBook({
           effectiveCardName, effectiveCharacterContext, topic, batchCount,
           (_chunk, fullText) => setStreamText(fullText),
           consistencyRules || undefined, nsfw,
+          formatWorldAnchorForPrompt(worldAnchor) || undefined,
         );
         if (Array.isArray(result) && result.length > 0) {
           const newEntries = result.map((item) => {

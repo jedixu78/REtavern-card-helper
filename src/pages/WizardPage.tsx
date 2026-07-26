@@ -28,6 +28,7 @@ import { generateId, createEmptyDraft, createEmptyLorebookEntry, createEmptyMvuC
 import type { LorebookEntry, WizardCharacter, WizardDraft } from '../constants/defaults';
 import { consumeAnalysisLorebookImport } from '../services/novel-analysis-service';
 import { cancelActiveAIRequests, AIGenerationCancelledError } from '../services/ai-service';
+import { getStagedTemplateById } from '../components/wizard/staged-templates';
 import { consumeWorkshopLorebookImport, mergeVariableBlueprintsIntoMvu } from '../services/novel-workshop-bridge';
 import { findStagedLorebookEntryIndices } from '../services/lorebook-predicates';
 import { escapeEjsDoubleQuoted } from '../services/staged-lorebook-builder';
@@ -989,6 +990,35 @@ ${e.content || ''}`)
             onChange={(stagedMode) => updateDraft({ stagedMode })}
             cardName={draft.cardName}
             mvu={draft.mvu}
+            // 步骤 6 的「自包含模板 → 注入 MVU 变量」链路：选中模板/多角色套模板时
+            // 把生成的 MVU 配置写回草稿。此前这两个 prop 从未被传入（评估确认的 A4 断线），
+            // 模板选择在 UI 上看似成功、变量却从未真正落库。
+            onMvuChange={(mvu) => updateDraft({ mvu })}
+            onApplyStageAxes={(axes, templateId) => {
+              const template = getStagedTemplateById(templateId);
+              updateDraft((prev) => {
+                const current = prev.stagedMode ?? { enabled: false, templateId, dispatcherPrefix: '分阶段人设', characters: [] };
+                const byName = new Map(current.characters.map((c) => [c.name, c]));
+                for (const axis of axes) {
+                  const existing = byName.get(axis.characterName);
+                  if (existing) {
+                    byName.set(axis.characterName, { ...existing, axisPath: axis.axisPath });
+                  } else {
+                    byName.set(axis.characterName, {
+                      name: axis.characterName,
+                      summary: '',
+                      axisPath: axis.axisPath,
+                      axisType: 'number',
+                      numericDirection: template?.axisDirection ?? '>=',
+                      stages: [],
+                    });
+                  }
+                }
+                return {
+                  stagedMode: { ...current, enabled: true, templateId, characters: [...byName.values()] },
+                };
+              });
+            }}
             lorebookEntries={draft.lorebookEntries}
             onApplyEntries={(newEntries) => {
               const prefix = draft.stagedMode?.dispatcherPrefix?.trim() || '分阶段人设';
