@@ -1075,6 +1075,7 @@ export const MULTI_CHAR_TEMPLATE_PROMPT = (
   templateName: string,
   templateBlueprint: string,
   characters: Array<{ name: string; summary: string }>,
+  existingWorldbookContext?: string,
   _lang: Language = 'zh',
 ) => {
   const tpl = getStagedTemplateById(templateId);
@@ -1086,6 +1087,9 @@ export const MULTI_CHAR_TEMPLATE_PROMPT = (
   const hiddenFlagsRule = hasHiddenFlags
     ? `- 该模板包含隐藏标记（path 以 "$" 开头，初始 false，仅用于一次性事件防重复）：每个角色都需生成对应的隐藏标记，标记名与模板蓝图一致，只是前缀替换为角色名\n- 隐藏标记的 updateRule：初始 false，仅在对应特殊事件触发时设为 true，日常互动不修改`
     : '- 该模板不含隐藏标记，每个角色只生成阶段轴变量即可';
+  const worldbookBlock = existingWorldbookContext?.trim()
+    ? `\n\n## 已有世界书设定（变量描述、阶段名、更新规则须与以下设定保持一致）\n${existingWorldbookContext.trim()}`
+    : '';
   return {
     system: `你是 SillyTavern MVU 变量系统架构师。任务：对每个给定角色，套用「${templateName}」模板蓝图，生成以"角色名前缀"命名的独立变量组。
 
@@ -1093,7 +1097,7 @@ export const MULTI_CHAR_TEMPLATE_PROMPT = (
 ${templateBlueprint}
 
 ## 待生成角色
-${characters.map((c, i) => `${i + 1}. ${c.name}：${c.summary}`).join('\n')}
+${characters.map((c, i) => `${i + 1}. ${c.name}：${c.summary}`).join('\n')}${worldbookBlock}
 
 ## 命名规则（必须遵循）
 - 每个角色的变量路径必须以该角色名开头作为前缀，如「${firstCharName}.${axisVarName}」
@@ -1131,7 +1135,8 @@ ${characters.map((c, i) => `${i + 1}. ${c.name}：${c.summary}`).join('\n')}
 - updateRules 的 check 规则中要把模板蓝图里的分区名替换为对应角色名
 ${hiddenFlagsRule}
 - statusBar.showVariables 只显示可见变量，隐藏标记（"$"前缀）不显示；每个角色显示最关键的 1-2 个可见变量
-- 若角色超过 3 个，状态栏只显示前 3 个角色的关键变量`,
+- 若角色超过 3 个，状态栏只显示前 3 个角色的关键变量
+- 变量的 description、categories.label、updateRules.check 等文本内容须贴合已有世界书设定中该角色的性格、背景与关系，不得脱离原设定泛泛而谈`,
     user: `为「${cardName}」的 ${characters.length} 个角色套用「${templateName}」模板，生成多角色变量组。`,
   };
 };

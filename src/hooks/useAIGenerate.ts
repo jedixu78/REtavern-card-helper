@@ -629,12 +629,13 @@ export function useAIGenerate() {
       templateName: string,
       templateBlueprint: string,
       characters: Array<{ name: string; summary: string }>,
+      existingWorldbookContext?: string,
     ): Promise<{
       sections: unknown[];
       updateRules: unknown[];
       statusBar?: { title?: string; showVariables?: string[]; styleHint?: string };
     } | null> => {
-      const prompts = MULTI_CHAR_TEMPLATE_PROMPT(cardName, templateId, templateName, templateBlueprint, characters, lang);
+      const prompts = MULTI_CHAR_TEMPLATE_PROMPT(cardName, templateId, templateName, templateBlueprint, characters, existingWorldbookContext, lang);
       const text = await callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.5, presetMode: 'force' });
       const parsed = parseAIJson(text) as { sections?: unknown[]; updateRules?: unknown[]; statusBar?: unknown } | null;
       if (!parsed?.sections) return null;

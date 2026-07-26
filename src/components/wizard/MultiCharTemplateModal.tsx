@@ -218,6 +218,7 @@ export function MultiCharTemplateModal({
       const result = await generateMultiCharVariables(
         cardName, templateId, templateName, blueprint,
         selected.map((c) => ({ name: c.name, summary: c.summary })),
+        existingWorldbookContext,
       );
       if (!result) {
         addToast('error', t('multiCharTemplate.generateFailed'));
