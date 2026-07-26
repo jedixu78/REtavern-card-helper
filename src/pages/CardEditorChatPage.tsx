@@ -20,12 +20,13 @@ import {
   buildCardChatPrompt,
   parseCardChatEdits,
   computeCardChatDiffs,
-  applyCardChatPatch,
   applySingleChange,
+  applyPatchToCardData,
   fieldLabel,
   diffDisplayName,
   type CardChatProposals,
   type ChangeDiff,
+  type ProposedChange,
 } from '../services/card-chat-optimizer';
 import type { WizardDraft } from '../constants/defaults';
 import type { AIMessage } from '../services/ai-service';
@@ -43,7 +44,8 @@ import {
 } from '../services/draft-service';
 import type { WizardDraftRecord } from '../db/database';
 import { CardCover } from '../components/shared/CardCover';
-import { Upload, Save, FileJson, Image as ImageIcon, Check, X, ChevronDown, ChevronUp, FolderOpen, Trash2 } from 'lucide-react';
+import { useTranslation } from '../i18n/I18nContext';
+import { Upload, Save, FileJson, Image as ImageIcon, Check, X, ChevronDown, ChevronUp, FolderOpen, Trash2, ShieldCheck, ShieldOff } from 'lucide-react';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -57,11 +59,173 @@ const surfaceRaisedTransparent = 'color-mix(in srgb, var(--color-surface-raised)
 const cardBgSemiTransparent = 'rgba(var(--card-bg-r), var(--card-bg-g), var(--card-bg-b), 0.4)';
 const cardBgDarkerSemiTransparent = 'rgba(var(--card-bg-r), var(--card-bg-g), var(--card-bg-b), 0.5)';
 
+// ════════════════════════════════════════════════════════════════════════════
+// 无损通道分歧检测
+// ────────────────────────────────────────────────────────────────────────────
+// 双轨模型：draft 驱动 UI，rawCard 累积补丁供无损导出。applyPatchToCardData
+// 按「不新增未涉及依赖」原则会静默跳过部分修改（原卡无 character_book 时的
+// 世界书条目、无对应 regex 脚本时的 statusBarHtml/liveStreamChat、characters
+// replace 只写 _meta 不同步世界书条目），而 draft 侧照常应用——两轨会静默
+// 分歧，导致「UI 显示已改，无损导出没有」。
+// 这里在每条补丁应用后做分歧检测；一旦检出分歧就永久置位（随草稿持久化），
+// 导出与入库回退 assembleCard(draft) 完整重建，保证「UI 所见 == 导出所得」。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 取原始卡的 data 块（V2/V3 嵌套在 card.data 下，V1 为顶层）。 */
+function rawDataOf(raw: Record<string, unknown>): Record<string, unknown> {
+  const data = raw.data;
+  return (data && typeof data === 'object' && !Array.isArray(data)
+    ? data
+    : raw) as Record<string, unknown>;
+}
+
+/**
+ * 统计原始卡 character_book 中会被 comment 匹配命中的条目数。
+ * 匹配语义与 applyPatchToCardData 保持一致：comment 优先，回退 name。
+ */
+function countRawLorebookMatches(raw: Record<string, unknown>, comment: string): number {
+  const book = rawDataOf(raw).character_book;
+  if (!book || typeof book !== 'object') return 0;
+  const entries = (book as Record<string, unknown>).entries;
+  if (!Array.isArray(entries)) return 0;
+  return entries.filter((e) => {
+    if (!e || typeof e !== 'object') return false;
+    const entry = e as Record<string, unknown>;
+    return (entry.comment || entry.name) === comment;
+  }).length;
+}
+
+/** 判断原始卡 _meta.characters 中是否存在指定 id 的角色。 */
+function rawMetaHasCharacter(raw: Record<string, unknown>, id: string): boolean {
+  const meta = raw._meta;
+  if (!meta || typeof meta !== 'object') return false;
+  const characters = (meta as Record<string, unknown>).characters;
+  if (!Array.isArray(characters)) return false;
+  return characters.some(
+    (c) => c && typeof c === 'object' && String((c as Record<string, unknown>).id) === String(id),
+  );
+}
+
+interface DualTrackApplyResult {
+  nextDraft: WizardDraft;
+  nextRaw: Record<string, unknown> | null;
+  diverged: boolean;
+}
+
+/**
+ * 把一批已确认的 change 逐条应用到双轨（draft + rawCard），并检测无损通道
+ * 是否与 UI 分歧。检出分歧后仍继续累积应用剩余补丁（rawCard 保留尽力而为的
+ * 结果，便于用户后续手动排查），只是无损导出被关闭。
+ *
+ * 分歧的精确触发条件（任一命中即 diverged=true）：
+ *  1. 单条 change 使 draft 的 JSON 序列化结果变化与 rawCard 的不一致
+ *     （draft 变了 raw 没变 → 补丁被无损轨静默跳过；raw 变了 draft 没变 →
+ *     无损轨改了 UI 未展示的内容）。注：修改值与现状恰好相同导致的
+ *     「双轨都未变化」不触发；「一轨恰好已是目标值」的罕见情形会误报——
+ *     误报只导致回退 assembleCard 重建，不损正确性。
+ *  2. characters replace/delete：change.id 在 rawCard 的 _meta.characters 中
+ *     无匹配而 draft 侧命中。applyPatchToCardData 的 characters 分支即使未
+ *     命中也会回写 meta.characters（可能凭空创建 _meta.characters: []），
+ *     整体序列化比较会被这次「空写」掩盖，故需单独校验。
+ *  3. characters replace：draft 侧会把新 description 同步进关联的世界书条目
+ *     （B5 行为），无损轨只写 _meta.characters。若 draft 的 lorebookEntries
+ *     变了而 rawCard 的 character_book 没变，视为分歧。
+ *  4. lorebookEntries delete/replace 的匹配语义差异：draft 侧按 comment 修改/
+ *     删除全部同名条目，无损轨只处理第一条。应用后若 rawCard 中仍存在会被
+ *     draft 侧命中的同 comment 条目（delete 后仍有残留；replace 改名后旧
+ *     comment 仍有残留；replace 不改名后同名条目多于 1 条），视为部分应用。
+ */
+function applyChangesWithDivergenceCheck(
+  draft: WizardDraft,
+  rawCard: Record<string, unknown> | null,
+  changes: ProposedChange[],
+): DualTrackApplyResult {
+  let nextDraft = draft;
+  let nextRaw = rawCard;
+  let diverged = false;
+
+  for (const change of changes) {
+    const prevDraft = nextDraft;
+    // 逐条应用与 applyCardChatPatch 批量应用等价：批量版只是对同一个累积
+    // 对象循环执行相同的分支逻辑。
+    nextDraft = applySingleChange(prevDraft, change);
+    if (!nextRaw) continue;
+
+    const prevRaw = nextRaw;
+    nextRaw = applyPatchToCardData(prevRaw, change);
+    if (diverged) continue; // 已判定分歧，只需继续累积应用剩余补丁
+
+    // 条件 1：整体序列化前后比较（draft 侧 vs 无损轨，一变一不变即分歧）
+    const draftChanged = JSON.stringify(prevDraft) !== JSON.stringify(nextDraft);
+    const rawChanged = JSON.stringify(prevRaw) !== JSON.stringify(nextRaw);
+    if (draftChanged !== rawChanged) {
+      diverged = true;
+      continue;
+    }
+
+    if (
+      change.field === 'characters' &&
+      (change.action === 'replace' || change.action === 'delete') &&
+      change.id
+    ) {
+      // 条件 2：draft 侧命中而 rawCard 的 _meta.characters 落空
+      if (draftChanged && !rawMetaHasCharacter(prevRaw, change.id)) {
+        diverged = true;
+        continue;
+      }
+      // 条件 3：draft 侧同步了关联世界书条目，无损轨的 character_book 未动
+      if (change.action === 'replace') {
+        const draftLoreChanged =
+          JSON.stringify(prevDraft.lorebookEntries ?? []) !==
+          JSON.stringify(nextDraft.lorebookEntries ?? []);
+        const rawBookChanged =
+          JSON.stringify(rawDataOf(prevRaw).character_book ?? null) !==
+          JSON.stringify(rawDataOf(nextRaw).character_book ?? null);
+        if (draftLoreChanged && !rawBookChanged) {
+          diverged = true;
+          continue;
+        }
+      }
+    }
+
+    // 条件 4：世界书 delete/replace「第一条 vs 全部」部分应用检测
+    if (
+      change.field === 'lorebookEntries' &&
+      change.comment &&
+      (change.action === 'delete' || change.action === 'replace')
+    ) {
+      const remaining = countRawLorebookMatches(nextRaw, change.comment);
+      const renamed = typeof change.newComment === 'string' && change.newComment !== change.comment;
+      // delete：draft 删光全部同名条目，raw 中不应再有残留（阈值 0）；
+      // replace 改名：旧 comment 不应再有残留（阈值 0）；
+      // replace 不改名：唯一命中条目更新后仍在（阈值 1），多于 1 条说明有未更新的同名条目。
+      const threshold = change.action === 'delete' || renamed ? 0 : 1;
+      if (remaining > threshold) diverged = true;
+    }
+  }
+
+  return { nextDraft, nextRaw, diverged };
+}
+
 export function CardEditorChatPage() {
   const { addToast } = useToast();
   const { saveCard } = useCardLibrary();
+  const { t } = useTranslation();
 
   const [draft, setDraft] = useState<WizardDraft | null>(null);
+  /**
+   * 无损通道底版：本次会话从外部导入（JSON/PNG）的原始卡 JSON。
+   * draft 继续驱动 UI 展示与 diff 计算；用户确认的 ProposedChange 会同步
+   * 累积应用到这份原始 JSON（applyPatchToCardData / applyPatchesToCardData），
+   * 导出时优先使用它，绕过 cardToDraft → assembleCard 的有损往返。
+   */
+  const [rawCard, setRawCard] = useState<Record<string, unknown> | null>(null);
+  /**
+   * 无损通道分歧标记：某条已确认补丁在 rawCard 上被静默跳过或部分应用
+   * （详见 applyChangesWithDivergenceCheck 的触发条件）。置位后无损导出
+   * 关闭，导出/入库回退 assembleCard(draft)。随草稿持久化。
+   */
+  const [rawCardDiverged, setRawCardDiverged] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -95,6 +259,22 @@ export function CardEditorChatPage() {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(pointer: coarse)').matches;
   }, []);
+
+  /**
+   * 无损导出卡：rawCard 存在、结构完整（非数组对象 + data 为非数组对象 +
+   * spec 为字符串）且无损通道未分歧时可用。
+   * exportAsJson/exportAsPng 只读取 card.data / spec / spec_version / _meta，
+   * 原始 V2/V3 卡与 assembleCard 返回值形状兼容，直接透传。
+   * 纯 V1 卡（无 data 块）、结构异常的 JSON、已分歧的通道均回退 assembleCard(draft)。
+   */
+  const losslessCard = useMemo(() => {
+    if (!rawCard || rawCardDiverged) return null;
+    if (Array.isArray(rawCard)) return null;
+    const data = rawCard.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    if (typeof rawCard.spec !== 'string') return null;
+    return rawCard as unknown as ReturnType<typeof assembleCard>;
+  }, [rawCard, rawCardDiverged]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -140,6 +320,13 @@ export function CardEditorChatPage() {
         if (shouldRestore) {
           setDraft(restoredDraft);
           setMessages((record.messages ?? []) as ChatMessage[]);
+          // 一并还原无损通道底版（旧草稿无此字段时为 null，导出回退 assembleCard）
+          setRawCard(
+            record.rawCard && typeof record.rawCard === 'object'
+              ? (record.rawCard as Record<string, unknown>)
+              : null,
+          );
+          setRawCardDiverged(record.rawCardDiverged === true);
           const restoredCoverSource = (record.coverSource ?? 'default') as 'imported' | 'custom' | 'default';
           if (record.coverImageBlob) {
             try {
@@ -203,6 +390,8 @@ export function CardEditorChatPage() {
           messages as CardEditorChatMessage[],
           coverSource,
           blob,
+          rawCard ?? undefined,
+          rawCardDiverged,
         );
         setIsDirty(false);
       } catch {
@@ -213,7 +402,7 @@ export function CardEditorChatPage() {
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, messages, coverSource, coverImageBuffer]);
+  }, [draft, messages, coverSource, coverImageBuffer, rawCard, rawCardDiverged]);
 
   // ── beforeunload: warn when unsaved or streaming ─────────────────────
   useEffect(() => {
@@ -232,14 +421,14 @@ export function CardEditorChatPage() {
     if (!draft) return;
     try {
       const blob = coverImageBuffer ? new Blob([coverImageBuffer], { type: 'image/png' }) : null;
-      await saveCardEditorDraft(draft, messages as CardEditorChatMessage[], coverSource, blob);
+      await saveCardEditorDraft(draft, messages as CardEditorChatMessage[], coverSource, blob, undefined, rawCard ?? undefined, rawCardDiverged);
       setIsDirty(false);
       addToast('success', '已存入草稿箱');
     } catch (err) {
       const msg = err instanceof Error ? err.message : '保存失败';
       addToast('error', msg);
     }
-  }, [draft, messages, coverSource, coverImageBuffer, addToast]);
+  }, [draft, messages, coverSource, coverImageBuffer, rawCard, rawCardDiverged, addToast]);
 
   // ── Open drafts modal ────────────────────────────────────────────────
   const handleOpenDrafts = useCallback(async () => {
@@ -263,6 +452,13 @@ export function CardEditorChatPage() {
       }
       setDraft(record.data as WizardDraft);
       setMessages((record.messages ?? []) as ChatMessage[]);
+      // 一并还原无损通道底版（无此字段的旧草稿置 null，避免残留上一张卡的底版）
+      setRawCard(
+        record.rawCard && typeof record.rawCard === 'object'
+          ? (record.rawCard as Record<string, unknown>)
+          : null,
+      );
+      setRawCardDiverged(record.rawCardDiverged === true);
       const restoredCoverSource = (record.coverSource ?? 'default') as 'imported' | 'custom' | 'default';
       if (record.coverImageBlob) {
         try {
@@ -354,6 +550,8 @@ export function CardEditorChatPage() {
   // ── Reset editor (clears auto-draft so next visit won't re-prompt) ──
   const handleResetEditor = useCallback(() => {
     setDraft(null);
+    setRawCard(null);
+    setRawCardDiverged(false);
     setMessages([]);
     setImportedFileName(null);
     setIsDirty(false);
@@ -389,6 +587,9 @@ export function CardEditorChatPage() {
         }
         const parsedDraft = cardToDraft(cardData);
         setDraft(parsedDraft);
+        // 保留原始卡 JSON 作为无损通道底版（JSON/PNG 两条导入路径共用）
+        setRawCard(cardData);
+        setRawCardDiverged(false);
         setImportedFileName(file.name);
         setMessages([]);
         setInputValue('');
@@ -482,8 +683,11 @@ export function CardEditorChatPage() {
     if (!draft) return;
     const diff = changeDiffs[idx];
     if (!diff) return;
-    const nextDraft = applySingleChange(draft, diff.change);
+    // 双轨应用：draft 驱动 UI，rawCard 累积无损补丁；同时检测两轨是否分歧
+    const { nextDraft, nextRaw, diverged } = applyChangesWithDivergenceCheck(draft, rawCard, [diff.change]);
     setDraft(nextDraft);
+    setRawCard(nextRaw);
+    if (diverged) setRawCardDiverged(true);
     setDiffStatuses((prev) => {
       const next = [...prev];
       next[idx] = 'applied';
@@ -500,7 +704,7 @@ export function CardEditorChatPage() {
     });
     const name = diffDisplayName(diff);
     addToast('success', `已应用：${name}`);
-  }, [draft, changeDiffs, addToast]);
+  }, [draft, rawCard, changeDiffs, addToast]);
 
   const discardSingleDiff = useCallback((idx: number) => {
     setDiffStatuses((prev) => {
@@ -528,11 +732,13 @@ export function CardEditorChatPage() {
       .map((d, i) => ({ diff: d, idx: i }))
       .filter(({ idx }) => diffStatuses[idx] === 'pending');
     if (pendingDiffs.length === 0) return;
-    // Apply all pending changes in one pass via the original proposals object,
-    // filtered to only pending changes. This preserves the batch apply semantics.
+    // 逐条双轨应用（与 applyCardChatPatch 批量应用等价，见 helper 注释），
+    // 顺带对每条补丁做无损通道分歧检测。
     const pendingChanges = pendingDiffs.map(({ diff }) => diff.change);
-    const nextDraft = applyCardChatPatch(draft, { proposedChanges: pendingChanges });
+    const { nextDraft, nextRaw, diverged } = applyChangesWithDivergenceCheck(draft, rawCard, pendingChanges);
     setDraft(nextDraft);
+    setRawCard(nextRaw);
+    if (diverged) setRawCardDiverged(true);
     setDiffStatuses(changeDiffs.map(() => 'applied' as const));
     addToast('success', `已应用 ${pendingDiffs.length} 项修改`);
     setTimeout(() => {
@@ -541,7 +747,7 @@ export function CardEditorChatPage() {
       setDiffStatuses([]);
       setShowDiffModal(false);
     }, 0);
-  }, [draft, pendingProposals, changeDiffs, diffStatuses, addToast]);
+  }, [draft, rawCard, pendingProposals, changeDiffs, diffStatuses, addToast]);
 
   const discardAllPending = useCallback(() => {
     const cnt = diffStatuses.filter((s) => s === 'pending').length;
@@ -563,13 +769,15 @@ export function CardEditorChatPage() {
   const handleSaveToLibrary = useCallback(async () => {
     if (!draft) return;
     try {
-      const id = await saveCard(draft);
+      // 与导出一致：无损通道可用（未分歧）时，入库记录直接使用
+      // 「原始 JSON + 已确认补丁」；name/时间戳等库级元数据仍由 saveCard 生成。
+      const id = await saveCard(draft, undefined, losslessCard ?? undefined);
       addToast('success', `已保存到卡库（ID: ${id}）`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '保存失败';
       addToast('error', msg);
     }
-  }, [draft, saveCard, addToast]);
+  }, [draft, losslessCard, saveCard, addToast]);
 
   const openExportModal = useCallback(() => {
     if (!draft) return;
@@ -603,7 +811,8 @@ export function CardEditorChatPage() {
   const handleExportPng = useCallback(async () => {
     if (!draft) return;
     try {
-      const card = assembleCard(draft);
+      // 无损通道：外部导入的卡直接导出「原始 JSON + 已确认补丁」；否则走 assembleCard
+      const card = losslessCard ?? assembleCard(draft);
       await exportAsPng(card, coverImageBuffer || undefined);
       setShowExportModal(false);
       addToast('success', 'PNG 导出成功');
@@ -611,12 +820,13 @@ export function CardEditorChatPage() {
       const msg = err instanceof Error ? err.message : '导出失败';
       addToast('error', msg);
     }
-  }, [draft, coverImageBuffer, addToast]);
+  }, [draft, losslessCard, coverImageBuffer, addToast]);
 
   const handleExportJson = useCallback(async () => {
     if (!draft) return;
     try {
-      const card = assembleCard(draft);
+      // 无损通道：外部导入的卡直接导出「原始 JSON + 已确认补丁」；否则走 assembleCard
+      const card = losslessCard ?? assembleCard(draft);
       exportAsJson(card);
       setShowExportModal(false);
       addToast('success', 'JSON 导出成功');
@@ -624,7 +834,7 @@ export function CardEditorChatPage() {
       const msg = err instanceof Error ? err.message : '导出失败';
       addToast('error', msg);
     }
-  }, [draft, addToast]);
+  }, [draft, losslessCard, addToast]);
 
   const toggleDiff = useCallback((idx: number) => {
     setExpandedDiffs((prev) => {
@@ -720,6 +930,32 @@ export function CardEditorChatPage() {
             <Save size={14} />
             保存到卡库
           </Button>
+          {losslessCard && (
+            <span
+              title={t('cardEditorChat.losslessHint')}
+              className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border"
+              style={{
+                borderColor: 'color-mix(in srgb, var(--color-status-success) 45%, transparent)',
+                color: 'var(--color-status-success)',
+              }}
+            >
+              <ShieldCheck size={11} />
+              {t('cardEditorChat.losslessBadge')}
+            </span>
+          )}
+          {!losslessCard && rawCard && rawCardDiverged && (
+            <span
+              title={t('cardEditorChat.losslessDivergedHint')}
+              className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border"
+              style={{
+                borderColor: 'color-mix(in srgb, var(--color-text-muted) 45%, transparent)',
+                color: 'var(--color-text-muted)',
+              }}
+            >
+              <ShieldOff size={11} />
+              {t('cardEditorChat.losslessDisabledBadge')}
+            </span>
+          )}
           <Button variant="primary" size="sm" onClick={openExportModal} className="gap-1">
             <ImageIcon size={14} />
             导出
@@ -862,18 +1098,39 @@ export function CardEditorChatPage() {
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t" style={{ borderColor }}>
-              <Button variant="ghost" size="sm" onClick={() => setShowExportModal(false)}>
-                取消
-              </Button>
-              <Button variant="secondary" size="sm" onClick={handleExportJson} className="gap-1">
-                <FileJson size={14} />
-                导出 JSON
-              </Button>
-              <Button variant="primary" size="sm" onClick={handleExportPng} className="gap-1">
-                <ImageIcon size={14} />
-                导出 PNG
-              </Button>
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t" style={{ borderColor }}>
+              {losslessCard ? (
+                <div
+                  className="flex items-center gap-1.5 text-xs"
+                  style={{ color: 'var(--color-status-success)' }}
+                >
+                  <ShieldCheck size={13} className="shrink-0" />
+                  <span>{t('cardEditorChat.losslessHint')}</span>
+                </div>
+              ) : rawCard && rawCardDiverged ? (
+                <div
+                  className="flex items-center gap-1.5 text-xs"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  <ShieldOff size={13} className="shrink-0" />
+                  <span>{t('cardEditorChat.losslessDivergedHint')}</span>
+                </div>
+              ) : (
+                <span />
+              )}
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" onClick={() => setShowExportModal(false)}>
+                  取消
+                </Button>
+                <Button variant="secondary" size="sm" onClick={handleExportJson} className="gap-1">
+                  <FileJson size={14} />
+                  导出 JSON
+                </Button>
+                <Button variant="primary" size="sm" onClick={handleExportPng} className="gap-1">
+                  <ImageIcon size={14} />
+                  导出 PNG
+                </Button>
+              </div>
             </div>
           </div>
         </Modal>

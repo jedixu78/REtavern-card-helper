@@ -61,6 +61,19 @@ export interface WizardDraftRecord {
   coverSource?: 'imported' | 'custom' | 'default';
   /** Card-editor-only: cover image blob for crash recovery (undefined for wizard drafts) */
   coverImageBlob?: Blob;
+  /**
+   * Card-editor-only: 导入卡片的原始 JSON（无损通道底版）。
+   * 非索引字段，无需 Dexie schema 升级；导出时用「原始 JSON + 已确认补丁」
+   * 绕过 cardToDraft → assembleCard 的有损往返。
+   */
+  rawCard?: unknown;
+  /**
+   * Card-editor-only: 无损通道已分歧标记。true 表示某条已确认补丁在 rawCard
+   * 上被静默跳过或部分应用（与 draft 侧结果不一致），导出/入库须回退
+   * assembleCard(draft) 完整重建，保证「UI 所见 == 导出所得」。
+   * 非索引字段，无需 Dexie schema 升级。
+   */
+  rawCardDiverged?: boolean;
 }
 
 export const db = new Dexie('TavernCardHelper') as Dexie & {

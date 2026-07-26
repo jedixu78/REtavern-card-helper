@@ -183,6 +183,8 @@ export async function saveCardEditorAutoDraft(
   messages: CardEditorChatMessage[],
   coverSource: 'imported' | 'custom' | 'default',
   coverImageBlob?: Blob | null,
+  rawCard?: unknown,
+  rawCardDiverged?: boolean,
 ): Promise<void> {
   await db.wizard_drafts.put({
     id: CARD_EDITOR_AUTO_DRAFT_KEY,
@@ -193,6 +195,8 @@ export async function saveCardEditorAutoDraft(
     messages,
     coverSource,
     coverImageBlob: coverImageBlob ?? undefined,
+    rawCard: rawCard ?? undefined,
+    rawCardDiverged: rawCardDiverged ?? undefined,
   });
 }
 
@@ -211,6 +215,8 @@ export async function saveCardEditorDraft(
   coverSource: 'imported' | 'custom' | 'default',
   coverImageBlob: Blob | null | undefined,
   name?: string,
+  rawCard?: unknown,
+  rawCardDiverged?: boolean,
 ): Promise<WizardDraftRecord> {
   const record: WizardDraftRecord = {
     id: makeCardEditorDraftId(),
@@ -222,6 +228,8 @@ export async function saveCardEditorDraft(
     messages,
     coverSource,
     coverImageBlob: coverImageBlob ?? undefined,
+    rawCard: rawCard ?? undefined,
+    rawCardDiverged: rawCardDiverged ?? undefined,
   };
   await db.wizard_drafts.put(record);
   return record;

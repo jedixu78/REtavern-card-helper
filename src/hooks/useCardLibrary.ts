@@ -48,9 +48,41 @@ export function useCardLibrary() {
     loadCards();
   }, [loadCards]);
 
-  /** Save a card (create or update) */
-  const saveCard = useCallback(async (draft: Parameters<typeof assembleCard>[0], existingId?: number) => {
-    const card = assembleCard(draft, existingId) as CardRecord;
+  /**
+   * Save a card (create or update).
+   *
+   * prebuiltCard（可选）：无损通道预组装卡（原始 JSON + 已确认补丁）。传入时
+   * 入库的卡片内容用它替代 assembleCard(draft) 的有损重建，保证「入库所得 ==
+   * 导出所得」；但 name / id / 时间戳 / 软删除状态等库级元数据仍沿用现有
+   * assembleCard 逻辑生成，库内行为不变。
+   */
+  const saveCard = useCallback(async (
+    draft: Parameters<typeof assembleCard>[0],
+    existingId?: number,
+    prebuiltCard?: ReturnType<typeof assembleCard>,
+  ) => {
+    const assembled = assembleCard(draft, existingId) as CardRecord;
+    let card = assembled;
+    if (prebuiltCard) {
+      const prebuilt = prebuiltCard as unknown as Record<string, unknown>;
+      card = {
+        ...prebuilt,
+        // 库级元数据一律按现有逻辑：spec 结构字段缺失时回退 assembleCard 的值
+        spec: typeof prebuilt.spec === 'string' ? prebuilt.spec : assembled.spec,
+        spec_version: typeof prebuilt.spec_version === 'string' ? prebuilt.spec_version : assembled.spec_version,
+        _meta: (prebuilt._meta && typeof prebuilt._meta === 'object'
+          ? prebuilt._meta
+          : assembled._meta) as Record<string, unknown>,
+        name: assembled.name,
+        createdAt: assembled.createdAt,
+        updatedAt: assembled.updatedAt,
+        deletedAt: assembled.deletedAt ?? null,
+        ...(existingId ? { id: existingId } : {}),
+      } as CardRecord;
+      // 外部导入的原始卡可能自带 id 字段（任意类型）；新建记录时必须剔除，
+      // 避免污染 cards 表的自增主键。
+      if (!existingId && 'id' in card) delete (card as Partial<CardRecord>).id;
+    }
     if (existingId) {
       const existing = (await db.cards.get(existingId)) as CardRecord;
       if (existing) {
