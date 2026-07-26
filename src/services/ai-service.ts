@@ -33,6 +33,57 @@ interface AIRequestPayload {
 }
 
 const PRESET_HEADER = '## 写卡预设规则（必须严格遵守）';
+
+// ── 生成取消 ────────────────────────────────────────────────────────────────
+// 单点取消设计：所有 AI 请求经 beginCancellableRequest 注册模块级控制器，
+// cancelActiveAIRequests() 一键中止全部在途请求——九个生成入口无需各自穿线
+// AbortSignal（服务端代理本就实现了超时用的 AbortController，断点只在前端这一处）。
+
+/** 用户主动停止生成时抛出的错误。UI 层可据此与真实失败区分（不弹红色错误）。 */
+export class AIGenerationCancelledError extends Error {
+  constructor() {
+    super('已停止生成');
+    this.name = 'AIGenerationCancelledError';
+  }
+}
+
+const activeControllers = new Set<AbortController>();
+
+// 取消纪元：每次 cancelActiveAIRequests 递增。调用在开始时记录当时纪元，
+// 重试退避 sleep 之后复查——否则停止若恰好落在 sleep 期间（429 风暴下大部分
+// 墙钟时间都在退避里），abort 打在已消费完的旧 controller 上是空操作，
+// 睡醒后会用全新 controller 照常重发请求（「停止失灵」窗口）。
+let cancelEpoch = 0;
+
+/** 取消全部在途 AI 请求。返回被取消的请求数。 */
+export function cancelActiveAIRequests(): number {
+  cancelEpoch++;
+  const count = activeControllers.size;
+  for (const controller of activeControllers) {
+    controller.abort();
+  }
+  activeControllers.clear();
+  return count;
+}
+
+/** 是否有在途 AI 请求（供 UI 决定是否显示「停止」按钮）。 */
+export function hasActiveAIRequests(): boolean {
+  return activeControllers.size > 0;
+}
+
+/**
+ * 开启一次可取消的请求周期。signal 需同时覆盖 fetch 握手与响应体读取
+ * （流式 SSE 的 reader.read() 也要能被中止），所以 release 必须在
+ * **整个响应消费完毕**后调用，而不是 fetch resolve 时。
+ */
+function beginCancellableRequest(): { signal: AbortSignal; release: () => void } {
+  const controller = new AbortController();
+  activeControllers.add(controller);
+  return {
+    signal: controller.signal,
+    release: () => activeControllers.delete(controller),
+  };
+}
 const DEFAULT_MODEL = 'gpt-3.5-turbo';
 const MAX_RETRIES_CAP = 8;
 const MAX_CONTINUATION_ROUNDS = 4;
@@ -357,13 +408,18 @@ interface SingleCallResult {
 
 async function callAIOnce(payload: AIRequestPayload, maxRetries: number): Promise<SingleCallResult> {
   let lastError: Error | null = null;
+  const epochAtStart = cancelEpoch;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // 停止发生在上一轮重试退避期间：sleep 醒来后在此拦截，不再重发
+    if (cancelEpoch !== epochAtStart) throw new AIGenerationCancelledError();
+    const { signal, release } = beginCancellableRequest();
     try {
       const response = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal,
       });
 
       if (!response.ok) {
@@ -385,6 +441,8 @@ async function callAIOnce(payload: AIRequestPayload, maxRetries: number): Promis
       }
       return { content, finishReason };
     } catch (err: unknown) {
+      // 用户主动取消：不可重试，转为专用错误类型直接抛出
+      if (signal.aborted) throw new AIGenerationCancelledError();
       if (attempt < maxRetries && isRetryableError(err)) {
         lastError = err instanceof Error ? err : new Error('网络请求失败');
         await new Promise(r => setTimeout(r, retryDelay(attempt)));
@@ -392,6 +450,8 @@ async function callAIOnce(payload: AIRequestPayload, maxRetries: number): Promis
       }
       if (err instanceof Error && err.message.includes('请先在')) throw err;
       throw err;
+    } finally {
+      release();
     }
   }
 
@@ -435,6 +495,9 @@ export async function callAI(options: AIRequestOptions): Promise<string> {
       lastSegment = result.content;
       lastFinishReason = result.finishReason;
     } catch (err) {
+      // 用户主动停止不能吞：半截 JSON 会被调用方 parseAIJson 失败后当纯文本
+      // 写进角色描述并计入「成功」。取消必须一路抛给调用方按取消处理。
+      if (err instanceof AIGenerationCancelledError) throw err;
       logger.warn(`[AI] 续写第 ${continuationRounds} 轮失败，返回已有内容：`, err);
       break;
     }
@@ -464,16 +527,21 @@ async function streamAIOnce(
   existingFullText: string = '',
 ): Promise<StreamCallResult> {
   let lastError: Error | null = null;
+  const epochAtStart = cancelEpoch;
   // 已通过 onChunk 投递给消费者的字符数（跨重试累计）。
   // 重试时模型从头重新生成，这里按长度跳过已投递部分，避免追加式消费者收到重复内容。
   let deliveredLength = 0;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // 停止发生在上一轮重试退避期间：sleep 醒来后在此拦截，不再重发
+    if (cancelEpoch !== epochAtStart) throw new AIGenerationCancelledError();
+    const { signal, release } = beginCancellableRequest();
     try {
       const response = await fetch('/api/ai/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal,
       });
 
       if (!response.ok) {
@@ -577,6 +645,8 @@ async function streamAIOnce(
         }
       }
     } catch (err: unknown) {
+      // 用户主动取消：不可重试（覆盖握手与流读取两个阶段的 abort）
+      if (signal.aborted) throw new AIGenerationCancelledError();
       // 已向消费者投递了部分内容后不能重试：模型会从头重新生成，
       // 拼接两次不同生成的内容会产生乱码。
       if (deliveredLength > 0) throw err;
@@ -587,6 +657,8 @@ async function streamAIOnce(
       }
       if (err instanceof Error && err.message.includes('请先在')) throw err;
       throw err;
+    } finally {
+      release();
     }
   }
 
@@ -634,6 +706,8 @@ export async function callAIStreaming(
       lastSegment = result.fullText;
       lastFinishReason = result.finishReason;
     } catch (err) {
+      // 同 callAI：用户主动停止必须一路抛出，不能把半截内容当完整结果返回
+      if (err instanceof AIGenerationCancelledError) throw err;
       logger.warn(`[AI] 流式续写第 ${continuationRounds} 轮失败，返回已有内容：`, err);
       break;
     }
