@@ -192,6 +192,12 @@ export function useNovelState() {
       if (!checkpoint || checkpoint.signature !== signature) return null;
       if (!Array.isArray(checkpoint.partials)) return null;
       if (checkpoint.phase === 'merge' && !Array.isArray(checkpoint.pending)) checkpoint.phase = 'extract';
+      // done 相位的 checkpoint 必须携带最终包与失败段清单，缺一即视为损坏
+      if (checkpoint.phase === 'done' &&
+          (!Array.isArray(checkpoint.pending) || checkpoint.pending.length === 0 ||
+           !Array.isArray(checkpoint.failedChunks) || checkpoint.failedChunks.length === 0)) {
+        return null;
+      }
       return checkpoint;
     } catch {
       return null;

@@ -14,12 +14,18 @@ interface PipelinePanelProps {
   narrativeMode: NarrativeMode;
   entryBudget: number;
   workflowRunState: WorkflowRunState;
+  /** 生成结束后有失败段时的一键补跑；不传则不显示按钮 */
+  onRetryFailed?: () => void;
+  /** 生成/重试进行中禁点 */
+  retryDisabled?: boolean;
 }
 
 export function PipelinePanel({
   source,
   chunkCharLimit,
   workflowRunState,
+  onRetryFailed,
+  retryDisabled,
 }: PipelinePanelProps) {
   // Re-splitting the whole novel on every render is expensive; memoize on the
   // inputs that actually affect the estimate.
@@ -128,6 +134,30 @@ export function PipelinePanel({
             </div>
           ))}
         </div>
+
+        {onRetryFailed && workflowRunState.phase === 'done' && workflowRunState.failedChunks.length > 0 && (
+          <div
+            className="rounded-lg border p-3 flex items-center justify-between gap-3 flex-wrap"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--color-status-warning) 35%, transparent)',
+              backgroundColor: 'color-mix(in srgb, var(--color-status-warning) 12%, transparent)',
+            }}
+          >
+            <span className="text-sm" style={{ color: 'var(--color-status-warning)' }}>
+              ⚠️ 有 {workflowRunState.failedChunks.length} 段提取失败被跳过（第
+              {workflowRunState.failedChunks.map((i) => i + 1).join('、')} 段），章节内容可能缺失。
+            </span>
+            <button
+              type="button"
+              onClick={onRetryFailed}
+              disabled={retryDisabled}
+              className="rounded-lg px-3 py-1.5 text-sm font-bold text-white whitespace-nowrap disabled:opacity-50"
+              style={{ backgroundColor: 'var(--color-status-warning)' }}
+            >
+              重试失败段（{workflowRunState.failedChunks.length}）
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );

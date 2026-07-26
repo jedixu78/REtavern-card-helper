@@ -99,11 +99,14 @@ export interface Checkpoint {
   sourceHash: string;
   chunkSize: number;
   totalChunks: number;
-  phase: 'extract' | 'merge';
+  /** done = 生成已完成但存在失败段，checkpoint 保留 pending=[最终包] 供「重试失败段」并入 */
+  phase: 'extract' | 'merge' | 'done';
   partials: NovelPackage[];
   pending?: NovelPackage[];
   mergeDone?: number;
   mergeTotal?: number;
+  /** 提取失败被跳过的段下标（按原始分段编号）；extract/merge/done 各相位都持久化 */
+  failedChunks?: number[];
   updatedAt: string;
 }
 

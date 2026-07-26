@@ -16,7 +16,7 @@ import { extractNovelChunk, mergeNovelPackages, mergePackagesLocally, emptyPacka
 import { saveWorkshopLorebookImport, revealFlagsToVariableBlueprints } from '../../services/novel-workshop-bridge';
 import { splitTextIntoChunks, buildCallEstimate, assertWorkflowAffordable, hashString } from './utils';
 import { MERGE_BATCH_SIZE } from './types';
-import type { NovelPackage, Checkpoint, GeneratedEntry, VariableBlueprint, EntityIndex } from './types';
+import type { NovelPackage, Checkpoint, GeneratedEntry, VariableBlueprint, EntityIndex, NovelWorkshopState } from './types';
 import { THEME_TOKENS } from '../../constants/theme';
 import './novel-workshop.css';
 
@@ -67,6 +67,58 @@ function packageEntriesToGeneratedEntries(
 
 function packageVariablesToBlueprints(variables: NovelPackage['variables']): VariableBlueprint[] {
   return (variables || []).filter((v): v is VariableBlueprint => !!v && !!v.path);
+}
+
+/** 影响提取结果的运行配置指纹 —— 生成与「重试失败段」必须算出同一签名才能续接。 */
+type RunConfigFields = Pick<
+  NovelWorkshopState,
+  'gateMode' | 'narrativeMode' | 'focus' | 'entryBudget' | 'chunkCharLimit' | 'contextText'
+>;
+
+function computeRunSignature(source: string, config: RunConfigFields): string {
+  const configFingerprint = JSON.stringify({
+    gateMode: config.gateMode,
+    narrativeMode: config.narrativeMode,
+    focus: [...config.focus].sort(),
+    entryBudget: config.entryBudget,
+    chunkCharLimit: config.chunkCharLimit,
+    contextText: config.contextText.slice(0, 200),
+  });
+  return hashString(source + '|' + source.length + '|' + configFingerprint);
+}
+
+type ExtractRunConfig = {
+  gateMode: NovelWorkshopState['gateMode'];
+  narrativeMode: NovelWorkshopState['narrativeMode'];
+  focus: NovelWorkshopState['focus'];
+  stageOrder: string[];
+  entryBudget: number;
+  contextText: string;
+};
+
+/**
+ * 单段提取 + 一次即时重试（生成主流程与「重试失败段」共用同一套重试参数）。
+ * 两次都失败返回 null，由调用方记入 failedChunks。
+ */
+async function extractChunkWithRetry(
+  chunk: string,
+  index: number,
+  total: number,
+  config: ExtractRunConfig,
+  updateStatus: (text: string, color: string) => void,
+): Promise<NovelPackage | null> {
+  try {
+    return await extractNovelChunk(chunk, index, total, config, (piece) => {
+      updateStatus(`正在提取第 ${index + 1}/${total} 段：${piece.slice(-40)}`, THEME_TOKENS.info);
+    });
+  } catch {
+    updateStatus(`⚠️ 第 ${index + 1} 段提取失败，正在重试…`, THEME_TOKENS.warning);
+    try {
+      return await extractNovelChunk(chunk, index, total, config, () => {});
+    } catch {
+      return null;
+    }
+  }
 }
 
 export function NovelWorkshop() {
@@ -121,6 +173,107 @@ export function NovelWorkshop() {
   // every unrelated render (e.g. status/stall updates during generation).
   const combinedSource = useMemo(() => getCombinedSourceText(), [getCombinedSourceText]);
 
+  /** 当前原文+配置的运行签名；与持久化检查点比对，决定「重试失败段」是否可用 */
+  const runSignature = useMemo(
+    () =>
+      combinedSource
+        ? computeRunSignature(combinedSource, {
+            gateMode: state.gateMode,
+            narrativeMode: state.narrativeMode,
+            focus: state.focus,
+            entryBudget: state.entryBudget,
+            chunkCharLimit: state.chunkCharLimit,
+            contextText: state.contextText,
+          })
+        : '',
+    [combinedSource, state.gateMode, state.narrativeMode, state.focus, state.entryBudget, state.chunkCharLimit, state.contextText],
+  );
+
+  // 恢复会话：存在与当前原文/配置匹配的 done 检查点（带失败段）时，
+  // 把失败清单还原到运行状态里，让「重试失败段」按钮在刷新后仍然可用。
+  useEffect(() => {
+    if (isGenerating || workflowRunState.phase !== 'idle' || !runSignature) return;
+    const cp = loadCheckpoint(runSignature);
+    if (cp?.phase === 'done' && cp.failedChunks && cp.failedChunks.length > 0) {
+      const failed = cp.failedChunks;
+      setWorkflowRunState(prev => ({
+        ...prev,
+        phase: 'done',
+        extractionTotal: cp.totalChunks,
+        extractionDone: cp.totalChunks - failed.length,
+        failedChunks: [...failed],
+      }));
+    }
+  }, [isGenerating, workflowRunState.phase, runSignature, loadCheckpoint, setWorkflowRunState]);
+
+  /**
+   * 把最终包写入工坊状态与 sessionStorage 桥（生成主流程与「重试失败段」共用）。
+   * 返回成功导入的条目数；是否跳转到向导由调用方决定。
+   */
+  const commitFinalPackage = (
+    finalPackage: NovelPackage,
+    warnings: string[],
+    updateStatus: (text: string, color: string) => void,
+  ): number => {
+    const stageOrderForState = finalPackage.stage_order.length ? finalPackage.stage_order : state.stageOrder;
+    updateState(prev => ({
+      ...prev,
+      summary: finalPackage.summary,
+      stageOrder: stageOrderForState,
+      flags: (finalPackage.reveal_flags || []).map((f, i) => ({
+        id: f.id || `flag_${i}`,
+        label: f.label || f.name || `标记${i + 1}`,
+        description: f.description || f.desc || '',
+        value: f.default === true,
+      })),
+      entityIndex: (finalPackage.entity_index || []).map((e, i) => ({
+        id: e.id || `entity_${i}`,
+        name: e.name || '未命名实体',
+        category: (e.category || 'character') as 'character' | 'location' | 'faction' | 'rule' | 'item' | 'event',
+        aliases: e.aliases || [],
+        summary: e.public_summary || e.summary || '',
+      })),
+      generatedEntries: packageEntriesToGeneratedEntries(finalPackage.entries, stageOrderForState),
+      generatedVariables: packageVariablesToBlueprints(finalPackage.variables),
+      generatedAt: new Date().toISOString(),
+    }));
+
+    // Convert reveal_flags into 开关.{id} MVU booleans so requiredFlags-gated
+    // entries have their corresponding EJS guards resolve correctly.
+    const generatedEntries = packageEntriesToGeneratedEntries(finalPackage.entries, stageOrderForState);
+    const generatedVariables = packageVariablesToBlueprints(finalPackage.variables);
+    const flagBlueprints = revealFlagsToVariableBlueprints(
+      (finalPackage.reveal_flags || []).map((f, i) => ({
+        id: f.id || `flag_${i}`,
+        label: f.label || f.name || `标记${i + 1}`,
+        description: f.description || f.desc || '',
+        value: f.default === true,
+      })),
+    );
+    const mergedVariableBlueprints = [...generatedVariables, ...flagBlueprints];
+    const entryCount = (finalPackage.entries || []).length;
+
+    const importedEntries = entryCount > 0
+      ? saveWorkshopLorebookImport(
+          state.lastFileName || '小说世界书',
+          generatedEntries,
+          mergedVariableBlueprints,
+          finalPackage.summary || '',
+          stageOrderForState,
+        )
+      : [];
+
+    const warningSuffix = warnings.length ? `（注意：${warnings.join('，')}）` : '';
+    if (importedEntries.length > 0) {
+      updateStatus(`已生成 ${importedEntries.length} 条世界书条目，正在跳转到创建向导…${warningSuffix}`, THEME_TOKENS.success);
+    } else if (entryCount > 0) {
+      updateStatus(`生成完成但所有条目内容为空，未导入${warningSuffix}`, THEME_TOKENS.warning);
+    } else {
+      updateStatus(`生成完成但未产出有效条目${warningSuffix}`, THEME_TOKENS.warning);
+    }
+    return importedEntries.length;
+  };
+
   const handleGenerate = async () => {
     if (isGenerating) return;
 
@@ -146,15 +299,7 @@ export function NovelWorkshop() {
     }
 
     const total = chunks.length;
-    const configFingerprint = JSON.stringify({
-      gateMode: state.gateMode,
-      narrativeMode: state.narrativeMode,
-      focus: [...state.focus].sort(),
-      entryBudget: state.entryBudget,
-      chunkCharLimit: state.chunkCharLimit,
-      contextText: state.contextText.slice(0, 200),
-    });
-    const signature = hashString(source + '|' + source.length + '|' + configFingerprint);
+    const signature = computeRunSignature(source, state);
     const existingCp = loadCheckpoint(signature);
 
     let partials: NovelPackage[] = [];
@@ -162,7 +307,11 @@ export function NovelWorkshop() {
     let resumedMergeDone = 0;
     const failedChunks: number[] = [];
     let mergeFallbacks = 0;
-    if (existingCp && Array.isArray(existingCp.partials)) {
+    // done 相位（带失败段的已完成运行）不在这里续接——重新点「生成」即全量重跑，
+    // 补跑失败段走 PipelinePanel 的「重试失败段」按钮。
+    if (existingCp && existingCp.phase !== 'done' && Array.isArray(existingCp.partials)) {
+      // 中止的运行里已跳过的失败段也要接回来，否则续跑起点会错位、完成后清单丢失
+      failedChunks.push(...(existingCp.failedChunks ?? []));
       if (existingCp.phase === 'merge' && Array.isArray(existingCp.pending) && existingCp.pending.length > 0) {
         partials = [...existingCp.pending];
         skipToMerge = true;
@@ -170,7 +319,7 @@ export function NovelWorkshop() {
         setStatus(`检测到上次未完成的进度，跳过提取直接进入合并（剩余 ${partials.length} 批待合并）`, THEME_TOKENS.info);
       } else if (existingCp.partials.length > 0) {
         partials = [...existingCp.partials];
-        setStatus(`检测到上次未完成的进度，从第 ${partials.length + 1} 段继续提取`, THEME_TOKENS.info);
+        setStatus(`检测到上次未完成的进度，从第 ${partials.length + failedChunks.length + 1} 段继续提取`, THEME_TOKENS.info);
       }
     }
 
@@ -189,11 +338,11 @@ export function NovelWorkshop() {
     setIsGenerating(true);
     setWorkflowRunState({
       phase: 'extract',
-      extractionDone: partials.length,
+      extractionDone: partials.length + failedChunks.length,
       extractionTotal: total,
       mergeDone: 0,
       mergeTotal: 0,
-      failedChunks: [],
+      failedChunks: [...failedChunks],
       mergeFallbacks: 0,
     });
 
@@ -210,39 +359,32 @@ export function NovelWorkshop() {
       // ── Extract phase (with per-chunk fallback) ──
       let aborted = false;
       if (!skipToMerge) {
-        for (let i = partials.length; i < total; i++) {
+        // 续跑起点 = 已成功段数 + 已失败段数（两者都是顺序推进时被消费的下标）
+        for (let i = partials.length + failedChunks.length; i < total; i++) {
           if (shouldAbortRef.current) {
             aborted = true;
             break;
           }
           updateStatus(`正在提取第 ${i + 1}/${total} 段…`, THEME_TOKENS.info);
-          let pkg: NovelPackage | null = null;
-          try {
-            pkg = await extractNovelChunk(chunks[i], i, total, config, (chunk) => {
-              updateStatus(`正在提取第 ${i + 1}/${total} 段：${chunk.slice(-40)}`, THEME_TOKENS.info);
-            });
-          } catch {
-            updateStatus(`⚠️ 第 ${i + 1} 段提取失败，正在重试…`, THEME_TOKENS.warning);
-            try {
-              pkg = await extractNovelChunk(chunks[i], i, total, config, () => {});
-            } catch {
-              failedChunks.push(i);
-              updateStatus(`⚠️ 第 ${i + 1} 段提取失败已跳过，继续处理下一段`, THEME_TOKENS.warning);
-            }
-          }
+          const pkg = await extractChunkWithRetry(chunks[i], i, total, config, updateStatus);
           if (pkg) {
             partials.push(pkg);
-            const cp: Checkpoint = {
-              signature,
-              sourceHash: signature,
-              chunkSize: state.chunkCharLimit,
-              totalChunks: total,
-              phase: 'extract',
-              partials,
-              updatedAt: new Date().toISOString(),
-            };
-            saveCheckpoint(cp);
+          } else {
+            failedChunks.push(i);
+            updateStatus(`⚠️ 第 ${i + 1} 段提取失败已跳过，继续处理下一段`, THEME_TOKENS.warning);
           }
+          // 成功、失败都落盘：失败清单必须与 partials 同步持久化，
+          // 否则「最后一段失败后中止」会让续跑起点与清单错位
+          saveCheckpoint({
+            signature,
+            sourceHash: signature,
+            chunkSize: state.chunkCharLimit,
+            totalChunks: total,
+            phase: 'extract',
+            partials,
+            failedChunks: [...failedChunks],
+            updatedAt: new Date().toISOString(),
+          });
           setWorkflowRunState(prev => ({
             ...prev,
             extractionDone: i + 1,
@@ -303,6 +445,7 @@ export function NovelWorkshop() {
             pending: current,
             mergeDone,
             mergeTotal,
+            failedChunks: [...failedChunks],
             updatedAt: new Date().toISOString(),
           };
           saveCheckpoint(cp);
@@ -351,84 +494,170 @@ export function NovelWorkshop() {
         finalPackage = current[0] || emptyPackage();
       }
 
-      // ── Write to state ──
-      const stageOrderForState = finalPackage.stage_order.length ? finalPackage.stage_order : state.stageOrder;
-      updateState(prev => ({
-        ...prev,
-        summary: finalPackage.summary,
-        stageOrder: stageOrderForState,
-        flags: (finalPackage.reveal_flags || []).map((f, i) => ({
-          id: f.id || `flag_${i}`,
-          label: f.label || f.name || `标记${i + 1}`,
-          description: f.description || f.desc || '',
-          value: f.default === true,
-        })),
-        entityIndex: (finalPackage.entity_index || []).map((e, i) => ({
-          id: e.id || `entity_${i}`,
-          name: e.name || '未命名实体',
-          category: (e.category || 'character') as 'character' | 'location' | 'faction' | 'rule' | 'item' | 'event',
-          aliases: e.aliases || [],
-          summary: e.public_summary || e.summary || '',
-        })),
-        generatedEntries: packageEntriesToGeneratedEntries(finalPackage.entries, stageOrderForState),
-        generatedVariables: packageVariablesToBlueprints(finalPackage.variables),
-        generatedAt: new Date().toISOString(),
-      }));
-
-      // ── Save to sessionStorage bridge and navigate to wizard ──
-      const stageOrderForBridge = finalPackage.stage_order.length ? finalPackage.stage_order : state.stageOrder;
-      const generatedEntries = packageEntriesToGeneratedEntries(finalPackage.entries, stageOrderForBridge);
-      const generatedVariables = packageVariablesToBlueprints(finalPackage.variables);
-      // Convert reveal_flags into 开关.{id} MVU booleans so requiredFlags-gated
-      // entries have their corresponding EJS guards resolve correctly.
-      const flagBlueprints = revealFlagsToVariableBlueprints(
-        (finalPackage.reveal_flags || []).map((f, i) => ({
-          id: f.id || `flag_${i}`,
-          label: f.label || f.name || `标记${i + 1}`,
-          description: f.description || f.desc || '',
-          value: f.default === true,
-        })),
-      );
-      const mergedVariableBlueprints = [...generatedVariables, ...flagBlueprints];
-      const entryCount = (finalPackage.entries || []).length;
-
-      const importedEntries = entryCount > 0
-        ? saveWorkshopLorebookImport(
-            state.lastFileName || '小说世界书',
-            generatedEntries,
-            mergedVariableBlueprints,
-            finalPackage.summary || '',
-            stageOrderForBridge,
-          )
-        : [];
-
       const warnings: string[] = [];
       if (failedChunks.length > 0) {
-        warnings.push(`${failedChunks.length} 段提取失败已跳过`);
+        warnings.push(`${failedChunks.length} 段提取失败已跳过，可在「处理步骤」面板一键重试`);
       }
       if (mergeFallbacks > 0) {
         warnings.push(`${mergeFallbacks} 次合并改用了本地合并`);
       }
-      const warningSuffix = warnings.length ? `（注意：${warnings.join('，')}）` : '';
+      const importedCount = commitFinalPackage(finalPackage, warnings, updateStatus);
 
-      if (importedEntries.length > 0) {
-        updateStatus(`已生成 ${importedEntries.length} 条世界书条目，正在跳转到创建向导…${warningSuffix}`, THEME_TOKENS.success);
-      } else if (entryCount > 0) {
-        updateStatus(`生成完成但所有条目内容为空，未导入${warningSuffix}`, THEME_TOKENS.warning);
+      if (failedChunks.length > 0) {
+        // 有失败段：保留 done 相位检查点（带最终包），供「重试失败段」把补跑结果并入
+        saveCheckpoint({
+          signature,
+          sourceHash: signature,
+          chunkSize: state.chunkCharLimit,
+          totalChunks: total,
+          phase: 'done',
+          partials: [],
+          pending: [finalPackage],
+          failedChunks: [...failedChunks],
+          updatedAt: new Date().toISOString(),
+        });
       } else {
-        updateStatus(`生成完成但未产出有效条目${warningSuffix}`, THEME_TOKENS.warning);
+        clearCheckpoint();
       }
+      setWorkflowRunState(prev => ({ ...prev, phase: 'done', failedChunks: [...failedChunks] }));
 
-      clearCheckpoint();
-      setWorkflowRunState(prev => ({ ...prev, phase: 'done' }));
-
-      if (importedEntries.length > 0) {
+      if (importedCount > 0) {
         navigate('/wizard?fromWorkshop=1');
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '生成过程出错';
       setStatus(`❌ ${msg}`, THEME_TOKENS.danger);
       setWorkflowRunState(prev => ({ ...prev, phase: 'idle' }));
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  /**
+   * 重试失败段：只重跑 done 检查点里记录的失败段（复用单段提取与同一套重试参数），
+   * 成功的包用本地合并（first-wins，已有结果优先）并入最终包；再失败的留在清单可再点。
+   */
+  const handleRetryFailed = async () => {
+    if (isGenerating) return;
+
+    const source = getCombinedSourceText();
+    if (!source) {
+      setStatus('请先重新导入或粘贴与上次相同的原文（重试需要原始文本）', THEME_TOKENS.danger);
+      return;
+    }
+    const signature = computeRunSignature(source, state);
+    const cp = loadCheckpoint(signature);
+    if (!cp || cp.phase !== 'done' || !cp.failedChunks?.length || !cp.pending?.[0]) {
+      setStatus('找不到匹配的失败段记录：原文或配置可能已变更，请重新生成', THEME_TOKENS.warning);
+      return;
+    }
+    const chunks = splitTextIntoChunks(source, state.chunkCharLimit);
+    const failedList = cp.failedChunks.filter((idx) => idx >= 0 && idx < chunks.length);
+    if (failedList.length === 0) {
+      setStatus('失败段下标与当前分段不匹配，请重新生成', THEME_TOKENS.warning);
+      clearCheckpoint();
+      setWorkflowRunState(prev => ({ ...prev, failedChunks: [] }));
+      return;
+    }
+
+    shouldAbortRef.current = false;
+    lastStatusUpdateRef.current = Date.now();
+    setStallWarning(false);
+    setStallCritical(false);
+
+    const updateStatus = (text: string, color: string) => {
+      lastStatusUpdateRef.current = Date.now();
+      setStallWarning(false);
+      setStallCritical(false);
+      setStatus(text, color);
+    };
+
+    setIsGenerating(true);
+    // 进度条按「本次重试批次」计数（extractionTotal = 失败段数），状态栏文案报原始段号
+    setWorkflowRunState(prev => ({
+      ...prev,
+      phase: 'extract',
+      extractionDone: 0,
+      extractionTotal: failedList.length,
+      failedChunks: [],
+    }));
+
+    try {
+      const config = {
+        gateMode: state.gateMode,
+        narrativeMode: state.narrativeMode,
+        focus: state.focus,
+        stageOrder: state.stageOrder,
+        entryBudget: state.entryBudget,
+        contextText: state.contextText,
+      };
+
+      const recovered: NovelPackage[] = [];
+      const stillFailed: number[] = [];
+      for (let k = 0; k < failedList.length; k++) {
+        if (shouldAbortRef.current) {
+          // 中止：未处理的段原样留在失败清单里
+          stillFailed.push(...failedList.slice(k));
+          break;
+        }
+        const idx = failedList[k];
+        updateStatus(`正在重试第 ${idx + 1}/${cp.totalChunks} 段（${k + 1}/${failedList.length}）…`, THEME_TOKENS.info);
+        const pkg = await extractChunkWithRetry(chunks[idx], idx, cp.totalChunks, config, updateStatus);
+        if (pkg) {
+          recovered.push(pkg);
+        } else {
+          stillFailed.push(idx);
+          updateStatus(`⚠️ 第 ${idx + 1} 段重试仍然失败`, THEME_TOKENS.warning);
+        }
+        setWorkflowRunState(prev => ({ ...prev, extractionDone: k + 1 }));
+      }
+
+      let importedCount = 0;
+      let finalPackage = cp.pending[0];
+      if (recovered.length > 0) {
+        // first-wins：已有最终包在前，补跑结果并入（沿用现有本地合并语义，不重新设计）
+        finalPackage = mergePackagesLocally([finalPackage, ...recovered]);
+        const warnings: string[] = [];
+        if (stillFailed.length > 0) {
+          warnings.push(`${stillFailed.length} 段仍然失败，可再次重试`);
+        }
+        importedCount = commitFinalPackage(finalPackage, warnings, updateStatus);
+      } else {
+        updateStatus(`⚠️ ${failedList.length} 段重试全部失败，未产生新内容。请检查网络或 API 设置后再试。`, THEME_TOKENS.warning);
+      }
+
+      if (stillFailed.length > 0) {
+        saveCheckpoint({
+          signature,
+          sourceHash: signature,
+          chunkSize: state.chunkCharLimit,
+          totalChunks: cp.totalChunks,
+          phase: 'done',
+          partials: [],
+          pending: [finalPackage],
+          failedChunks: stillFailed,
+          updatedAt: new Date().toISOString(),
+        });
+      } else {
+        clearCheckpoint();
+      }
+      setWorkflowRunState(prev => ({
+        ...prev,
+        phase: 'done',
+        extractionTotal: cp.totalChunks,
+        extractionDone: cp.totalChunks - stillFailed.length,
+        failedChunks: stillFailed,
+      }));
+
+      // 与主流程一致：导入成功即跳向导。剩余失败段保存在检查点里，
+      // 回到工坊时恢复 effect 会重新亮起「重试失败段」按钮。
+      if (importedCount > 0) {
+        navigate('/wizard?fromWorkshop=1');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '重试过程出错';
+      setStatus(`❌ ${msg}`, THEME_TOKENS.danger);
+      setWorkflowRunState(prev => ({ ...prev, phase: 'done', failedChunks: [...failedList] }));
     } finally {
       setIsGenerating(false);
     }
@@ -576,6 +805,8 @@ export function NovelWorkshop() {
         narrativeMode={state.narrativeMode}
         entryBudget={state.entryBudget}
         workflowRunState={workflowRunState}
+        onRetryFailed={handleRetryFailed}
+        retryDisabled={isGenerating}
       />
 
       <ConfigPanel
