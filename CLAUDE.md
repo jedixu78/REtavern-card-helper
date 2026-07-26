@@ -50,5 +50,5 @@ Always run `npm run typecheck` and `npm test` after changes. The test suite is t
 - **EJS escaping is a security boundary**: user/AI text is embedded into generated EJS/JS templates. Any new embedding must go through the escapers above (neutralizes `%>`, quotes, line separators).
 - **Card spec versions**: fields live under `data.*` for V2/V3 and at the top level for V1 — mapping code must handle both.
 - **Service worker** `public/sw.js` uses a manual `CACHE_NAME` version (`...-vNN`). Bump it when shipping changes that must invalidate cached assets.
-- **TS strict mode is currently OFF** (`tsconfig.json`). `noUnusedLocals`/`noUnusedParameters` are on. Prefer null-safe code; a future task may enable `strict`.
+- **TS strict mode IS on** — not via `tsconfig.json` (which never sets `strict`), but because TypeScript 6 defaults it to `true`. Verified by probe: `noImplicitAny` (TS7006) and `strictNullChecks` (TS2322) both fire. The codebase is strict-clean today, so keep it that way — don't "fix" a type error by widening to `any`. `noUnusedLocals`/`noUnusedParameters` are also on.
 - Language: UI and most comments are Chinese; match the surrounding language when editing.

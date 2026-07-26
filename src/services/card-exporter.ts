@@ -371,7 +371,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
       regexScripts.push({
         id: 'c5e7a8d9-1234-4a5b-9c6d-7e8f9a0b1c2d',
         scriptName: REGEX_SCRIPT_NAMES.statusBar,
-        findRegex: '<StatusPlaceHolderImpl/>',
+        findRegex: STATUS_BAR_PLACEHOLDER,
         replaceString: cleanHtml,
         trimStrings: [],
         placement: [2],
@@ -388,7 +388,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
       regexScripts.push({
         id: 'd6f8b9e0-2345-4b6c-ad7e-8f9a0b1c2d3e',
         scriptName: '对AI隐藏状态栏',
-        findRegex: '<StatusPlaceHolderImpl/>',
+        findRegex: STATUS_BAR_PLACEHOLDER,
         replaceString: '',
         trimStrings: [],
         placement: [2],
