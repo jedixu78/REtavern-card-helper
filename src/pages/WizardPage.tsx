@@ -839,6 +839,8 @@ ${e.content || ''}`)
             mvu={draft.mvu ?? createEmptyMvuConfig()}
             onChange={(mvu) => updateDraft({ mvu })}
             cardName={draft.cardName}
+            characterContext={characterContext}
+            worldbookContext={worldbookContext}
           />
         );
       case 6:

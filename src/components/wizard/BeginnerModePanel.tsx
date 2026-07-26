@@ -33,6 +33,8 @@ interface BeginnerModePanelProps {
   mvu: MvuConfig;
   onChange: (mvu: MvuConfig) => void;
   cardName: string;
+  characterContext?: string;
+  worldbookContext?: string;
 }
 
 type GenerationStatus = 'idle' | 'loading' | 'streaming' | 'done' | 'error';
@@ -54,7 +56,7 @@ const inputCls = 'w-full rounded-lg border border-[var(--input-border)] bg-[var(
 // 主组件
 // ════════════════════════════════════════════════════════════════════════════
 
-export function BeginnerModePanel({ mvu, onChange, cardName }: BeginnerModePanelProps) {
+export function BeginnerModePanel({ mvu, onChange, cardName, characterContext, worldbookContext }: BeginnerModePanelProps) {
   // 查找模板：旧 staged-template id（pure-love/ntr/dual-route）不在新模板表中，需回退到选择界面
   const foundTemplate = mvu.beginnerTemplateId
     ? BEGINNER_TEMPLATES.find(t => t.id === mvu.beginnerTemplateId) ?? null
@@ -138,7 +140,7 @@ export function BeginnerModePanel({ mvu, onChange, cardName }: BeginnerModePanel
 
     const blueprint = buildTemplateAIBlueprint(selectedTemplate);
     const system = buildBeginnerGenSystem(selectedTemplate);
-    const user = buildBeginnerGenUser(cardName, blueprint, userRequirement);
+    const user = buildBeginnerGenUser(cardName, blueprint, userRequirement, characterContext, worldbookContext);
 
     try {
       const fullText = await callAIWithPromptStreaming(system, user, (_chunk, full) => {
@@ -153,7 +155,7 @@ export function BeginnerModePanel({ mvu, onChange, cardName }: BeginnerModePanel
       setGlobalGenStatus('error');
       setGlobalError(err instanceof Error ? err.message : '生成失败，请重试');
     }
-  }, [selectedTemplate, cardName, userRequirement, mvu, onChange]);
+  }, [selectedTemplate, cardName, userRequirement, mvu, onChange, characterContext, worldbookContext]);
 
   // ── AI 逐分区生成 ─────────────────────────────────────────
   const handleGenerateSection = useCallback(async (section: TemplateSectionBlueprint) => {
@@ -161,7 +163,7 @@ export function BeginnerModePanel({ mvu, onChange, cardName }: BeginnerModePanel
     setSectionStates(prev => ({ ...prev, [section.name]: { status: 'streaming', streamText: '', error: '' } }));
 
     const system = buildSectionGenSystem(selectedTemplate, section);
-    const user = buildSectionGenUser(cardName, section, userRequirement);
+    const user = buildSectionGenUser(cardName, section, userRequirement, characterContext, worldbookContext);
 
     try {
       const fullText = await callAIWithPromptStreaming(system, user, (_chunk, full) => {
@@ -177,7 +179,7 @@ export function BeginnerModePanel({ mvu, onChange, cardName }: BeginnerModePanel
         [section.name]: { status: 'error', streamText: '', error: err instanceof Error ? err.message : '生成失败' },
       }));
     }
-  }, [selectedTemplate, cardName, userRequirement, mvu, onChange]);
+  }, [selectedTemplate, cardName, userRequirement, mvu, onChange, characterContext, worldbookContext]);
 
   // ── 渲染 ─────────────────────────────────────────────────
   // 安全回退：applied=true 但 selectedTemplate 为空时（旧模板 id 残留），仍显示选择界面
@@ -470,10 +472,11 @@ function buildBeginnerGenSystem(template: BeginnerTemplate): string {
 要求：
 1. 严格输出 JSON 格式，键为变量路径，值为对应内容
 2. 内容必须贴合「${template.name}」风格（${template.description}）
-3. 字符串变量直接给值；数值变量给合理初始值；record 变量给对象
-4. 内容要有创意和细节，不要泛泛而谈
-5. 所有文本使用中文
-6. 输出纯 JSON，不要 markdown 代码块标记
+3. **必须严格基于用户提供的角色设定与世界书内容生成变量**：变量值应从现有角色设定中提取或推导，不得凭空创造与原设定无关的新角色或新设定
+4. 字符串变量直接给值；数值变量给合理初始值；record 变量给对象
+5. 内容要有创意和细节，不要泛泛而谈
+6. 所有文本使用中文
+7. 输出纯 JSON，不要 markdown 代码块标记
 
 输出格式示例：
 {
@@ -484,12 +487,22 @@ function buildBeginnerGenSystem(template: BeginnerTemplate): string {
 }`;
 }
 
-function buildBeginnerGenUser(cardName: string, blueprint: string, requirement: string): string {
+function buildBeginnerGenUser(cardName: string, blueprint: string, requirement: string, characterContext?: string, worldbookContext?: string): string {
   let user = `卡片名称：${cardName}\n\n需要生成的变量蓝图：\n${blueprint}`;
+  // 注入已有角色设定，确保 AI 基于现有设定生成而非创造新角色
+  if (characterContext && characterContext.trim()) {
+    user += `\n\n【已有角色设定】（生成的变量内容必须与以下角色设定保持一致，不得创造新角色）：\n${characterContext.trim()}`;
+  }
+  // 注入世界书内容，让变量值与世界观/设定条目关联
+  if (worldbookContext && worldbookContext.trim()) {
+    // 截断过长的世界书内容，避免超出 token 限制
+    const trimmed = worldbookContext.trim().slice(0, 6000);
+    user += `\n\n【世界书条目】（生成的变量内容应与以下世界书设定关联，如角色背景、地点、物品等需保持一致）：\n${trimmed}`;
+  }
   if (requirement.trim()) {
     user += `\n\n用户创作需求：${requirement.trim()}`;
   }
-  user += '\n\n请根据以上信息，生成所有变量的初始内容，输出纯 JSON。';
+  user += '\n\n请严格基于以上角色设定与世界书内容，生成所有变量的初始内容，输出纯 JSON。';
   return user;
 }
 
@@ -500,20 +513,28 @@ function buildSectionGenSystem(template: BeginnerTemplate, section: TemplateSect
 要求：
 1. 严格输出 JSON 格式，键为变量路径，值为对应内容
 2. 内容贴合「${template.name}」风格
-3. 有创意、有细节、有画面感
-4. 所有文本使用中文
-5. 输出纯 JSON
+3. **必须严格基于用户提供的角色设定与世界书内容生成变量**：变量值应从现有设定中提取或推导，不得创造与原设定无关的新角色或新设定
+4. 有创意、有细节、有画面感
+5. 所有文本使用中文
+6. 输出纯 JSON
 
 该分区包含的变量：
 ${section.variables.map(v => `- ${v.path}（${v.label}）：${v.generationHint}`).join('\n')}`;
 }
 
-function buildSectionGenUser(cardName: string, section: TemplateSectionBlueprint, requirement: string): string {
+function buildSectionGenUser(cardName: string, section: TemplateSectionBlueprint, requirement: string, characterContext?: string, worldbookContext?: string): string {
   let user = `卡片名称：${cardName}\n分区：${section.name}（${section.description}）`;
+  if (characterContext && characterContext.trim()) {
+    user += `\n\n【已有角色设定】（生成的变量内容必须与以下角色设定保持一致，不得创造新角色）：\n${characterContext.trim()}`;
+  }
+  if (worldbookContext && worldbookContext.trim()) {
+    const trimmed = worldbookContext.trim().slice(0, 6000);
+    user += `\n\n【世界书条目】（生成的变量内容应与以下世界书设定关联）：\n${trimmed}`;
+  }
   if (requirement.trim()) {
     user += `\n用户创作需求：${requirement.trim()}`;
   }
-  user += '\n\n请生成该分区所有变量的内容，输出纯 JSON。';
+  user += '\n\n请严格基于以上角色设定与世界书内容，生成该分区所有变量的内容，输出纯 JSON。';
   return user;
 }
 

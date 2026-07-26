@@ -102,13 +102,15 @@ interface StepMvuVariablesProps {
   mvu?: MvuConfig;
   onChange: (mvu: MvuConfig) => void;
   cardName: string;
+  characterContext?: string;
+  worldbookContext?: string;
 }
 
 const inputCls = 'w-full rounded-lg border border-[var(--input-border)] bg-[var(--color-surface-raised)] px-2.5 py-1.5 text-sm text-[var(--text-color)] focus:border-[var(--color-border-focus)] focus:outline-none';
 const labelCls = 'text-xs font-medium text-[var(--color-text-secondary)] mb-1 block';
 const cardCls = 'rounded-xl border border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] p-3';
 
-export function StepMvuVariables({ mvu: mvuProp, onChange, cardName }: StepMvuVariablesProps) {
+export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterContext, worldbookContext }: StepMvuVariablesProps) {
   const mvu = mvuProp ?? createEmptyMvuConfig();
   const [activeTab, setActiveTab] = useState<'variables' | 'elements' | 'rules'>('variables');
 
@@ -227,7 +229,7 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName }: StepMvuVa
 
       {/* ── 新手模式 ── */}
       {mode === 'beginner' && (
-        <BeginnerModePanel mvu={mvu} onChange={onChange} cardName={cardName} />
+        <BeginnerModePanel mvu={mvu} onChange={onChange} cardName={cardName} characterContext={characterContext} worldbookContext={worldbookContext} />
       )}
 
       {/* ── 专家模式 ── */}
