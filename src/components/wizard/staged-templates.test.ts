@@ -3,7 +3,7 @@
  * （模板本体是静态数据；mergeStagedTemplate 的行为由向导流程间接覆盖）
  */
 import { describe, it, expect } from 'vitest';
-import { mergeDiyStagedAxis, type DiyStagedAxis } from './staged-templates';
+import { mergeDiyStagedAxis, sanitizeStageName, type DiyStagedAxis } from './staged-templates';
 import { createEmptyMvuConfig } from '../../constants/defaults';
 
 const numberAxis: DiyStagedAxis = {
@@ -84,6 +84,41 @@ describe('mergeDiyStagedAxis', () => {
     const section = merged.schemaSections.find((s) => s.name === '关系')!;
     expect(section.variables.map((v) => v.path)).toEqual(['关系.好感度', '关系.阶段']);
     expect(merged.updateRules.map((r) => r.path)).toEqual(['关系.好感度', '关系.阶段']);
+  });
+
+  it('阈值退化（只有一个阶段 / 阈值全相同）时补出行程，不把轴变量钉死', () => {
+    const single = mergeDiyStagedAxis(createEmptyMvuConfig(), {
+      axisPath: '剧情.进度',
+      axisType: 'number',
+      numericDirection: '>=',
+      stages: [{ name: '终局', condition: '>= 50' }],
+    });
+    const v = single.schemaSections[0].variables[0];
+    expect(v.range!.min).toBeLessThan(v.range!.max);
+    // 状态栏进度条按 (值-min)/(max-min) 算宽度，min===max 会得到 NaN%
+    expect(v.range!.max - v.range!.min).toBeGreaterThan(0);
+  });
+
+  it('sanitizeStageName 去掉会打断 z.enum 字面量的字符', () => {
+    expect(sanitizeStageName('朋友,恋人')).toBe('朋友、恋人');
+    expect(sanitizeStageName("她说'好'")).toBe('她说、好、');
+    expect(sanitizeStageName('  多  空格  ')).toBe('多 空格');
+  });
+
+  it('净化后的阶段名进 z.enum 时不会被 mvu-builder 拆成两个值', () => {
+    const merged = mergeDiyStagedAxis(createEmptyMvuConfig(), {
+      axisPath: '关系.阶段',
+      axisType: 'enum',
+      numericDirection: '>=',
+      stages: [{ name: sanitizeStageName('朋友,恋人') }, { name: '陌生人' }],
+    });
+    const v = merged.schemaSections[0].variables[0];
+    expect(v.enumValues).toEqual(['朋友、恋人', '陌生人']);
+    // schema.ts 的 z.enum 里恰好两个值——含半角逗号时会被 mvu-builder 拆成三个
+    const enumLiteral = merged.schemaTsContent.match(/z\.enum\(\[([^\]]*)\]\)/);
+    expect(enumLiteral).not.toBeNull();
+    expect(enumLiteral![1].split(',')).toHaveLength(2);
+    expect(enumLiteral![1]).toContain('朋友、恋人');
   });
 
   it('派生产物（schema.ts / initvar.yaml / 更新规则.yaml）同步重生成', () => {

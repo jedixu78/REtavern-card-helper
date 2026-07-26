@@ -23,7 +23,7 @@
 import type { LorebookEntry, MvuConfig, WizardDraft } from '../constants/defaults';
 import { formatWorldAnchorForPrompt } from '../constants/defaults';
 import { estimateTokenCount } from '../components/novel-workshop/utils';
-import { findStagedLorebookEntryIndices, isProtectedLorebookEntry } from './lorebook-predicates';
+import { findStagedLorebookEntryIndices, isProtectedLorebookEntry, isCharacterDescriptionSynced } from './lorebook-predicates';
 import { buildMvuScriptBundle } from './mvu-builder';
 
 // ── 阈值 ────────────────────────────────────────────────────────────────────
@@ -298,24 +298,17 @@ export function analyzeCardTokenBudget(draft: WizardDraft): CardTokenBudget {
   const existingIds = new Set(entries.map((e) => e.id));
   const characterEntryIds = new Set<string>();
   let unsyncedCharacterTokens = 0;
-  // entryIds 只是快路径：卡片保存→再编辑的往返不会还原它（cardToDraft 重建的条目 id 是新的），
+  // entryIds 只是快路径：历史卡里存的是草稿 id，与重排后的条目 id 对不上，
   // 只靠它会把角色描述同时算进「角色描述」段和「常驻世界书」段，perTurnFixed 直接翻倍。
-  // 因此再加一条按内容包含关系的兜底匹配（同步出的条目内容是描述全文或其分块）。
-  const contentMatchesDescription = (description: string): boolean => {
-    const desc = description.trim();
-    if (!desc) return false;
-    return entries.some((e) => {
-      const c = (e.content || '').trim();
-      return c.length > 0 && (c === desc || desc.includes(c));
-    });
-  };
+  // 兜底判定用 isCharacterDescriptionSynced（与 card-exporter 决定是否写
+  // data.description 是同一个谓词，单一来源在 lorebook-predicates）。
   for (const character of draft.characters || []) {
     const linked = (character.entryIds || []).filter((id) => existingIds.has(id));
     linked.forEach((id) => characterEntryIds.add(id));
     // 尚未同步进世界书的角色描述：导出前会被同步成常驻条目，先按常驻计入。
     if (linked.length === 0
       && (character.description || '').trim()
-      && !contentMatchesDescription(character.description || '')) {
+      && !isCharacterDescriptionSynced(character.name, character.description || '', entries)) {
       unsyncedCharacterTokens += estimateTokens(character.description);
     }
   }

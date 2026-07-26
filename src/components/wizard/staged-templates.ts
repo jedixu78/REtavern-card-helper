@@ -586,6 +586,20 @@ function parseStageThreshold(condition: string | undefined): number | null {
 }
 
 /**
+ * 净化 AI 自由生成的阶段名。
+ * 半角逗号 / 引号 / 方括号会打断 `z.enum([...])` 字面量——mvu-builder 是按
+ * `split(',')` + 去首尾引号来反解枚举值的，含逗号的阶段名会被拆成两个值，
+ * 于是调度条目的 `=== '原名'` 永远匹配不上任何一个，阶段永不切换。
+ * 必须在阶段名进入「枚举值」与「调度条件」**之前**统一净化，两侧才不会漂移。
+ */
+export function sanitizeStageName(name: string): string {
+  return (name || '')
+    .replace(/[,[\]'"]/g, '、')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * 把 DIY / AI 自选的阶段轴变量合并进 MVU 配置（合并语义对齐 mergeStagedTemplate：
  * 不覆盖已有变量、按 path 去重、重生成派生产物）。
  * 没有这一步，导出卡在真实运行时会因轴变量未在 stat_data 中初始化，
@@ -601,8 +615,14 @@ export function mergeDiyStagedAxis(base: MvuConfig, axis: DiyStagedAxis): MvuCon
   let variable: MvuVariable;
   let rule: MvuUpdateRule;
   if (axis.axisType === 'number') {
-    const min = thresholds.length ? Math.min(...thresholds) : 0;
-    const max = thresholds.length ? Math.max(...thresholds) : 100;
+    const rawMin = thresholds.length ? Math.min(...thresholds) : 0;
+    const rawMax = thresholds.length ? Math.max(...thresholds) : 100;
+    // 阈值退化（只有一个阶段、或多个阶段阈值相同）时 min===max，会把轴变量钉死，
+    // 状态栏进度条还会算出 0/0 的 NaN% 宽度。按方向朝「未达成」一侧补出行程。
+    const min = rawMin === rawMax ? (axis.numericDirection === '<=' ? rawMin : Math.min(0, rawMin)) : rawMin;
+    const max = rawMin === rawMax
+      ? (axis.numericDirection === '<=' ? Math.max(rawMax, rawMin + 100) : Math.max(rawMax, min + 100))
+      : rawMax;
     // 初始值 = 最不极端的一端：'>=' 轴从最低阈值起步，'<=' 轴从最高阈值起步
     const initial = axis.numericDirection === '<=' ? max : min;
     variable = {

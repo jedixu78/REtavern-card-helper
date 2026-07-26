@@ -34,7 +34,7 @@ import type {
 } from '../constants/defaults';
 import { buildMvuScriptBundle } from './mvu-builder';
 import { migrateStagedDispatcherContent, alignStagedDispatcherBookName, escapeEjsSingleQuoted } from './staged-lorebook-builder';
-import { findStagedLorebookEntryIndices } from './lorebook-predicates';
+import { findStagedLorebookEntryIndices, isCharacterDescriptionSynced } from './lorebook-predicates';
 import { fixLorebookBlueGreenLights } from './card-fixers';
 
 /**
@@ -768,22 +768,17 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
   // worldbook-first：向导正常流程里角色描述总会被 syncCharacterEntries 转成世界书
   // 条目（跨步骤 3 时注入），description 保持 ''。
   // 例外：第三方导入卡走「cardToDraft → assembleCard」直接归一化路径时没人做同步，
-  // 原 data.description 会被彻底丢掉。对「有描述但没有任何已同步条目」的角色
-  // （判定 = entryIds 无一命中现存条目 且 无任一条目内容等于/包含其描述——与
-  // token-budget.ts 的 contentMatchesDescription 同一启发式，两处需保持一致），
-  // 把描述写回 data.description 保住保真。
-  const contentMatchesDescription = (desc: string): boolean => {
-    const trimmed = desc.trim();
-    if (!trimmed) return false;
-    return draft.lorebookEntries.some((e) => {
-      const c = (e.content || '').trim();
-      return c.length > 0 && (c === trimmed || trimmed.includes(c));
-    });
-  };
+  // 原 data.description 会被彻底丢掉。对「有描述但未同步进世界书」的角色把描述
+  // 写回 data.description 保住保真。
+  //
+  // 判定用 isCharacterDescriptionSynced（lorebook-predicates，与 token-budget 共用）：
+  // 按角色限定候选条目 + 覆盖率，而不是「entryIds 命中」或「任意条目内容是描述子串」。
+  // entryIds 通道单独不可靠——导出会把条目 id 重排成 1..N（下方 _meta 已按新 id 重映射，
+  // 但历史卡里存的仍是草稿 id）；「任意子串」则会误杀第三方卡里复述过世界书内容的描述。
   const description = (draft.characters || [])
     .filter((c) => (c.description || '').trim())
     .filter((c) => !(c.entryIds || []).some((id) => validEntryIds.has(id)))
-    .filter((c) => !contentMatchesDescription(c.description || ''))
+    .filter((c) => !isCharacterDescriptionSynced(c.name, c.description || '', draft.lorebookEntries))
     .map((c) => c.description.trim())
     .join('\n\n');
   // personality 本工具不产出（无 UI 入口），仅为第三方导入卡做往返直通
@@ -801,6 +796,10 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
   // 导出前自动修复蓝绿灯问题（绿灯无 keys、selective 无 secondary_keys 等）
   const fixedLorebookEntries = fixLorebookBlueGreenLights(migratedLorebookEntries);
   const stagedIndices = findStagedLorebookEntryIndices(fixedLorebookEntries);
+  // 草稿条目 id → 导出条目 id。导出会把 id 重排成 1..N，而 _meta.characters[].entryIds
+  // 此前存的是草稿 id——两个集合在任何一次往返后必然零交集，让「角色是否已同步」的
+  // entryIds 通道结构性失效（也让 syncCharacterEntries 的 id 复用通道永远落到名称兜底）。
+  const exportedIdBySourceId = new Map<string, number>();
   const entries: ExportedLorebookEntry[] = fixedLorebookEntries
     .filter((entry, idx) => {
       if (mvuEnabled) return true;
@@ -809,7 +808,9 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
       return !stagedIndices.has(idx);
     })
     .sort((a, b) => (a.insertion_order ?? 0) - (b.insertion_order ?? 0))
-    .map((entry, i) => ({
+    .map((entry, i) => {
+      exportedIdBySourceId.set(entry.id, i + 1);
+      return ({
     // 直通层铺底：导入卡里本工具不认识的条目级字段。下面的已知字段一律覆盖它。
     ...stripOwnKeys(entry._passthrough?.root ?? {}, OWN_ENTRY_KEYS),
     id: i + 1,
@@ -844,7 +845,8 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
       ignoreBudget: entry.ignore_budget ?? false,
       matchWholeWords: entry.match_whole_words,
     }), entry._passthrough?.extensions),
-  }));
+      });
+    });
 
   // ── World Anchor entry (constant, highest priority, before_char) ──────────
   // Injected when the user has configured structured world constraints.
@@ -874,6 +876,10 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
     });
     // Re-index all entry IDs after unshift
     entries.forEach((e, i) => { e.id = i + 1; });
+    // 映射也要跟着 +1，否则 _meta.entryIds 会全部偏移一位
+    for (const [sourceId, exportedId] of exportedIdBySourceId) {
+      exportedIdBySourceId.set(sourceId, exportedId + 1);
+    }
   }
 
   // ── MVU entries (embedded when MVU is enabled) ──────────────────────────
@@ -1149,7 +1155,14 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
         id: c.id || generateId(),
         name: c.name,
         description: c.description,
-        entryIds: (c.entryIds || []).filter((id) => validEntryIds.has(id)),
+        // 存**导出后**的条目 id：导出把 id 重排成 1..N，存草稿 id 会让重新打开卡时
+        // entryIds 与 lorebookEntries 必然对不上（角色的「已同步」判定与 id 复用双双失效）。
+        // 映射命中严格强于旧的 validEntryIds 过滤——被过滤掉的条目（MVU 未启用时的
+        // 分阶段条目等）本就不在映射里。
+        entryIds: (c.entryIds || [])
+          .map((id) => exportedIdBySourceId.get(id))
+          .filter((id): id is number => id !== undefined)
+          .map(String),
       })),
     },
 
@@ -1641,13 +1654,22 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
     bookTokenBudget: (charBook?.token_budget as number) ?? 1500,
     bookRecursiveScanning: (charBook?.recursive_scanning as boolean) ?? false,
     // 书名保真：自定义书名原样保留；「派生默认形态」（卡名的世界书）存空串，
-    // 让书名继续跟随卡名——否则改卡名后书名会卡在旧值
+    // 让书名继续跟随卡名——否则改卡名后书名会卡在旧值。
+    // 派生值走 resolveBookName（与导出侧同一函数），杜绝两侧的 trim 语义漂移。
+    // 回退到 extensions.world：不少第三方卡只用 world 关联共享世界书、不写
+    // character_book.name，只读前者会把这个关联静默改掉。
     bookName: (() => {
-      const importedBookName = ((charBook?.name as string) || '').trim();
-      const derivedDefault = `${(data.name as string) || (card.name as string) || ''}的世界书`;
-      return importedBookName && importedBookName !== derivedDefault ? importedBookName : '';
+      const derivedDefault = resolveBookName({
+        cardName: (data.name as string) || (card.name as string) || '',
+        bookName: '',
+      });
+      const pick = (raw: unknown): string => {
+        const value = typeof raw === 'string' ? raw.trim() : '';
+        return value && value !== derivedDefault ? value : '';
+      };
+      return pick(charBook?.name) || pick(dataExt.world);
     })(),
-    bookDescription: (charBook?.description as string) || '',
+    bookDescription: typeof charBook?.description === 'string' ? charBook.description : '',
 
     // Reconstruct MVU config from extensions + lorebook entries
     mvu: reconstructMvuConfig(data, rawEntries),

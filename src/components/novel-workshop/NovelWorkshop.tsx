@@ -189,11 +189,17 @@ export function NovelWorkshop() {
     [combinedSource, state.gateMode, state.narrativeMode, state.focus, state.entryBudget, state.chunkCharLimit, state.contextText],
   );
 
-  // 恢复会话：存在与当前原文/配置匹配的 done 检查点（带失败段）时，
-  // 把失败清单还原到运行状态里，让「重试失败段」按钮在刷新后仍然可用。
+  /** 上次已按签名评估过的运行，避免重复 setState 抖动 */
+  const restoredSignatureRef = useRef<string>('');
+
+  // 恢复会话：按「签名」评估是否存在带失败段的 done 检查点，据此点亮/熄灭
+  // 「重试失败段」按钮。必须双向——只点亮不熄灭的话，用户改了分段字数/焦点/原文
+  // 之后按钮仍亮着且报着旧的失败段号，点下去只会恒定报「找不到匹配的失败段记录」。
   useEffect(() => {
-    if (isGenerating || workflowRunState.phase !== 'idle' || !runSignature) return;
-    const cp = loadCheckpoint(runSignature);
+    if (isGenerating) return;
+    if (restoredSignatureRef.current === runSignature) return;
+    restoredSignatureRef.current = runSignature;
+    const cp = runSignature ? loadCheckpoint(runSignature) : null;
     if (cp?.phase === 'done' && cp.failedChunks && cp.failedChunks.length > 0) {
       const failed = cp.failedChunks;
       setWorkflowRunState(prev => ({
@@ -203,8 +209,15 @@ export function NovelWorkshop() {
         extractionDone: cp.totalChunks - failed.length,
         failedChunks: [...failed],
       }));
+    } else {
+      // 只收窄到「亮着的 done」，绝不影响 extract / merge 相位
+      setWorkflowRunState(prev =>
+        prev.phase === 'done' && prev.failedChunks.length > 0
+          ? { ...prev, phase: 'idle', failedChunks: [] }
+          : prev,
+      );
     }
-  }, [isGenerating, workflowRunState.phase, runSignature, loadCheckpoint, setWorkflowRunState]);
+  }, [isGenerating, runSignature, loadCheckpoint, setWorkflowRunState]);
 
   /**
    * 把最终包写入工坊状态与 sessionStorage 桥（生成主流程与「重试失败段」共用）。
@@ -214,6 +227,8 @@ export function NovelWorkshop() {
     finalPackage: NovelPackage,
     warnings: string[],
     updateStatus: (text: string, color: string) => void,
+    /** 调用方是否会紧接着跳转向导——决定成功文案说不说「正在跳转」 */
+    willNavigate: boolean,
   ): number => {
     const stageOrderForState = finalPackage.stage_order.length ? finalPackage.stage_order : state.stageOrder;
     updateState(prev => ({
@@ -265,7 +280,8 @@ export function NovelWorkshop() {
 
     const warningSuffix = warnings.length ? `（注意：${warnings.join('，')}）` : '';
     if (importedEntries.length > 0) {
-      updateStatus(`已生成 ${importedEntries.length} 条世界书条目，正在跳转到创建向导…${warningSuffix}`, THEME_TOKENS.success);
+      const tail = willNavigate ? '正在跳转到创建向导…' : '已暂存，可先补跑失败段，或点下方按钮前往创建向导。';
+      updateStatus(`已生成 ${importedEntries.length} 条世界书条目，${tail}${warningSuffix}`, THEME_TOKENS.success);
     } else if (entryCount > 0) {
       updateStatus(`生成完成但所有条目内容为空，未导入${warningSuffix}`, THEME_TOKENS.warning);
     } else {
@@ -501,7 +517,7 @@ export function NovelWorkshop() {
       if (mergeFallbacks > 0) {
         warnings.push(`${mergeFallbacks} 次合并改用了本地合并`);
       }
-      const importedCount = commitFinalPackage(finalPackage, warnings, updateStatus);
+      const importedCount = commitFinalPackage(finalPackage, warnings, updateStatus, failedChunks.length === 0);
 
       if (failedChunks.length > 0) {
         // 有失败段：保留 done 相位检查点（带最终包），供「重试失败段」把补跑结果并入
@@ -519,9 +535,14 @@ export function NovelWorkshop() {
       } else {
         clearCheckpoint();
       }
+      // 恢复 effect 靠签名去重，这里把它标记为「已评估」，避免刚落盘就被它重算一遍
+      restoredSignatureRef.current = signature;
       setWorkflowRunState(prev => ({ ...prev, phase: 'done', failedChunks: [...failedChunks] }));
 
-      if (importedCount > 0) {
+      // 有失败段时**不自动跳转**：导入文件的全文只在内存里（importedFileText 不落盘），
+      // 一旦跳走工坊组件卸载，回来时原文没了 → 签名算不出来 → 「重试失败段」按钮
+      // 再也不会出现，用户只能重新导入逐字节相同的文件。留在工坊由用户自己决定。
+      if (importedCount > 0 && failedChunks.length === 0) {
         navigate('/wizard?fromWorkshop=1');
       }
     } catch (err) {
@@ -594,12 +615,16 @@ export function NovelWorkshop() {
 
       const recovered: NovelPackage[] = [];
       const stillFailed: number[] = [];
+      let aborted = false;
+      let attempted = 0;
       for (let k = 0; k < failedList.length; k++) {
         if (shouldAbortRef.current) {
           // 中止：未处理的段原样留在失败清单里
+          aborted = true;
           stillFailed.push(...failedList.slice(k));
           break;
         }
+        attempted += 1;
         const idx = failedList[k];
         updateStatus(`正在重试第 ${idx + 1}/${cp.totalChunks} 段（${k + 1}/${failedList.length}）…`, THEME_TOKENS.info);
         const pkg = await extractChunkWithRetry(chunks[idx], idx, cp.totalChunks, config, updateStatus);
@@ -612,6 +637,8 @@ export function NovelWorkshop() {
         setWorkflowRunState(prev => ({ ...prev, extractionDone: k + 1 }));
       }
 
+      // 中止后仍然并入已补跑成功的段（那些 API 调用已经花掉了），但不跳转
+      const willNavigate = !aborted && recovered.length > 0 && stillFailed.length === 0;
       let importedCount = 0;
       let finalPackage = cp.pending[0];
       if (recovered.length > 0) {
@@ -621,9 +648,10 @@ export function NovelWorkshop() {
         if (stillFailed.length > 0) {
           warnings.push(`${stillFailed.length} 段仍然失败，可再次重试`);
         }
-        importedCount = commitFinalPackage(finalPackage, warnings, updateStatus);
-      } else {
-        updateStatus(`⚠️ ${failedList.length} 段重试全部失败，未产生新内容。请检查网络或 API 设置后再试。`, THEME_TOKENS.warning);
+        importedCount = commitFinalPackage(finalPackage, warnings, updateStatus, willNavigate);
+      } else if (!aborted) {
+        // 只报「实际尝试过」的段数——中止时没跑到的段不算失败
+        updateStatus(`⚠️ ${attempted} 段重试全部失败，未产生新内容。请检查网络或 API 设置后再试。`, THEME_TOKENS.warning);
       }
 
       if (stillFailed.length > 0) {
@@ -641,6 +669,7 @@ export function NovelWorkshop() {
       } else {
         clearCheckpoint();
       }
+      restoredSignatureRef.current = signature;
       setWorkflowRunState(prev => ({
         ...prev,
         phase: 'done',
@@ -649,9 +678,17 @@ export function NovelWorkshop() {
         failedChunks: stillFailed,
       }));
 
-      // 与主流程一致：导入成功即跳向导。剩余失败段保存在检查点里，
-      // 回到工坊时恢复 effect 会重新亮起「重试失败段」按钮。
-      if (importedCount > 0) {
+      if (aborted) {
+        // 与生成主流程的中止契约一致：不跳转、留在工坊、进度已落盘
+        updateStatus(
+          `⏹️ 已中止重试。${recovered.length > 0 ? `已并入 ${recovered.length} 段补跑结果，` : ''}剩余 ${stillFailed.length} 段仍在失败清单里，可再次点击「重试失败段」。`,
+          THEME_TOKENS.warning,
+        );
+        return;
+      }
+
+      // 仍有失败段时不跳转：跳走会丢掉内存里的导入原文，按钮再也回不来
+      if (importedCount > 0 && stillFailed.length === 0) {
         navigate('/wizard?fromWorkshop=1');
       }
     } catch (err) {
@@ -806,6 +843,7 @@ export function NovelWorkshop() {
         entryBudget={state.entryBudget}
         workflowRunState={workflowRunState}
         onRetryFailed={handleRetryFailed}
+        onSkipRetry={() => navigate('/wizard?fromWorkshop=1')}
         retryDisabled={isGenerating}
       />
 

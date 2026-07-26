@@ -315,16 +315,21 @@ export function buildStagesFromAxis(
 export function parseDispatcherContent(
   content: string,
 ): { axisPath: string; bookName: string; childComments: string[] } | null {
-  // 匹配 getvar('stat_data.XXX[0]') 与 getWorldInfo("YYY", "ZZZ")
+  // 匹配 getvar('stat_data.XXX[0]') 与 getWorldInfo("YYY", "ZZZ")。
+  // 字符串参数用「转义感知」的 (?:[^"\\]|\\.)* 而非 [^"]+：卡名/阶段名里含 `"`
+  // 时 escapeEjsDoubleQuoted 会写出 \"，用 [^"]+ 会在转义引号处截断、整条解析失败，
+  // 导致该调度条目失去保护（MVU 关闭时被误导出、优化器把它当普通条目改写）。
   const varMatch = content.match(/getvar\(\s*'stat_data\.([^[\]'"]+)(?:\[0\])?'\s*\)/);
   if (!varMatch) return null;
   const axisPath = varMatch[1];
-  const bookMatch = content.match(/getWorldInfo\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)/);
+  const stringArg = '"((?:[^"\\\\]|\\\\.)*)"';
+  const bookMatch = content.match(new RegExp(`getWorldInfo\\(\\s*${stringArg}\\s*,\\s*${stringArg}\\s*\\)`));
   if (!bookMatch) return null;
-  const bookName = bookMatch[1];
+  const unescape = (s: string) => s.replace(/\\(.)/g, '$1');
+  const bookName = unescape(bookMatch[1]);
   const childComments = Array.from(
-    content.matchAll(/getWorldInfo\(\s*"[^"]+"\s*,\s*"([^"]+)"\s*\)/g),
-  ).map((m) => m[1]);
+    content.matchAll(new RegExp(`getWorldInfo\\(\\s*${stringArg}\\s*,\\s*${stringArg}\\s*\\)`, 'g')),
+  ).map((m) => unescape(m[2]));
   return { axisPath, bookName, childComments };
 }
 

@@ -575,6 +575,8 @@ export const translations = {
       diyButton: 'AI 自选阶段轴',
       diyButtonHint: '不套模板：AI 通读已有世界书自行设计变化轴（含各阶段完整内容），生成后可编辑/重写',
       diyDescription: '「AI 剖析」按当前选中模板的轴生成；「AI 自选阶段轴」不套模板，由 AI 从已有世界书里找最自然的变化轴并直接写好各阶段内容。上方引导框对两者都生效。',
+      diyActiveHint: '当前是 DIY 模式：阶段轴由 AI 自选，不套用剧情模板。点上方任一模板卡片可切回模板模式。',
+      analyzeDisabledInDiy: 'DIY 模式下请用「AI 自选阶段轴」；「AI 剖析」按模板的轴生成，需先选一个模板',
       diyGenerating: '自选阶段轴生成中...',
       diyDone: 'AI 自选阶段轴完成：{{axis}}（{{count}} 个阶段）',
       diyFailed: '自选阶段轴生成失败，请重试或在引导框补充要求',

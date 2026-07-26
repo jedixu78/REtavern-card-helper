@@ -197,12 +197,30 @@ describe('assembleCard', () => {
     expect(card._meta.characters[0].name).toBe('角色1');
   });
 
-  it('_meta 中的 entryIds 会剔除已不存在的条目', () => {
+  it('_meta 中的 entryIds 剔除已不存在的条目，并映射成导出后的条目 id', () => {
+    // 导出会把条目 id 重排成 1..N；_meta 必须存重排后的 id，否则重新打开卡时
+    // entryIds 与 lorebookEntries 永远对不上（角色「已同步」判定与 id 复用双双失效）
     const entry = createEmptyLorebookEntry();
     const char = { ...createEmptyCharacter(), name: '角色1', description: '描述', entryIds: [entry.id, 'deleted-id'] };
     const draft = makeDraft({ cardName: '测试', characters: [char], lorebookEntries: [entry] });
     const card = assembleCard(draft);
-    expect(card._meta.characters[0].entryIds).toEqual([entry.id]);
+    expect(card._meta.characters[0].entryIds).toEqual(['1']);
+    expect(card.data.character_book.entries[0].id).toBe(1);
+  });
+
+  it('_meta 的 entryIds 在世界锚 unshift 重编号后仍指向正确条目', () => {
+    const entry = { ...createEmptyLorebookEntry(), name: 'E', comment: 'E', content: 'c', keys: ['k'] };
+    const char = { ...createEmptyCharacter(), name: '角色1', description: '描述', entryIds: [entry.id] };
+    const draft = makeDraft({
+      cardName: '测试',
+      characters: [char],
+      lorebookEntries: [entry],
+      worldAnchor: { era: '近未来', coreRules: '无超能力', hardConstraints: '', tone: '' },
+    });
+    const card = assembleCard(draft);
+    const mappedId = card._meta.characters[0].entryIds[0];
+    const target = card.data.character_book.entries.find((e) => String(e.id) === mappedId);
+    expect(target?.name).toBe('E');
   });
 
   it('从 _meta 恢复时，数字型 id/entryIds 会被规范化为字符串', () => {
@@ -474,15 +492,53 @@ describe('description/personality 保真 (S3)', () => {
     expect(assembleCard(draft).data.description).toBe('');
   });
 
-  it('entryIds 失效（保存→再编辑往返）但条目内容包含描述时，description 仍为空（内容启发式兜底）', () => {
-    // cardToDraft 重建的条目 id 与 _meta.entryIds 对不上——靠 contentMatchesDescription 兜底
-    const entry = { ...createEmptyLorebookEntry(), id: 'new-id', name: '阿绫 - 角色设定', comment: '阿绫 - 角色设定', content: '阿绫的完整设定（分块一）', constant: true };
+  it('entryIds 失效（历史卡存的是草稿 id）时，按角色的条目覆盖率兜底判定为已同步', () => {
+    // 长描述会被 syncCharacterEntries 切成「阿绫 - 角色设定」+「… (2)」，
+    // 且分块用 '\n\n' 重新拼接——原文段间是 3 个换行时不再是字面子串，
+    // 所以判定必须空白不敏感（isCharacterDescriptionSynced 会归一化空白）
+    const chunk1 = { ...createEmptyLorebookEntry(), id: 'new-1', name: '阿绫 - 角色设定', comment: '阿绫 的角色设定', content: '阿绫的完整设定（分块一）', constant: true };
+    const chunk2 = { ...createEmptyLorebookEntry(), id: 'new-2', name: '阿绫 - 角色设定 (2)', comment: '阿绫 的角色设定 (续2)', content: '阿绫的完整设定（分块二）', constant: true };
     const draft = makeDraft({
       cardName: '阿绫',
-      characters: [{ id: 'c1', name: '阿绫', description: '阿绫的完整设定（分块一）\n\n阿绫的完整设定（分块二）', entryIds: ['stale-id'] }],
-      lorebookEntries: [entry],
+      characters: [{ id: 'c1', name: '阿绫', description: '阿绫的完整设定（分块一）\n\n\n阿绫的完整设定（分块二）', entryIds: ['stale-id'] }],
+      lorebookEntries: [chunk1, chunk2],
     });
     expect(assembleCard(draft).data.description).toBe('');
+  });
+
+  it('第三方卡里恰好复述过某条世界书内容的描述不被误杀', () => {
+    // 判定按角色限定候选条目：非「X - 角色设定」的条目不参与，
+    // 否则「她是吸血鬼。」这种短条目会让整段描述被当成已同步而丢弃
+    const entry = { ...createEmptyLorebookEntry(), name: '吸血鬼', comment: '吸血鬼', content: '她是吸血鬼。', keys: ['吸血鬼'] };
+    const draft = makeDraft({
+      cardName: '艾莉',
+      characters: [{ id: 'c1', name: '艾莉', description: '艾莉是北境的旅人。她是吸血鬼。她讨厌大蒜。' }],
+      lorebookEntries: [entry],
+    });
+    expect(assembleCard(draft).data.description).toBe('艾莉是北境的旅人。她是吸血鬼。她讨厌大蒜。');
+  });
+
+  it('跨角色不误伤：B 的描述引用了 A 的条目内容仍保留', () => {
+    const entryA = { ...createEmptyLorebookEntry(), name: 'A - 角色设定', comment: 'A 的角色设定', content: 'A的设定', constant: true };
+    const draft = makeDraft({
+      cardName: '双子',
+      characters: [
+        { id: 'a', name: 'A', description: 'A的设定' },
+        { id: 'b', name: 'B', description: 'B住在同一个村子。A的设定也适用于B。' },
+      ],
+      lorebookEntries: [entryA],
+    });
+    expect(assembleCard(draft).data.description).toBe('B住在同一个村子。A的设定也适用于B。');
+  });
+
+  it('用户改写描述后，旧条目只剩零星重合 → 判为未同步，新描述写回卡里', () => {
+    const stale = { ...createEmptyLorebookEntry(), name: '小明 - 角色设定', comment: '小明 的角色设定', content: '小明是个学生。', constant: true };
+    const draft = makeDraft({
+      cardName: '小明',
+      characters: [{ id: 'c1', name: '小明', description: '小明是个上班族，三十岁。', entryIds: ['stale'] }],
+      lorebookEntries: [stale],
+    });
+    expect(assembleCard(draft).data.description).toBe('小明是个上班族，三十岁。');
   });
 
   it('多个未同步角色的描述按顺序 join', () => {
@@ -494,6 +550,38 @@ describe('description/personality 保真 (S3)', () => {
       ],
     });
     expect(assembleCard(draft).data.description).toBe('姐姐的描述\n\n妹妹的描述');
+  });
+
+  it('长描述（分块 + 段间多空行）往返导出不把内容写第二份', () => {
+    // 复现「重开已保存的卡再导出 → 同一段设定在卡里存在两份」：
+    // 导出把条目 id 重排成 1..N，若 _meta 仍存草稿 id，两个集合零交集
+    const para = (i: number) => `第${i}段设定。`.repeat(30);
+    const description = [para(1), para(2), para(3)].join('\n\n\n');
+    const chunks = [para(1), para(2), para(3)].map((content, i) => ({
+      ...createEmptyLorebookEntry(),
+      id: `chunk-${i}`,
+      name: `小明 - 角色设定${i > 0 ? ` (${i + 1})` : ''}`,
+      comment: `小明 的角色设定${i > 0 ? ` (续${i + 1})` : ''}`,
+      content,
+      constant: true,
+      keys: ['小明'],
+    }));
+    const draft = makeDraft({
+      cardName: '小明的故事',
+      characters: [{ id: 'c1', name: '小明', description, entryIds: chunks.map((c) => c.id) }],
+      lorebookEntries: chunks,
+    });
+
+    const card1 = assembleCard(draft);
+    expect(card1.data.description).toBe('');
+    // _meta 存的是导出后的 id，与 character_book.entries 对得上
+    const exportedIds = card1.data.character_book.entries.map((e) => String(e.id));
+    expect(card1._meta.characters[0].entryIds.every((id) => exportedIds.includes(id))).toBe(true);
+
+    // 往返：重新打开卡再导出，描述仍不重复写出
+    const card2 = assembleCard(cardToDraft(card1 as unknown as Record<string, unknown>));
+    expect(card2.data.description).toBe('');
+    expect(card2._meta.characters[0].entryIds.length).toBe(3);
   });
 
   it('personality 往返一致：assembleCard → cardToDraft 二次往返稳定', () => {
@@ -542,6 +630,46 @@ describe('世界书元数据保真 (S3)', () => {
     expect(exported.data.character_book.name).toBe('铁与雾编年史');
     expect(exported.data.character_book.description).toBe('第三方书描述');
     expect((exported.data.extensions as unknown as Record<string, unknown>).world).toBe('铁与雾编年史');
+  });
+
+  it('只有 extensions.world、没有 character_book.name 的卡：书名不被静默改写', () => {
+    const card = {
+      spec: 'chara_card_v2',
+      spec_version: '2.0',
+      data: {
+        name: '旅人',
+        first_mes: '你好。',
+        extensions: { world: '共享大世界书' },
+        character_book: { entries: [] },
+      },
+    };
+    const restored = cardToDraft(card as unknown as Record<string, unknown>);
+    expect(restored.bookName).toBe('共享大世界书');
+    const exported = assembleCard(restored);
+    expect(exported.data.character_book.name).toBe('共享大世界书');
+    expect((exported.data.extensions as unknown as Record<string, unknown>).world).toBe('共享大世界书');
+  });
+
+  it('character_book.name 为非字符串时不崩溃，退回按卡名派生', () => {
+    const card = {
+      spec: 'chara_card_v2',
+      spec_version: '2.0',
+      data: { name: '旅人', first_mes: 'x', extensions: {}, character_book: { name: 12345, description: null, entries: [] } },
+    };
+    const restored = cardToDraft(card as unknown as Record<string, unknown>);
+    expect(restored.bookName).toBe('');
+    expect(restored.bookDescription).toBe('');
+    expect(assembleCard(restored).data.character_book.name).toBe('旅人的世界书');
+  });
+
+  it('卡名带前导空白时派生书名两侧对称，改卡名后书名仍跟随', () => {
+    const card = assembleCard(makeDraft({ cardName: ' 阿绫' }));
+    expect(card.data.character_book.name).toBe('阿绫的世界书');
+    const restored = cardToDraft(card as unknown as Record<string, unknown>);
+    // 派生形态 → 存空串，书名继续跟随卡名
+    expect(restored.bookName).toBe('');
+    restored.cardName = '新名';
+    expect(assembleCard(restored).data.character_book.name).toBe('新名的世界书');
   });
 
   it('导出时分阶段调度条目的 getWorldInfo 书名对齐导出书名（阶段不切换根因）', () => {

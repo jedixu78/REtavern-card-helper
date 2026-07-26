@@ -309,7 +309,8 @@ export function WizardPage() {
     );
     const finalEntries = payload.entries.map((entry) => ({
       ...entry,
-      content: entry.content?.replaceAll('__NOVEL_ANALYSIS__', sanitizedBookName) ?? entry.content,
+      // 用回调形式：书名里的 `$&` / `$1` 会被 replaceAll 当成特殊替换模式解释
+      content: entry.content?.replaceAll('__NOVEL_ANALYSIS__', () => sanitizedBookName) ?? entry.content,
     }));
 
     // Convert any MVU variable blueprints (剧情.进度 enum, 彩蛋.{id} booleans)
@@ -486,7 +487,14 @@ ${e.content || ''}`)
   }, [currentStep, batchGenerating, addToast, injectCharacterEntries, setCurrentStep, t]);
 
   const handleSave = async () => {
-    const success = await saveCard(draft);
+    // 保存不经过「下一步」，所以这里必须自己做一次角色→世界书同步。
+    // 编辑模式下保存按钮在每一步都可用（alwaysShowSave），跳过同步的话：
+    // 改写过的角色描述会以 data.description 写进卡，而世界书里那条旧的
+    // 「X - 角色设定」还在——同一个角色的两份互相矛盾的人设一起进永久上下文。
+    // updateDraft 是异步的，所以同步结果要就地算出来传给 saveCard，不能指望它先落。
+    const synced = syncCharacterEntries(draft.characters, draft.lorebookEntries, t);
+    updateDraft({ lorebookEntries: synced.entries, characters: synced.characters });
+    const success = await saveCard({ ...draft, lorebookEntries: synced.entries, characters: synced.characters });
     if (success) {
       navigate('/library');
     }

@@ -315,6 +315,22 @@ describe('alignStagedDispatcherBookName (S3)', () => {
     expect(alignStagedDispatcherBookName('普通内容', '书')).toBe('普通内容');
     expect(alignStagedDispatcherBookName('', '书')).toBe('');
   });
+
+  it('书名/阶段名含引号时 parseDispatcherContent 仍能解析（不在转义引号处截断）', () => {
+    const content = buildDispatcherContent({
+      axisPath: '关系.阶段',
+      axisType: 'number',
+      numericDirection: '>=',
+      bookName: '书"名',
+      dispatcherName: '角色"分阶段',
+      stages: [{ name: '阶段"一', condition: '>= 50' }],
+    });
+    const parsed = parseDispatcherContent(content);
+    expect(parsed).not.toBeNull();
+    // 反解出的是**未转义**的原值，可直接与条目 comment/name 比对
+    expect(parsed?.bookName).toBe('书"名');
+    expect(parsed?.childComments).toContain('角色"分阶段：阶段"一');
+  });
 });
 
 // ── H7 regression: bookName/dispatcherName/stageName must be escaped in EJS ──

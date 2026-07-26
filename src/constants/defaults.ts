@@ -572,7 +572,9 @@ export const WIZARD_DRAFT_VERSION = 6;
  * 空串 = 按卡名派生默认值。
  */
 export function resolveBookName(draft: Pick<WizardDraft, 'cardName' | 'bookName'>): string {
-  return draft.bookName?.trim() || `${draft.cardName}的世界书`;
+  // cardName 必须 trim：cardToDraft 侧比对导入书名时做了 trim，两侧不对称会把
+  // 「 阿绫的世界书」（卡名带前导空格）误判成用户自定义书名，此后改卡名书名不再跟随
+  return draft.bookName?.trim() || `${(draft.cardName ?? '').trim()}的世界书`;
 }
 
 /**

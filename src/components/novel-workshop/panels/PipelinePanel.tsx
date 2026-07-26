@@ -16,6 +16,8 @@ interface PipelinePanelProps {
   workflowRunState: WorkflowRunState;
   /** 生成结束后有失败段时的一键补跑；不传则不显示按钮 */
   onRetryFailed?: () => void;
+  /** 放弃补跑、直接带着已生成的条目去创建向导 */
+  onSkipRetry?: () => void;
   /** 生成/重试进行中禁点 */
   retryDisabled?: boolean;
 }
@@ -25,6 +27,7 @@ export function PipelinePanel({
   chunkCharLimit,
   workflowRunState,
   onRetryFailed,
+  onSkipRetry,
   retryDisabled,
 }: PipelinePanelProps) {
   // Re-splitting the whole novel on every render is expensive; memoize on the
@@ -146,16 +149,30 @@ export function PipelinePanel({
             <span className="text-sm" style={{ color: 'var(--color-status-warning)' }}>
               ⚠️ 有 {workflowRunState.failedChunks.length} 段提取失败被跳过（第
               {workflowRunState.failedChunks.map((i) => i + 1).join('、')} 段），章节内容可能缺失。
+              补跑需要当前原文，离开工坊后导入的文件需重新选择。
             </span>
-            <button
-              type="button"
-              onClick={onRetryFailed}
-              disabled={retryDisabled}
-              className="rounded-lg px-3 py-1.5 text-sm font-bold text-white whitespace-nowrap disabled:opacity-50"
-              style={{ backgroundColor: 'var(--color-status-warning)' }}
-            >
-              重试失败段（{workflowRunState.failedChunks.length}）
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onRetryFailed}
+                disabled={retryDisabled}
+                className="rounded-lg px-3 py-1.5 text-sm font-bold text-white whitespace-nowrap disabled:opacity-50"
+                style={{ backgroundColor: 'var(--color-status-warning)' }}
+              >
+                重试失败段（{workflowRunState.failedChunks.length}）
+              </button>
+              {onSkipRetry && (
+                <button
+                  type="button"
+                  onClick={onSkipRetry}
+                  disabled={retryDisabled}
+                  className="rounded-lg border px-3 py-1.5 text-sm whitespace-nowrap disabled:opacity-50"
+                  style={{ borderColor: 'var(--color-border-default)', color: 'var(--color-text-secondary)' }}
+                >
+                  直接前往向导
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>

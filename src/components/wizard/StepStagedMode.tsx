@@ -41,6 +41,7 @@ import {
   getStagedTemplateById,
   mergeStagedTemplate,
   mergeDiyStagedAxis,
+  sanitizeStageName,
   STAGED_TEMPLATE_CATEGORIES,
   getTemplatesByCategory,
 } from './staged-templates';
@@ -110,9 +111,15 @@ export function StepStagedMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stagedMode.templateId]);
 
+  /** 当前是否处于 DIY（AI 自选阶段轴）模式——此时没有模板，getStagedTemplateById 恒空 */
+  const isDiyMode = stagedMode.templateId === 'diy';
+
   /** 切换大类：若当前 templateId 不属于该大类，自动选中该大类第一个模板 */
   const handleSelectCategory = (categoryId: string) => {
     setSelectedCategoryId(categoryId);
+    // DIY 模式下只切换浏览用的大类，不改 templateId：否则「随手点一下大类标签」
+    // 会静默把 DIY 换成模板，并往 MVU 注入一个用不上的模板轴变量
+    if (isDiyMode) return;
     const catTemplates = getTemplatesByCategory(categoryId);
     if (catTemplates.length > 0) {
       const current = getStagedTemplateById(stagedMode.templateId as string);
@@ -290,18 +297,32 @@ export function StepStagedMode({
         addToast('error', t('stagedMode.diyFailed'));
         return;
       }
+      // 阶段名先净化再分发到「枚举值」与「调度条件」两侧，避免半角逗号等字符
+      // 打断 z.enum 字面量、让两侧的阶段名漂移（阶段永不命中）
+      const sanitized = {
+        ...result,
+        stages: result.stages.map((s) => {
+          const name = sanitizeStageName(s.name) || '阶段';
+          return {
+            ...s,
+            name,
+            // enum 轴的条件里嵌着阶段名，跟着一起净化；数值条件不含名字，原样保留
+            condition: result.axisType === 'enum' ? `=== '${name.replace(/'/g, '')}'` : s.condition || '',
+          };
+        }),
+      };
       // 轴变量并入 MVU（不覆盖已有变量）：没有它，真实运行时轴变量未初始化，
       // 调度条目永远走「变量未定义」分支
       if (onMvuChange) {
-        onMvuChange(mergeDiyStagedAxis(mvu ?? createEmptyMvuConfig(), result));
+        onMvuChange(mergeDiyStagedAxis(mvu ?? createEmptyMvuConfig(), sanitized));
       }
       const diyCharacter: StagedModeCharacter = {
         name: cardName || 'DIY',
         summary: t('stagedMode.diySummary'),
-        axisPath: result.axisPath,
-        axisType: result.axisType,
-        numericDirection: result.numericDirection,
-        stages: result.stages.map((s) => ({
+        axisPath: sanitized.axisPath,
+        axisType: sanitized.axisType,
+        numericDirection: sanitized.numericDirection,
+        stages: sanitized.stages.map((s) => ({
           name: s.name,
           condition: s.condition || '',
           annotation: '',
@@ -311,7 +332,7 @@ export function StepStagedMode({
       onChange({ ...stagedMode, templateId: 'diy', enabled: true, characters: [diyCharacter] });
       setCharGuidance({});
       setDiyStatus('done');
-      addToast('success', t('stagedMode.diyDone', { axis: result.axisPath, count: String(result.stages.length) }));
+      addToast('success', t('stagedMode.diyDone', { axis: sanitized.axisPath, count: String(sanitized.stages.length) }));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : t('common.unknownError');
       setDiyStatus('error');
@@ -597,6 +618,17 @@ export function StepStagedMode({
             );
           })}
         </div>
+        {isDiyMode && (
+          <div
+            className="mb-3 rounded-lg border border-dashed px-3 py-2 text-[11px]"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--color-primary) 50%, transparent)',
+              color: 'var(--color-text-secondary)',
+            }}
+          >
+            🎨 {t('stagedMode.diyActiveHint')}
+          </div>
+        )}
         <TextArea
           value={userRequirement}
           onChange={(e) => setUserRequirement(e.target.value)}
@@ -605,7 +637,7 @@ export function StepStagedMode({
           className="mb-3"
         />
         <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={handleAnalyze} disabled={analyzing || diyGenerating}>
+          <Button onClick={handleAnalyze} disabled={analyzing || diyGenerating || isDiyMode} title={isDiyMode ? t('stagedMode.analyzeDisabledInDiy') : undefined}>
             {analyzing ? t('stagedMode.analyzing') : `🔍 ${t('stagedMode.analyzeButton')}`}
           </Button>
           <Button variant="secondary" onClick={handleDiyGenerate} disabled={analyzing || diyGenerating} title={t('stagedMode.diyButtonHint')}>
