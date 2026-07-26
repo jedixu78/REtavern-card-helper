@@ -4,7 +4,13 @@ import { createEmptyLorebookEntry } from '../constants/defaults';
 import type { LorebookEntry } from '../constants/defaults';
 import type { VariableBlueprint } from '../components/novel-workshop/types';
 import { escapeEjsDoubleQuoted, escapeEjsSingleQuoted } from './staged-lorebook-builder';
-import { sanitizeSegment } from '../components/novel-workshop/utils';
+import {
+  estimatePromptTokens,
+  getSafePromptTokenLimit,
+  normalizeApiErrorMessage,
+  sanitizeSegment,
+} from '../components/novel-workshop/utils';
+import { getAISettings } from '../db/database';
 
 export const NOVEL_LOREBOOK_IMPORT_KEY = 'novel-analysis-lorebook-import';
 export const NOVEL_ANALYSIS_PARTIAL_KEY = 'novelAnalysisPartial';
@@ -229,8 +235,8 @@ interface NovelAnalysisPrompt {
  * novel analysis. Previously duplicated ~110 lines across the two code paths;
  * centralizing it removes drift risk and keeps the fallback path in sync.
  */
-function buildNovelAnalysisPrompt(title: string, chunks: NovelChunk[]): NovelAnalysisPrompt {
-  const sample = buildNovelSample(chunks);
+function buildNovelAnalysisPrompt(title: string, chunks: NovelChunk[], sampleMaxChars = NOVEL_SAMPLE_MAX_CHARS): NovelAnalysisPrompt {
+  const sample = buildNovelSample(chunks, sampleMaxChars);
   if (!sample) throw new Error('请先输入或上传小说文本');
 
   const system = `你是"小说文本 → SillyTavern 世界书"的结构化拆书专家。你的目标不是写普通读后感，而是直接生成可导入世界书、帮助 AI 进行角色扮演的素材库。
@@ -402,8 +408,93 @@ ${sample}
   return { system, user };
 }
 
-export async function analyzeNovelText(title: string, chunks: NovelChunk[], outputMaxTokens = DEFAULT_NOVEL_OUTPUT_MAX_TOKENS): Promise<NovelAnalysisResult> {
-  const { system, user } = buildNovelAnalysisPrompt(title, chunks);
+/** Result of the pre-call prompt token check. */
+export interface NovelPromptPrecheck {
+  /** Estimated prompt tokens for the final (possibly degraded) prompt */
+  estimatedTokens: number;
+  /** Safe prompt token limit for the current model (getSafePromptTokenLimit) */
+  tokenLimit: number;
+  /** Whether the sample budget was shrunk to fit the limit */
+  degraded: boolean;
+  /** The sample char budget actually used to build the prompt */
+  sampleMaxChars: number;
+  /** True when even the smallest sample budget still exceeds the limit */
+  exceedsLimit: boolean;
+}
+
+export interface NovelAnalysisPreparedPrompt {
+  system: string;
+  user: string;
+  precheck: NovelPromptPrecheck;
+}
+
+/** Descending sample-char budgets tried when the estimated prompt exceeds the model's safe limit. */
+const SAMPLE_DEGRADE_LADDER = [NOVEL_SAMPLE_MAX_CHARS, 28000, 18000, 12000];
+
+/**
+ * Build the analysis prompt with a pre-call token check: estimate the prompt
+ * tokens (estimatePromptTokens) against the model's safe limit
+ * (getSafePromptTokenLimit) and, when over budget, degrade by shrinking the
+ * novel sample step by step until the prompt fits (or the smallest budget is
+ * reached). The returned precheck lets the UI surface what happened.
+ */
+export function prepareNovelAnalysisPrompt(
+  title: string,
+  chunks: NovelChunk[],
+  modelName: string,
+): NovelAnalysisPreparedPrompt {
+  const tokenLimit = getSafePromptTokenLimit(modelName);
+  let sampleMaxChars = SAMPLE_DEGRADE_LADDER[0];
+  let prompt = buildNovelAnalysisPrompt(title, chunks, sampleMaxChars);
+  let estimatedTokens = estimatePromptTokens(prompt);
+  let degraded = false;
+  for (let i = 1; i < SAMPLE_DEGRADE_LADDER.length && estimatedTokens > tokenLimit; i++) {
+    sampleMaxChars = SAMPLE_DEGRADE_LADDER[i];
+    prompt = buildNovelAnalysisPrompt(title, chunks, sampleMaxChars);
+    estimatedTokens = estimatePromptTokens(prompt);
+    degraded = true;
+  }
+  return {
+    ...prompt,
+    precheck: {
+      estimatedTokens,
+      tokenLimit,
+      degraded,
+      sampleMaxChars,
+      exceedsLimit: estimatedTokens > tokenLimit,
+    },
+  };
+}
+
+/**
+ * Convert a raw AI-call error into a user-facing Chinese message via the shared
+ * normalizeApiErrorMessage rules (Gemini 内容拦截 / safety 拒绝 / 429 限流)。
+ * The HTTP status is best-effort parsed from the "(NNN)" marker that
+ * ai-service embeds in its error messages; unmatched errors pass through as-is.
+ */
+export function friendlyNovelAnalysisError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err ?? '').trim();
+  // ai-service 的错误信息有两种格式：「AI API 调用失败 (429)」与「AI API 返回错误 429：…」。
+  // 只匹配括号形式会让主路径的状态码永远解析不到（status 恒 0），
+  // 429 限流 / 400 safety 的友好映射在真实链路上完全失效。
+  const statusMatch =
+    message.match(/\((\d{3})\)/) ||
+    message.match(/(?:错误|失败)\s*(\d{3})/) ||
+    message.match(/\b([45]\d{2})\b/);
+  const status = statusMatch ? Number(statusMatch[1]) : 0;
+  const normalized = normalizeApiErrorMessage(status, message);
+  return normalized || '小说分析失败，请稍后重试';
+}
+
+export async function analyzeNovelText(
+  title: string,
+  chunks: NovelChunk[],
+  outputMaxTokens = DEFAULT_NOVEL_OUTPUT_MAX_TOKENS,
+  onPrecheck?: (precheck: NovelPromptPrecheck) => void,
+): Promise<NovelAnalysisResult> {
+  const settings = await getAISettings();
+  const { system, user, precheck } = prepareNovelAnalysisPrompt(title, chunks, settings.model || '');
+  onPrecheck?.(precheck);
   const safeOutputMaxTokens = Math.min(Math.max(Math.floor(outputMaxTokens || DEFAULT_NOVEL_OUTPUT_MAX_TOKENS), 4000), 300000);
   const text = await callAIWithPrompt(system, user, { temperature: 0.7, max_tokens: safeOutputMaxTokens, presetMode: 'none' });
   const parsed = parseAIJson(text) as NovelAnalysisResult | null;
@@ -426,8 +517,11 @@ export async function analyzeNovelTextStreaming(
   chunks: NovelChunk[],
   outputMaxTokens: number,
   onChunk: StreamCallback,
+  onPrecheck?: (precheck: NovelPromptPrecheck) => void,
 ): Promise<NovelAnalysisResult> {
-  const { system, user } = buildNovelAnalysisPrompt(title, chunks);
+  const settings = await getAISettings();
+  const { system, user, precheck } = prepareNovelAnalysisPrompt(title, chunks, settings.model || '');
+  onPrecheck?.(precheck);
   const safeOutputMaxTokens = Math.min(Math.max(Math.floor(outputMaxTokens || DEFAULT_NOVEL_OUTPUT_MAX_TOKENS), 4000), 300000);
   const text = await callAIWithPromptStreaming(system, user, onChunk, { temperature: 0.7, max_tokens: safeOutputMaxTokens, presetMode: 'none' });
   const parsed = parseAIJson(text) as NovelAnalysisResult | null;
@@ -479,6 +573,53 @@ export function exportAnalysisAsJson(title: string, chunks: NovelChunk[], analys
     totalChars: chunks.reduce((sum, chunk) => sum + chunk.content.length, 0),
     analysis,
   }, null, 2);
+}
+
+export interface AnalysisImportPayload {
+  title: string;
+  analysis: NovelAnalysisResult;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Minimal fingerprint of an analysis object: summary is a string and lorebookEntries is an array. */
+function looksLikeAnalysisShape(value: Record<string, unknown>): boolean {
+  return typeof value.summary === 'string' && Array.isArray(value.lorebookEntries);
+}
+
+/**
+ * Parse and validate a previously exported analysis JSON (exportAnalysisAsJson
+ * output) so it can be restored to the page. Also accepts a bare analysis
+ * object for convenience. Shape errors throw user-facing Chinese messages.
+ * Missing optional fields are filled by normalizeAnalysis.
+ */
+export function parseAnalysisImportJson(raw: string): AnalysisImportPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('导入失败：文件不是有效的 JSON');
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error('导入失败：JSON 顶层应为对象（本页「导出结果」生成的分析文件）');
+  }
+  // Accept both the exportAnalysisAsJson wrapper ({ title, analysis }) and a bare analysis object.
+  const analysisRaw = isPlainObject(parsed.analysis)
+    ? parsed.analysis
+    : looksLikeAnalysisShape(parsed) ? parsed : null;
+  if (!analysisRaw) {
+    throw new Error('导入失败：缺少 analysis 字段，文件可能不是本页「导出结果」生成的分析 JSON');
+  }
+  if (!looksLikeAnalysisShape(analysisRaw)) {
+    throw new Error('导入失败：analysis 内容缺少必需字段（summary 应为文本、lorebookEntries 应为数组）');
+  }
+  if ((analysisRaw.lorebookEntries as unknown[]).some((entry) => !isPlainObject(entry))) {
+    throw new Error('导入失败：lorebookEntries 中存在非对象条目，文件可能已损坏');
+  }
+  const title = typeof parsed.title === 'string' ? parsed.title : '';
+  return { title, analysis: normalizeAnalysis(analysisRaw as unknown as Partial<NovelAnalysisResult>) };
 }
 
 export function analysisToLorebookEntries(analysis: NovelAnalysisResult): LorebookEntry[] {

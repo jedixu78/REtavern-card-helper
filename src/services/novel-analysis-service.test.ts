@@ -2,7 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   analysisToLorebookEntries,
   buildAnalysisVariableBlueprints,
+  exportAnalysisAsJson,
+  friendlyNovelAnalysisError,
+  parseAnalysisImportJson,
+  prepareNovelAnalysisPrompt,
   type NovelAnalysisResult,
+  type NovelChunk,
   type NovelItemSetting,
   type NovelPlotStage,
   type NovelEasterEgg,
@@ -458,5 +463,146 @@ describe('buildAnalysisVariableBlueprints', () => {
 
   it('returns empty array for empty analysis', () => {
     expect(buildAnalysisVariableBlueprints(makeAnalysis())).toEqual([]);
+  });
+});
+
+// ── S1-8 item 1: prompt token precheck ───────────────────────────────────────
+
+function makeChunks(count: number, charsPerChunk: number): NovelChunk[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: i + 1,
+    title: `第${i + 1}章`,
+    content: '阿'.repeat(charsPerChunk),
+    start: i * charsPerChunk,
+    end: (i + 1) * charsPerChunk,
+  }));
+}
+
+describe('prepareNovelAnalysisPrompt (token 预检)', () => {
+  it('short input is not degraded', () => {
+    const { system, user, precheck } = prepareNovelAnalysisPrompt('短篇', makeChunks(3, 2000), 'gpt-4o');
+    expect(system.length).toBeGreaterThan(0);
+    expect(user).toContain('阿');
+    expect(precheck.degraded).toBe(false);
+    expect(precheck.exceedsLimit).toBe(false);
+    expect(precheck.estimatedTokens).toBeGreaterThan(0);
+    expect(precheck.estimatedTokens).toBeLessThanOrEqual(precheck.tokenLimit);
+  });
+
+  it('long input on a mid-context model shrinks the sample until it fits', () => {
+    // 10 chunks × 12000 CJK chars → full 42000-char sample ≈ 57k tokens。
+    // 未知模型的保守默认上限 50000 → 必须降一档才装得下。
+    const chunks = makeChunks(10, 12000);
+    const degradedRun = prepareNovelAnalysisPrompt('长篇', chunks, 'some-unknown-model');
+    expect(degradedRun.precheck.degraded).toBe(true);
+    expect(degradedRun.precheck.exceedsLimit).toBe(false);
+    expect(degradedRun.precheck.estimatedTokens).toBeLessThanOrEqual(degradedRun.precheck.tokenLimit);
+    expect(degradedRun.precheck.sampleMaxChars).toBeLessThan(42000);
+
+    // Same input on a long-context model needs no degradation…
+    const longContextRun = prepareNovelAnalysisPrompt('长篇', chunks, 'gemini-2.5-pro');
+    expect(longContextRun.precheck.degraded).toBe(false);
+    expect(longContextRun.precheck.tokenLimit).toBeGreaterThan(degradedRun.precheck.tokenLimit);
+    // …so the degraded prompt is actually shorter than the full one.
+    expect(degradedRun.user.length).toBeLessThan(longContextRun.user.length);
+  });
+
+  it('gpt-3.5 等短上下文模型如实报告超限，而不是假装 50k 装得下', () => {
+    // 修复前 gpt-3.5 未被模式表匹配、落到 50000 默认值——预检声称「已适配」
+    // 但真实上下文只有 16k，调用必然 400。现在按 12000 如实判定。
+    const chunks = makeChunks(10, 12000);
+    const run = prepareNovelAnalysisPrompt('长篇', chunks, 'gpt-3.5-turbo');
+    expect(run.precheck.tokenLimit).toBe(12000);
+    // 阶梯最低档 12000 字的中文样本仍超 12000 token 上限 → 必须如实标记超限
+    expect(run.precheck.degraded).toBe(true);
+    expect(run.precheck.exceedsLimit).toBe(true);
+  });
+
+  it('throws the no-text error for empty chunks', () => {
+    expect(() => prepareNovelAnalysisPrompt('空', [], 'gpt-4o')).toThrow('请先输入或上传小说文本');
+  });
+});
+
+// ── S1-8 item 1: friendly API error messages ─────────────────────────────────
+
+describe('friendlyNovelAnalysisError', () => {
+  it('maps 429 rate-limit errors', () => {
+    const msg = friendlyNovelAnalysisError(new Error('AI API 调用失败 (429)：Too Many Requests'));
+    expect(msg).toContain('限流');
+  });
+
+  it('maps Gemini prohibited-content errors', () => {
+    const msg = friendlyNovelAnalysisError(new Error('AI API 返回错误：PROHIBITED_CONTENT: request blocked'));
+    expect(msg).toContain('Gemini 安全策略');
+  });
+
+  it('maps 400 safety rejections', () => {
+    const msg = friendlyNovelAnalysisError(new Error('AI API 调用失败 (400)：safety system rejected the request'));
+    expect(msg).toContain('安全策略');
+  });
+
+  it('passes unmatched messages through unchanged', () => {
+    expect(friendlyNovelAnalysisError(new Error('某个普通错误'))).toBe('某个普通错误');
+  });
+
+  it('falls back to a generic message for empty input', () => {
+    expect(friendlyNovelAnalysisError(undefined)).toContain('小说分析失败');
+  });
+});
+
+// ── S1-8 item 3: analysis JSON re-import ─────────────────────────────────────
+
+describe('parseAnalysisImportJson', () => {
+  const entry = { name: '人物A', keys: ['人物A'], content: 'A 的设定', category: '人物' };
+
+  it('round-trips exportAnalysisAsJson output', () => {
+    const analysis = makeAnalysis({ summary: '整体摘要', lorebookEntries: [entry] });
+    const raw = exportAnalysisAsJson('我的小说', makeChunks(2, 100), analysis);
+    const imported = parseAnalysisImportJson(raw);
+    expect(imported.title).toBe('我的小说');
+    expect(imported.analysis.summary).toBe('整体摘要');
+    expect(imported.analysis.lorebookEntries).toHaveLength(1);
+    expect(imported.analysis.lorebookEntries[0].name).toBe('人物A');
+    // Restored analysis feeds the existing pipeline unchanged
+    expect(analysisToLorebookEntries(imported.analysis)).toHaveLength(1);
+  });
+
+  it('accepts a bare analysis object (no wrapper)', () => {
+    const analysis = makeAnalysis({ summary: '裸对象', lorebookEntries: [entry] });
+    const imported = parseAnalysisImportJson(JSON.stringify(analysis));
+    expect(imported.title).toBe('');
+    expect(imported.analysis.summary).toBe('裸对象');
+  });
+
+  it('fills missing optional fields via normalization', () => {
+    const raw = JSON.stringify({ title: 't', analysis: { summary: 's', lorebookEntries: [] } });
+    const imported = parseAnalysisImportJson(raw);
+    expect(imported.analysis.characters).toEqual([]);
+    expect(imported.analysis.items).toEqual([]);
+    expect(imported.analysis.easterEggs).toEqual([]);
+    expect(imported.analysis.styleProfile.taboos).toEqual([]);
+    expect(imported.analysis.mainPlot).toEqual({ premise: '', stages: [], resolution: '' });
+  });
+
+  it('rejects invalid JSON with a Chinese error', () => {
+    expect(() => parseAnalysisImportJson('不是JSON{{{')).toThrow('不是有效的 JSON');
+  });
+
+  it('rejects non-object top level', () => {
+    expect(() => parseAnalysisImportJson('[1,2,3]')).toThrow('顶层应为对象');
+  });
+
+  it('rejects objects without an analysis field', () => {
+    expect(() => parseAnalysisImportJson(JSON.stringify({ foo: 1 }))).toThrow('缺少 analysis 字段');
+  });
+
+  it('rejects analysis with wrong-typed required fields', () => {
+    const raw = JSON.stringify({ analysis: { summary: 123, lorebookEntries: '不是数组' } });
+    expect(() => parseAnalysisImportJson(raw)).toThrow('缺少必需字段');
+  });
+
+  it('rejects non-object lorebookEntries elements', () => {
+    const raw = JSON.stringify({ analysis: { summary: 's', lorebookEntries: ['字符串条目'] } });
+    expect(() => parseAnalysisImportJson(raw)).toThrow('非对象条目');
   });
 });

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, Download, Sparkles, BookMarked } from 'lucide-react';
+import { FileText, Download, Sparkles, BookMarked, Upload } from 'lucide-react';
 import { Button } from '../components/shared/Button';
 import { TextArea } from '../components/shared/TextArea';
 import { useTranslation } from '../i18n/I18nContext';
@@ -9,11 +9,14 @@ import {
   analyzeNovelTextStreaming,
   analyzeNovelText,
   exportAnalysisAsJson,
+  friendlyNovelAnalysisError,
+  parseAnalysisImportJson,
   saveAnalysisLorebookImport,
   splitNovelText,
   NOVEL_ANALYSIS_PARTIAL_KEY,
   type NovelAnalysisResult,
   type NovelChunk,
+  type NovelPromptPrecheck,
 } from '../services/novel-analysis-service';
 import { pushAnalysisToWorkshop } from '../services/novel-workshop-bridge';
 import { readFileText, MAX_NOVEL_FILE_BYTES, formatFileSize } from '../services/file-decode';
@@ -63,6 +66,7 @@ export function NovelAnalysisPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
   const [chunks, setChunks] = useState<NovelChunk[]>([]);
@@ -145,6 +149,18 @@ export function NovelAnalysisPage() {
     if (nextChunks.length === 0) setError(t('novel.errorNoText'));
   };
 
+  const handlePromptPrecheck = (precheck: NovelPromptPrecheck) => {
+    const params = {
+      tokens: precheck.estimatedTokens.toLocaleString(),
+      limit: precheck.tokenLimit.toLocaleString(),
+    };
+    if (precheck.exceedsLimit) {
+      setInfo(t('novel.tokenPrecheckExceeds', params));
+    } else if (precheck.degraded) {
+      setInfo(t('novel.tokenPrecheckDegraded', params));
+    }
+  };
+
   const handleAnalyze = async () => {
     setError('');
     setInfo('');
@@ -190,6 +206,7 @@ export function NovelAnalysisPage() {
             setProgressPercent(pct);
           }
         },
+        handlePromptPrecheck,
       );
       setProgressPercent(100);
       setStreamingText('');
@@ -218,7 +235,7 @@ export function NovelAnalysisPage() {
         // Try non-streaming fallback
         setError('AI 处理失败，正在换一种方式重试…');
         try {
-          const fallbackResult = await analyzeNovelText(title, nextChunks, outputMaxTokens);
+          const fallbackResult = await analyzeNovelText(title, nextChunks, outputMaxTokens, handlePromptPrecheck);
           setAnalysis(fallbackResult);
           setError('');
           streamingSucceeded = true;
@@ -231,7 +248,7 @@ export function NovelAnalysisPage() {
           }
           const userFriendlyMsg = fallbackMsg.includes('无法解析为 JSON')
             ? 'AI 返回的内容格式不对'
-            : fallbackMsg;
+            : friendlyNovelAnalysisError(fallbackErr);
           setError(`分析失败：${userFriendlyMsg}${rawHint || jsonHint}`);
         }
       }
@@ -289,6 +306,20 @@ export function NovelAnalysisPage() {
     downloadText(`${title || 'novel-analysis'}.json`, exportAnalysisAsJson(title, chunks, analysis));
   };
 
+  const handleImportAnalysisFile = async (file: File) => {
+    setError('');
+    setInfo('');
+    try {
+      const raw = await file.text();
+      const imported = parseAnalysisImportJson(raw);
+      setAnalysis(imported.analysis);
+      if (imported.title) setTitle(imported.title);
+      setInfo(t('novel.importAnalysisSuccess', { count: String(imported.analysis.lorebookEntries.length) }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('novel.importAnalysisFailed'));
+    }
+  };
+
   const handleImportToWizard = () => {
     if (!analysis) return;
     try {
@@ -319,6 +350,17 @@ export function NovelAnalysisPage() {
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) void handleFile(file);
+        }}
+      />
+      <input
+        ref={importFileRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void handleImportAnalysisFile(file);
         }}
       />
 
@@ -548,6 +590,9 @@ export function NovelAnalysisPage() {
             </Button>
             <Button variant="ghost" onClick={handleExport} disabled={!analysis}>
               <Download size={16} /> {t('novel.exportResult')}
+            </Button>
+            <Button variant="ghost" onClick={() => importFileRef.current?.click()} disabled={loading}>
+              <Upload size={16} /> {t('novel.importAnalysis')}
             </Button>
             <Button variant="secondary" onClick={handleImportToWizard} disabled={!analysis || (analysis?.lorebookEntries.length ?? 0) === 0}>
               {t('novel.importToWorldBook')}

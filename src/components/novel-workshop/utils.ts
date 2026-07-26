@@ -206,6 +206,12 @@ export function getSafePromptTokenLimit(modelName: string): number {
   if (name.indexOf('deepseek') >= 0) return 120000;
   if (name.indexOf('claude-3') >= 0 || name.indexOf('claude-sonnet-4') >= 0 || name.indexOf('claude-opus-4') >= 0) return 180000;
   if (name.indexOf('gpt-4.1') >= 0 || name.indexOf('gpt-4o') >= 0 || name.indexOf('o3') >= 0 || name.indexOf('o4') >= 0) return 120000;
+  // 旧代/短上下文模型：默认 50000 会让 token 预检「自称已适配」但调用必然超限。
+  // 顺序敏感——gpt-4.1/gpt-4o 已在上面命中，这里只剩 turbo/32k/初代。
+  if (name.indexOf('gpt-4-turbo') >= 0 || name.indexOf('gpt-4-1106') >= 0 || name.indexOf('gpt-4-0125') >= 0) return 100000;
+  if (name.indexOf('gpt-4-32k') >= 0) return 24000;
+  if (name.indexOf('gpt-4') >= 0) return 6000;   // 初代 gpt-4：8k 上下文
+  if (name.indexOf('gpt-3.5') >= 0) return 12000; // 现行 gpt-3.5-turbo 均为 16k 上下文
   return DEFAULT_SAFE_PROMPT_TOKENS;
 }
 
