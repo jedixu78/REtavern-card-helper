@@ -351,11 +351,15 @@ export function WizardPage() {
   }, [loading, editId, location.search, draft.cardName, draft.lorebookEntries, draft.mvu, updateDraft, setCurrentStep, addToast, t]);
 
   // Clear draftId from URL once the draft has been loaded so that auto-save takes over on refresh.
+  // Use replaceState instead of navigate() — navigate() would change the router location,
+  // flip initialDraftId to undefined, and re-run useWizardState's load effect, which then
+  // takes the auto-draft branch and silently replaces the just-loaded draft with the stale
+  // 'new' auto draft. Same pattern as the novel-analysis / workshop import effects above.
   useEffect(() => {
     if (!loading && draftIdFromUrl) {
-      navigate('/wizard', { replace: true });
+      window.history.replaceState({}, '', '/wizard');
     }
-  }, [loading, draftIdFromUrl, navigate]);
+  }, [loading, draftIdFromUrl]);
 
   // Character descriptions summary (for AI prompts in later steps)
   const characterDescriptions = draft.characters
@@ -940,6 +944,7 @@ ${e.content || ''}`)
         onPrev={goPrev}
         onNext={handleNext}
         onSave={handleSave}
+        alwaysShowSave={isEditMode}
         onSaveDraft={isEditMode ? undefined : saveDraftNow}
         onClear={isEditMode ? undefined : handleClear}
         onClearStep={handleClearCurrentStep}

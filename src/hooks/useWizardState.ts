@@ -15,6 +15,7 @@ import {
   clearAutoDraft,
   saveManualDraft,
   loadDraft as loadDraftRecord,
+  migrateDraftRecord,
 } from '../services/draft-service';
 import { useToast } from '../components/shared/Toast';
 import { useTranslation } from '../i18n/I18nContext';
@@ -22,27 +23,6 @@ import { useTranslation } from '../i18n/I18nContext';
 type DraftState = WizardDraft;
 
 const DRAFT_SAVE_DELAY = 500; // ms
-
-/**
- * Migrate a V4 draft step number to V5 (8-step) step number.
- *
- * V4 flow (7 steps): name(1) → chars(2) → worldbook(3) → mvu(4) → staged(5) → firstmsg(6) → export(7)
- * V5 flow (8 steps): name(1) → skeleton(2) → chars(3) → detail(4) → mvu(5) → staged(6) → firstmsg(7) → export(8)
- */
-function migrateStepV4ToV5(oldStep: number, _draft: Partial<WizardDraft>): number {
-  // If the old draft already has world book entries but no characters,
-  // they were on step 3 (worldbook). In V5 this maps to step 4 (detail).
-  // If they have characters but no entries yet, they were on step 2.
-  const stepMap: Record<number, number> = { 1: 1, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8 };
-  return stepMap[oldStep] ?? Math.min(oldStep, 1);
-}
-
-/** V5 → V6: 新增「直播包装」步骤（step 8），原「美化导出」从 step 8 移到 step 9。 */
-function migrateStepV5ToV6(oldStep: number): number {
-  // Steps 1-7 不变；原 step 8（美化导出）→ step 9
-  if (oldStep >= 8) return oldStep + 1;
-  return oldStep;
-}
 
 /**
  * Normalize a loaded draft by merging with defaults.
@@ -114,11 +94,17 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
             setDraft(normalizeDraft(restored));
           }
         } else if (initialDraftId) {
-          // New card mode — load a specific draft from the draft box
+          // New card mode — load a specific draft from the draft box.
+          // Manual drafts go through the same migration chain as auto drafts,
+          // so bumping WIZARD_DRAFT_VERSION no longer bricks saved drafts.
           const saved = await loadDraftRecord(initialDraftId);
-          if (saved && saved.version === WIZARD_DRAFT_VERSION) {
-            setDraft(normalizeDraft(saved.data as Partial<DraftState>));
-            setCurrentStep(saved.currentStep || 1);
+          const migrated = saved ? migrateDraftRecord(saved) : null;
+          if (migrated) {
+            setDraft(normalizeDraft(migrated.data as Partial<DraftState>));
+            setCurrentStep(migrated.currentStep);
+            if (migrated.migratedFrom) {
+              addToast('info', t('wizard.draftMigrated', { oldVersion: migrated.migratedFrom, newVersion: `V${WIZARD_DRAFT_VERSION}` }));
+            }
           } else {
             addToast('error', t('wizard.draftLoadFailed'));
             setDraft(createEmptyDraft());
@@ -127,27 +113,15 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
         } else {
           // New card mode — try restoring auto-saved draft
           const saved = await loadAutoDraft();
-          if (saved && saved.version === WIZARD_DRAFT_VERSION) {
-            setDraft(normalizeDraft(saved.data as Partial<DraftState>));
-            setCurrentStep(saved.currentStep || 1);
-          } else if (saved && saved.version === 4) {
-            // V4 → V5 migration: remap steps and add worldRules
-            const migratedData = saved.data as Partial<DraftState>;
-            const oldStep = saved.currentStep || 1;
-            const newStep = migrateStepV4ToV5(oldStep, migratedData);
-            setDraft(normalizeDraft({ ...migratedData, worldRules: migratedData.worldRules ?? '' }));
-            setCurrentStep(newStep);
-            addToast('info', t('draftMigrated', { oldVersion: 'V4', newVersion: 'V5' }));
-          } else if (saved && saved.version === 5) {
-            // V5 → V6 migration: 新增直播包装步骤，原 step 8（导出）→ step 9
-            const migratedData = saved.data as Partial<DraftState>;
-            const oldStep = saved.currentStep || 1;
-            const newStep = migrateStepV5ToV6(oldStep);
-            setDraft(normalizeDraft(migratedData));
-            setCurrentStep(newStep);
-            addToast('info', t('draftMigrated', { oldVersion: 'V5', newVersion: 'V6' }));
+          const migrated = saved ? migrateDraftRecord(saved) : null;
+          if (migrated) {
+            setDraft(normalizeDraft(migrated.data as Partial<DraftState>));
+            setCurrentStep(migrated.currentStep);
+            if (migrated.migratedFrom) {
+              addToast('info', t('wizard.draftMigrated', { oldVersion: migrated.migratedFrom, newVersion: `V${WIZARD_DRAFT_VERSION}` }));
+            }
           } else if (saved) {
-            // Stale draft from an older app version: discard it to avoid shape mismatches.
+            // Stale draft from an older app version with no migration path: discard it.
             await clearAutoDraft();
             setDraft(createEmptyDraft());
             setCurrentStep(1);
@@ -194,12 +168,17 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
     setIsDraftDirty(true);
   }, []);
 
+  // 注意：三个角色操作都要 setIsDraftDirty(true)。创建模式下自动保存 effect 会兜底标脏，
+  // 但编辑模式（editId）该 effect 直接 return——脏标记是 beforeunload 刷新拦截的唯一依据，
+  // 漏设会让编辑模式下的角色修改在 F5 时静默丢失。
+
   /** Add a new character */
   const addCharacter = useCallback(() => {
     setDraft((prev) => ({
       ...prev,
       characters: [...prev.characters, createEmptyCharacter()],
     }));
+    setIsDraftDirty(true);
   }, []);
 
   /** Remove a character by index */
@@ -208,6 +187,7 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
       ...prev,
       characters: prev.characters.filter((_, i) => i !== index),
     }));
+    setIsDraftDirty(true);
   }, []);
 
   /** Update a character at a specific index */
@@ -219,6 +199,7 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
       ...prev,
       characters: prev.characters.map((c, i) => (i === index ? { ...c, ...safeUpdates } : c)),
     }));
+    setIsDraftDirty(true);
   }, []);
 
   /** Validate the current step */
@@ -345,12 +326,13 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
     if (editId) return false;
     try {
       const saved = await loadDraftRecord(id);
-      if (!saved || saved.version !== WIZARD_DRAFT_VERSION) {
+      const migrated = saved ? migrateDraftRecord(saved) : null;
+      if (!migrated) {
         addToast('error', t('wizard.draftLoadFailed'));
         return false;
       }
-      setDraft(normalizeDraft(saved.data as Partial<DraftState>));
-      setCurrentStep(saved.currentStep || 1);
+      setDraft(normalizeDraft(migrated.data as Partial<DraftState>));
+      setCurrentStep(migrated.currentStep);
       setIsDraftDirty(false);
       addToast('success', t('wizard.draftLoaded'));
       return true;

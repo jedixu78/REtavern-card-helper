@@ -19,6 +19,7 @@ import {
   loadDraft,
   updateDraftCover,
   stripTrailingTime,
+  autoDraftHasContent,
 } from '../services/draft-service';
 import type { WizardDraftRecord } from '../db/database';
 import { resizeImageToPngBuffer } from '../services/image-processing';
@@ -65,6 +66,11 @@ export function DraftsPage() {
     const draft = await loadDraft(id);
     if (!draft) {
       addToast('error', t('wizard.draftLoadFailed'));
+      return;
+    }
+    // 打开草稿后，创建页的防抖自动保存会把它写入 'new' 自动草稿槽——
+    // 若那里还有正在进行的创作，等于静默顶掉。有实质内容时先让用户确认。
+    if (await autoDraftHasContent() && !confirm(t('wizard.loadDraftOverwriteConfirm'))) {
       return;
     }
     navigate(`/wizard?draftId=${id}`);

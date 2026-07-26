@@ -16,6 +16,9 @@ const AUTO_DRAFT_KEY = 'new';
 const CARD_EDITOR_AUTO_DRAFT_KEY = 'card-editor-new';
 const CARD_EDITOR_DRAFT_PREFIX = 'card-editor-';
 
+// 草稿版本迁移（纯函数）单独放在 draft-migration.ts，便于单测；此处转发导出。
+export { migrateDraftRecord, type MigratedDraftPayload } from './draft-migration';
+
 /** Chat message shape persisted alongside card-editor drafts */
 export interface CardEditorChatMessage {
   role: 'user' | 'assistant';
@@ -131,6 +134,23 @@ export async function saveAutoDraft(draft: WizardDraft, currentStep: number): Pr
 
 export async function loadAutoDraft(): Promise<WizardDraftRecord | undefined> {
   return db.wizard_drafts.get(AUTO_DRAFT_KEY);
+}
+
+/**
+ * 判断自动草稿（'new'）里是否已有用户的实质内容。
+ * 用于「从草稿箱打开草稿」前的覆盖确认：加载别的草稿后，防抖自动保存会在
+ * 500ms 内把新内容写进 'new'，静默顶掉正在进行的创作。
+ */
+export async function autoDraftHasContent(): Promise<boolean> {
+  const saved = await loadAutoDraft();
+  const d = saved?.data as Partial<WizardDraft> | undefined;
+  if (!d) return false;
+  return Boolean(
+    d.cardName?.trim() ||
+    d.firstMessage?.trim() ||
+    (d.characters ?? []).some((c) => c?.name?.trim() || c?.description?.trim()) ||
+    (d.lorebookEntries ?? []).length > 0,
+  );
 }
 
 export async function clearAutoDraft(): Promise<void> {

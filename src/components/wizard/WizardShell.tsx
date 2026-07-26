@@ -14,6 +14,8 @@ interface WizardShellProps {
   onPrev: () => void;
   onNext: () => void;
   onSave: () => void;
+  /** 编辑模式下每一步都显示「保存」——编辑模式没有自动保存，这是中途持久化的唯一入口。 */
+  alwaysShowSave?: boolean;
   onSaveDraft?: () => void;
   onClear?: () => void;
   onClearStep?: () => void;
@@ -24,7 +26,7 @@ interface WizardShellProps {
   children: React.ReactNode;
 }
 
-export function WizardShell({ currentStep, onPrev, onNext, onSave, onSaveDraft, onClear, onClearStep, stepError, saving, extraActions, hideBottomNav, children }: WizardShellProps) {
+export function WizardShell({ currentStep, onPrev, onNext, onSave, alwaysShowSave, onSaveDraft, onClear, onClearStep, stepError, saving, extraActions, hideBottomNav, children }: WizardShellProps) {
   const { t } = useTranslation();
   const isFirst = currentStep === 1;
   const isLast = currentStep === WIZARD_STEPS.length;
@@ -128,6 +130,11 @@ export function WizardShell({ currentStep, onPrev, onNext, onSave, onSaveDraft, 
                 </Button>
               )}
               {extraActions && <span className="pointer-events-auto inline-flex">{extraActions}</span>}
+              {alwaysShowSave && !isLast && (
+                <Button variant="secondary" onClick={onSave} disabled={saving} className="pointer-events-auto">
+                  {saving ? t('common.saving') : t('wizard.saveCard')}
+                </Button>
+              )}
               {isLast ? (
                 <Button onClick={onSave} disabled={saving} className="pointer-events-auto">
                   {saving ? t('common.saving') : t('wizard.saveCard')}
