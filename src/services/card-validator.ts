@@ -1,4 +1,4 @@
-import { MVU_LOREBOOK_ENTRY_NAMES } from '../constants/defaults';
+import { MVU_LOREBOOK_ENTRY_NAMES, REGEX_SCRIPT_NAMES } from '../constants/defaults';
 
 /**
  * Card Validator - validates a card against SillyTavern Character Card V2/V3 spec.
@@ -230,7 +230,7 @@ export function validateCard(card: Record<string, unknown>, options: ValidationO
         const hasStatusBar = ext.mvu_has_status_bar === true;
         if (hasStatusBar) {
           const hasStatusBarRegex = Array.isArray(regexScripts) && regexScripts.some(
-            s => typeof s === 'object' && s !== null && (s as { scriptName?: string }).scriptName === '状态栏界面'
+            s => typeof s === 'object' && s !== null && (s as { scriptName?: string }).scriptName === REGEX_SCRIPT_NAMES.statusBar
           );
           const hasHideStatusBarRegex = Array.isArray(regexScripts) && regexScripts.some(
             s => typeof s === 'object' && s !== null && (s as { scriptName?: string }).scriptName === '对AI隐藏状态栏'

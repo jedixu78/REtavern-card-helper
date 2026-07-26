@@ -12,6 +12,7 @@
 
 import { getStatusBarThemeById } from './status-bar-templates';
 import type { StatusBarTheme } from './status-bar-templates';
+import { escapeHtml } from '../utils/html';
 
 // ════════════════════════════════════════════════════════════════════════════
 // 配置选项
@@ -75,7 +76,7 @@ function buildBodyHtml(opts: LiveChatGenerateOptions): string {
   return `<div class="lc-root" id="lc-root" data-max="${maxVisible}">
   <div class="lc-header" id="lc-header">
     <span class="lc-dot"></span>
-    <span class="lc-title">${escapeHtml(title)}</span>
+    <span class="lc-title">${escapeHtml(title, { quotes: true })}</span>
     <span class="lc-count" id="lc-count">0 人在线</span>
     <span class="lc-arrow">▼</span>
   </div>
@@ -235,12 +236,6 @@ function buildDocument(theme: StatusBarTheme, bodyHtml: string, initialComments:
     + '\n</head>\n<body>\n'
     + bodyHtml
     + '\n</body>\n</html>\n```';
-}
-
-function escapeHtml(s: string): string {
-  return String(s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ════════════════════════════════════════════════════════════════════════════

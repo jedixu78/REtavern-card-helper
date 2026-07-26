@@ -25,6 +25,7 @@ import {
   buildUpdateRulesYaml,
   buildEjsPreprocess,
 } from '../../services/mvu-builder';
+import { deepClone } from '../../utils/deep-clone';
 
 // ── 模板结构定义 ────────────────────────────────────────────────────────────
 
@@ -509,8 +510,8 @@ export function buildTemplateBlueprint(template: BeginnerTemplate): string {
 /** 将分阶段模板组装为完整的 MvuConfig（立即生成 schema.ts / initvar.yaml / 更新规则.yaml / EJS 预处理）。
  * 分阶段步骤选中模板时调用，使变量定义自包含于分阶段功能内部，无需独立的 MVU 变量步骤。 */
 export function applyStagedTemplate(template: BeginnerTemplate): MvuConfig {
-  const sections = JSON.parse(JSON.stringify(template.sections)) as MvuSchemaSection[];
-  const updateRules = JSON.parse(JSON.stringify(template.updateRules)) as MvuUpdateRule[];
+  const sections = deepClone(template.sections);
+  const updateRules = deepClone(template.updateRules);
   return {
     enabled: true,
     mode: 'beginner',
@@ -531,8 +532,8 @@ export function applyStagedTemplate(template: BeginnerTemplate): MvuConfig {
  * 用于「MVU 步骤」与「分阶段模式」并存时：用户在第5步定义的变量得以保留，
  * 分阶段模板仅补充其阶段轴变量（如 关系.情感天平）。 */
 export function mergeStagedTemplate(base: MvuConfig, template: BeginnerTemplate): MvuConfig {
-  const sections: MvuSchemaSection[] = JSON.parse(JSON.stringify(base.schemaSections)) as MvuSchemaSection[];
-  const tplSections = JSON.parse(JSON.stringify(template.sections)) as MvuSchemaSection[];
+  const sections: MvuSchemaSection[] = deepClone(base.schemaSections);
+  const tplSections = deepClone(template.sections);
 
   for (const tplSection of tplSections) {
     let target = sections.find(s => s.name === tplSection.name);
@@ -548,10 +549,10 @@ export function mergeStagedTemplate(base: MvuConfig, template: BeginnerTemplate)
   }
 
   // 合并更新规则（按 path 去重，模板规则补充缺失项）
-  const rules: MvuUpdateRule[] = JSON.parse(JSON.stringify(base.updateRules)) as MvuUpdateRule[];
+  const rules: MvuUpdateRule[] = deepClone(base.updateRules);
   const existingPaths = new Set(rules.map(r => r.path));
   for (const tplRule of template.updateRules) {
-    if (!existingPaths.has(tplRule.path)) rules.push(JSON.parse(JSON.stringify(tplRule)) as MvuUpdateRule);
+    if (!existingPaths.has(tplRule.path)) rules.push(deepClone(tplRule));
   }
 
   return {

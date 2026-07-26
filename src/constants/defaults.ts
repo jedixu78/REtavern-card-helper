@@ -51,7 +51,8 @@ export interface LorebookEntry {
   exclude_recursion: boolean;
   prevent_recursion: boolean;
   use_regex: boolean;
-  match_whole_words: boolean;
+  /** null 表示「继承 SillyTavern 全局设置」，用于忠实回写外部卡片的 inherit 语义 */
+  match_whole_words: boolean | null;
   sticky: number;
   cooldown: number;
   delay: number;
@@ -337,6 +338,16 @@ export const MVU_LOREBOOK_ENTRY_NAMES: readonly string[] = [
   'MVU 变量输出格式',
   '[mvu_update]变量输出格式',
 ];
+
+/**
+ * SillyTavern regex_scripts 中由本工具生成的界面脚本名。
+ * 这些字符串同时用于「写入」(导出时设置 scriptName) 与「匹配」(导入/校验/补丁时按名查找)，
+ * 任一处拼写不一致都会静默断开状态栏 / 直播间界面的接线，故集中定义为唯一来源。
+ */
+export const REGEX_SCRIPT_NAMES = {
+  statusBar: '状态栏界面',
+  liveChat: '直播间界面',
+} as const;
 
 /** 世界观锚定 — 结构化约束，防止 AI 生成偏离设定 */
 export interface WorldAnchor {

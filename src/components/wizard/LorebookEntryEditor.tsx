@@ -385,7 +385,7 @@ export function LorebookEntryEditor({ entry, index, onUpdate, onRemove, expandLe
                   {t('lorebook.preventRecursion')}
                 </label>
                 <label className="flex items-center gap-1.5">
-                  <input type="checkbox" checked={entry.match_whole_words}
+                  <input type="checkbox" checked={entry.match_whole_words ?? false}
                     onChange={(e) => onUpdate(index, { match_whole_words: e.target.checked })}
                     className="rounded border-[var(--input-border)] bg-[var(--input-bg)] text-[var(--color-primary)]" />
                   {t('lorebook.matchWholeWords')}

@@ -21,18 +21,6 @@ import {
 
 // ── String Utilities ──────────────────────────────────────────────────────
 
-export function escapeHtml(text: string): string {
-  return String(text || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-export function escapeAttr(text: string): string {
-  return escapeHtml(text).replace(/'/g, '&#39;');
-}
-
 export function uniqueStrings(list: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -245,19 +233,4 @@ export function normalizeApiErrorMessage(status: number, message: string): strin
   }
   if (status === 429) return '接口限流或额度不足，请稍后再试，或减少每次处理的字数来降低调用频率。';
   return text;
-}
-
-// ── JSON Extraction ────────────────────────────────────────────────────────
-
-export function extractJsonObject(raw: string): unknown {
-  const text = String(raw || '').trim();
-  try { return JSON.parse(text); } catch {}
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence && fence[1]) {
-    try { return JSON.parse(fence[1].trim()); } catch {}
-  }
-  const first = text.indexOf('{');
-  const last = text.lastIndexOf('}');
-  if (first >= 0 && last > first) return JSON.parse(text.slice(first, last + 1));
-  throw new Error('AI 返回中没有有效 JSON 对象');
 }

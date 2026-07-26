@@ -15,6 +15,7 @@
  */
 
 import type { MvuSchemaSection, MvuVariable } from '../constants/defaults';
+import { escapeHtml } from '../utils/html';
 
 // ════════════════════════════════════════════════════════════════════════════
 // 主题系统（CSS 变量层 — 埃瑟尔德范式：组件只引用变量，主题=变量覆盖包）
@@ -174,8 +175,9 @@ export function reflectSections(sections: MvuSchemaSection[]): ReflectedSection[
 // 原子组件 HTML 生成器（含唯一 id，供 JS 填充）
 // ════════════════════════════════════════════════════════════════════════════
 
+// 状态栏文本均嵌入标签之间的文本内容，用默认（不转义引号）转义即可。
 function esc(s: string): string {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return escapeHtml(s);
 }
 
 function componentHtml(v: ReflectedVar): string {

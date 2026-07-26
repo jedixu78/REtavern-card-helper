@@ -14,6 +14,7 @@ import { Button } from '../shared/Button';
 import { getThemeSettings } from '../../services/theme-service';
 import type { FieldDiff } from '../../services/card-optimizer';
 import type { OptimizeFieldKey } from '../../services/card-optimizer';
+import { escapeHtml } from '../../utils/html';
 
 interface FieldDiffCardProps {
   diff: FieldDiff;
@@ -33,13 +34,6 @@ const FIELD_LABEL_KEYS: Record<OptimizeFieldKey, string> = {
 const borderColor = 'var(--color-border-default)';
 const mutedText = 'color-mix(in srgb, var(--text-color) 60%, transparent)';
 const faintText = 'color-mix(in srgb, var(--text-color) 40%, transparent)';
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
 
 function countCharDelta(before: string, after: string): number {
   return after.length - before.length;
