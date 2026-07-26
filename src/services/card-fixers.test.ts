@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { autoFixEntries } from './card-fixers';
+import { autoFixEntries, fixLorebookBlueGreenLights } from './card-fixers';
 import { createEmptyLorebookEntry } from '../constants/defaults';
 import type { LorebookEntry } from '../constants/defaults';
+import fs from 'fs';
+import path from 'path';
 
 function makeEntry(overrides: Partial<LorebookEntry> = {}): LorebookEntry {
   return {
@@ -91,5 +93,96 @@ describe('autoFixEntries', () => {
     ];
     const result = autoFixEntries(entries);
     expect(result.fixes.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('fixLorebookBlueGreenLights - 二十一人会.json 实测', () => {
+  // 读取参考卡 JSON，提取世界书条目
+  const jsonPath = path.resolve(process.cwd(), '参考', '二十一人会.json');
+  const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf-8')) as Record<string, unknown>;
+  const rawEntries = ((raw.data as Record<string, unknown>)?.character_book as Record<string, unknown>)?.entries as unknown[];
+
+  // 转换为 LorebookEntry 格式
+  const entries: LorebookEntry[] = (rawEntries || []).map((e, i) => {
+    const entry = e as Record<string, unknown>;
+    return {
+      ...createEmptyLorebookEntry(),
+      id: String(entry.id ?? i),
+      keys: (entry.keys as string[]) || [],
+      secondary_keys: (entry.secondary_keys as string[]) || [],
+      content: (entry.content as string) || '',
+      name: (entry.name as string) || (entry.comment as string) || `Entry ${i}`,
+      comment: (entry.comment as string) || (entry.name as string) || '',
+      enabled: entry.enabled !== false,
+      constant: entry.constant === true,
+      selective: entry.selective === true,
+      insertion_order: (entry.insertion_order as number) ?? i,
+      position: (entry.position as LorebookEntry['position']) ?? 'after_char',
+      priority: (entry.priority as number) ?? 0,
+      case_sensitive: entry.case_sensitive === true,
+      prevent_recursion: entry.prevent_recursion !== false,
+    };
+  });
+
+  it('成功加载参考卡世界书条目', () => {
+    console.log(`\n参考卡共 ${entries.length} 条世界书条目`);
+    expect(entries.length).toBeGreaterThan(0);
+  });
+
+  it('打印修复前的蓝绿灯状态', () => {
+    console.log('\n========== 修复前 ==========');
+    for (const e of entries) {
+      const light = e.constant ? '蓝灯' : '绿灯';
+      const keysStr = e.keys.length > 0 ? e.keys.join(', ') : '(空)';
+      const selStr = e.selective ? 'selective=true' : 'selective=false';
+      const secStr = (e.secondary_keys?.length ?? 0) > 0 ? `secondary=[${e.secondary_keys.join(',')}]` : 'secondary=(空)';
+      const enStr = e.enabled ? '启用' : '禁用';
+      console.log(`  [${light}] ${enStr} | ${selStr} ${secStr} | keys: ${keysStr} | ${e.name}`);
+    }
+  });
+
+  it('执行蓝绿灯修复并对比变化', () => {
+    const fixed = fixLorebookBlueGreenLights(entries);
+
+    console.log('\n========== 修复后 ==========');
+    const changes: string[] = [];
+    for (let i = 0; i < entries.length; i++) {
+      const before = entries[i];
+      const after = fixed[i];
+      const light = after.constant ? '蓝灯' : '绿灯';
+      const keysStr = after.keys.length > 0 ? after.keys.join(', ') : '(空)';
+      const selStr = after.selective ? 'selective=true' : 'selective=false';
+      const enStr = after.enabled ? '启用' : '禁用';
+      console.log(`  [${light}] ${enStr} | ${selStr} | keys: ${keysStr} | ${after.name}`);
+
+      // 检测变化
+      if (before.selective !== after.selective) {
+        changes.push(`  ${before.name}: selective ${before.selective} -> ${after.selective}`);
+      }
+      if (before.keys.length !== after.keys.length ||
+          before.keys.join(',') !== after.keys.join(',')) {
+        changes.push(`  ${before.name}: keys [${before.keys.join(',')}] -> [${after.keys.join(',')}]`);
+      }
+    }
+
+    console.log('\n========== 变更项 ==========');
+    if (changes.length === 0) {
+      console.log('  无变更（参考卡蓝绿灯设置已无问题）');
+    } else {
+      for (const c of changes) console.log(c);
+    }
+
+    // 参考卡中所有蓝灯条目的 selective=true 且 secondary_keys 为空，应被移除
+    const blueLightSelectiveBefore = entries.filter(e => e.constant && e.selective);
+    const blueLightSelectiveAfter = fixed.filter(e => e.constant && e.selective);
+    expect(blueLightSelectiveAfter.length).toBeLessThan(blueLightSelectiveBefore.length);
+
+    // 修复后不应有任何 selective=true 且 secondary_keys 为空的条目
+    const badSelective = fixed.filter(e => e.selective && (!e.secondary_keys || e.secondary_keys.length === 0));
+    expect(badSelective).toHaveLength(0);
+
+    // 修复后不应有任何绿灯启用条目 keys 为空（除非条目名为空）
+    const badGreen = fixed.filter(e => !e.constant && e.enabled && (!e.keys || e.keys.length === 0));
+    expect(badGreen).toHaveLength(0);
   });
 });
