@@ -177,7 +177,7 @@ describe('analysisToLorebookEntries', () => {
       function render(getvarReturn: unknown): string {
         const getvar = () => getvarReturn;
         const getWorldInfo = (_book: string, comment: string) => `[[${comment}]]`;
-        // eslint-disable-next-line no-new-func
+         
         const fn = new Function('getvar', 'getWorldInfo', `let output = ''; ${ejsToJs(dispatcher.content)}; return output;`);
         return fn(getvar, getWorldInfo);
       }
@@ -258,7 +258,7 @@ describe('analysisToLorebookEntries', () => {
 
       function render(getvarReturn: unknown): string {
         const getvar = () => getvarReturn;
-        // eslint-disable-next-line no-new-func
+         
         const fn = new Function('getvar', `let output = ''; ${ejsToJs(eggEntry.content)}; return output;`);
         return fn(getvar);
       }
@@ -304,7 +304,7 @@ describe('analysisToLorebookEntries', () => {
     function renderEntry(getvarReturn: unknown, content: string): string {
       const calls: string[] = [];
       const getvar = (path: string) => { calls.push(path); return getvarReturn; };
-      // eslint-disable-next-line no-new-func
+       
       const fn = new Function('getvar', `let output = ''; ${ejsToJs(content)}; return output;`);
       return fn(getvar) + '||' + calls.join(',');
     }

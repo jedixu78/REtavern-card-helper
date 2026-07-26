@@ -136,7 +136,7 @@ describe('Staged Lorebook Builder - 调度条目兼容性', () => {
     function render(getvarReturn: unknown): string {
       const getvar = () => getvarReturn;
       const getWorldInfo = (_book: string, comment: string) => `[[${comment}]]`;
-      // eslint-disable-next-line no-new-func
+       
       const fn = new Function('getvar', 'getWorldInfo', `let output = ''; ${ejsToJs(content)}; return output;`);
       return fn(getvar, getWorldInfo);
     }
@@ -241,7 +241,7 @@ describe('Staged Lorebook Builder - 调度条目兼容性', () => {
     function render(getvarReturn: unknown): string {
       const getvar = () => getvarReturn;
       const getWorldInfo = (_book: string, comment: string) => `[[${comment}]]`;
-      // eslint-disable-next-line no-new-func
+       
       const fn = new Function('getvar', 'getWorldInfo', `let output = ''; ${ejsToJs(content)}; return output;`);
       return fn(getvar, getWorldInfo);
     }
@@ -309,7 +309,7 @@ describe('Staged Lorebook Builder — H7 EJS name escaping', () => {
     // Mock getWorldInfo to return the arguments so we can verify they were
     // parsed correctly (i.e. the original unescaped strings reached the call).
     const getWorldInfo = (book: string, comment: string) => `[[${book}|${comment}]]`;
-    // eslint-disable-next-line no-new-func
+     
     const fn = new Function('getvar', 'getWorldInfo', `let output = ''; ${ejsToJs(content)}; return output;`);
     return fn(getvar, getWorldInfo);
   }
@@ -442,7 +442,7 @@ describe('Staged Lorebook Builder — H9 EJS axisPath escaping', () => {
       return getvarReturn;
     };
     const getWorldInfo = (_book: string, comment: string) => `[[${comment}]]`;
-    // eslint-disable-next-line no-new-func
+     
     const fn = new Function('getvar', 'getWorldInfo', `let output = ''; ${ejsToJs(content)}; return output;`);
     const out = fn(getvar, getWorldInfo);
     return out + '||' + calls.join(',');
@@ -564,7 +564,7 @@ describe('Staged Lorebook Builder — H12 autoCondition backslash+quote injectio
     const calls: string[] = [];
     const getvar = (path: string) => { calls.push(path); return getvarReturn; };
     const getWorldInfo = (_book: string, comment: string) => `[[${comment}]]`;
-    // eslint-disable-next-line no-new-func
+     
     const fn = new Function('getvar', 'getWorldInfo', `let output = ''; ${ejsToJs(content)}; return output;`);
     return fn(getvar, getWorldInfo) + '||' + calls.join(',');
   }
@@ -691,7 +691,7 @@ describe('Staged Lorebook Builder — 新增非恋爱模板的排序与调度', 
   function renderDispatcher(getvarReturn: unknown, content: string): string {
     const getvar = () => getvarReturn;
     const getWorldInfo = (_book: string, comment: string) => `[[${comment}]]`;
-    // eslint-disable-next-line no-new-func
+     
     const fn = new Function('getvar', 'getWorldInfo', `let output = ''; ${ejsToJs(content)}; return output;`);
     return fn(getvar, getWorldInfo);
   }

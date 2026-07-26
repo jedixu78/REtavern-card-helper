@@ -283,7 +283,7 @@ describe('workshopEntriesToLorebookEntries', () => {
 
     function render(getvarReturn: unknown): string {
       const getvar = () => getvarReturn;
-      // eslint-disable-next-line no-new-func
+       
       const fn = new Function('getvar', `let output = ''; ${ejsToJs(ejs)}; return output;`);
       return fn(getvar);
     }
