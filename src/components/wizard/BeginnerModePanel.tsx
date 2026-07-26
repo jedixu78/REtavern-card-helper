@@ -23,7 +23,7 @@ import {
   type TemplateSectionBlueprint,
 } from '../../constants/beginner-templates';
 import { callAIWithPromptStreaming } from '../../services/ai-service';
-import { parseAIJson, stripMarkdownFences } from '../../constants/prompts';
+import { parseAIJson, stripMarkdownFences } from '../../services/ai-json';
 
 // ════════════════════════════════════════════════════════════════════════════
 // 类型

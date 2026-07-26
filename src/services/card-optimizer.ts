@@ -10,7 +10,7 @@
  *   - Returns pure JSON (no code fences).
  */
 import type { WizardDraft, LorebookEntry, MvuSchemaSection } from '../constants/defaults';
-import { parseAIJson } from '../constants/prompts';
+import { parseAIJson } from './ai-json';
 import { findStagedLorebookEntryIndices, isProtectedLorebookEntry, editableLorebookEntries } from './card-exporter';
 
 export type OptimizeFieldKey =

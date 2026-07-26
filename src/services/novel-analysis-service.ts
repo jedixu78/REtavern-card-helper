@@ -1,5 +1,5 @@
 import { callAIWithPrompt, callAIWithPromptStreaming, type StreamCallback } from './ai-service';
-import { parseAIJson } from '../constants/prompts';
+import { parseAIJson } from './ai-json';
 import { createEmptyLorebookEntry } from '../constants/defaults';
 import type { LorebookEntry } from '../constants/defaults';
 import type { VariableBlueprint } from '../components/novel-workshop/types';

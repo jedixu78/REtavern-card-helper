@@ -10,7 +10,7 @@
  */
 
 import { callAIWithPromptStreaming } from './ai-service';
-import { parseAIJson } from '../constants/prompts';
+import { parseAIJson } from './ai-json';
 import type { StreamCallback } from './ai-service';
 import type {
   NovelPackage,

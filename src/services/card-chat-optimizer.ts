@@ -7,7 +7,7 @@
 
 import type { WizardDraft } from '../constants/defaults';
 import { generateId, createEmptyLorebookEntry, createEmptyMvuConfig, REGEX_SCRIPT_NAMES } from '../constants/defaults';
-import { parseAIJson } from '../constants/prompts';
+import { parseAIJson } from './ai-json';
 import { editableLorebookEntries } from './card-exporter';
 import { deepClone } from '../utils/deep-clone';
 

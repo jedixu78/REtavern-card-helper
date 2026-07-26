@@ -27,7 +27,7 @@ Always run `npm run typecheck` and `npm test` after changes. The test suite is t
 - `src/pages/` — route pages. `WizardPage.tsx` orchestrates the wizard; each `StepX` is **lazy-loaded** (keeps the wizard's initial chunk small — do not convert these back to eager imports).
 - `src/components/wizard/` — the step components. `src/components/novel-workshop/` — a self-contained "novel → card" feature module.
 - `src/services/` — the core logic (see below). `src/hooks/` — wizard/AI state. `src/db/database.ts` — Dexie schema (`cards`, `chat_sessions`, `ai_settings`).
-- `src/constants/` — `defaults.ts` (types + shared constants), `prompts.ts` (AI prompt templates + `parseAIJson` JSON parser), `theme.ts`.
+- `src/constants/` — `defaults.ts` (types + shared constants), `prompts.ts` (AI prompt templates only), `theme.ts`.
 - `src/utils/` — cross-cutting helpers: `deep-clone.ts` (`deepClone`), `html.ts` (`escapeHtml`).
 
 ## Core services (high-value, well-tested — change carefully)
@@ -38,6 +38,7 @@ Always run `npm run typecheck` and `npm test` after changes. The test suite is t
 - `card-chat-optimizer.ts` — applies AI-proposed patches to a draft / raw card JSON.
 - `png-service.ts` — PNG tEXt chunk read/write for embedding card JSON (`chara` V2, `ccv3` V3).
 - `card-validator.ts`, `quality-checker.ts` — pre-export checks and quality scoring.
+- `ai-json.ts` — parses JSON out of AI replies (`parseAIJson`, `stripMarkdownFences`). Zero deps; keep it that way so callers don't pull in the prompt constants. Note `ai-service.ts` deliberately does **not** use `stripMarkdownFences` — it needs lenient, unpaired fence stripping for truncation detection.
 
 ## Conventions & gotchas
 

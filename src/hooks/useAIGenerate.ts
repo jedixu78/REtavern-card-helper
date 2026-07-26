@@ -29,9 +29,8 @@ import {
   STAGED_ANALYZE_PROMPT,
   STAGE_REROLL_ANNOTATION_PROMPT,
   STAGE_ENTRY_GENERATE_PROMPT,
-  stripMarkdownFences,
-  parseAIJson,
 } from '../constants/prompts';
+import { stripMarkdownFences, parseAIJson } from '../services/ai-json';
 import { type StageDefinition, sortStagesByDirection } from '../services/staged-lorebook-builder';
 import type {
   AIGeneratedCharacter,
