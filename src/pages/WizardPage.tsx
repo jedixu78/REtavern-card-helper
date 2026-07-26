@@ -5,21 +5,25 @@
  * Architecture: Characters are the source of truth. When generated/edited,
  * their content is auto-injected as world book entries for efficient token usage.
  */
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, lazy, Suspense } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useWizardState } from '../hooks/useWizardState';
 import { useAIGenerate } from '../hooks/useAIGenerate';
 import { useToast } from '../components/shared/Toast';
 import { Button } from '../components/shared/Button';
 import { WizardShell } from '../components/wizard/WizardShell';
-import { StepCardName } from '../components/wizard/StepCardName';
-import { StepCharacters } from '../components/wizard/StepCharacters';
-import { StepWorldBook } from '../components/wizard/StepWorldBook';
-import { StepFirstMessage } from '../components/wizard/StepFirstMessage';
-import { StepMvuVariables } from '../components/wizard/StepMvuVariables';
-import { StepStagedMode } from '../components/wizard/StepStagedMode';
-import { StepLiveStreamChat } from '../components/wizard/StepLiveStreamChat';
-import { StepPolishExport } from '../components/wizard/StepPolishExport';
+
+// Each wizard step is a heavy component (some 600-900+ lines) but only one is
+// mounted at a time. Lazy-load them so the initial WizardPage chunk stays small;
+// the step for the current view is fetched on demand and cached thereafter.
+const StepCardName = lazy(() => import('../components/wizard/StepCardName').then((m) => ({ default: m.StepCardName })));
+const StepCharacters = lazy(() => import('../components/wizard/StepCharacters').then((m) => ({ default: m.StepCharacters })));
+const StepWorldBook = lazy(() => import('../components/wizard/StepWorldBook').then((m) => ({ default: m.StepWorldBook })));
+const StepFirstMessage = lazy(() => import('../components/wizard/StepFirstMessage').then((m) => ({ default: m.StepFirstMessage })));
+const StepMvuVariables = lazy(() => import('../components/wizard/StepMvuVariables').then((m) => ({ default: m.StepMvuVariables })));
+const StepStagedMode = lazy(() => import('../components/wizard/StepStagedMode').then((m) => ({ default: m.StepStagedMode })));
+const StepLiveStreamChat = lazy(() => import('../components/wizard/StepLiveStreamChat').then((m) => ({ default: m.StepLiveStreamChat })));
+const StepPolishExport = lazy(() => import('../components/wizard/StepPolishExport').then((m) => ({ default: m.StepPolishExport })));
 import { generateId, createEmptyDraft, createEmptyLorebookEntry, createEmptyMvuConfig, MVU_LOREBOOK_ENTRY_NAMES } from '../constants/defaults';
 import type { LorebookEntry, WizardCharacter, WizardDraft } from '../constants/defaults';
 import { consumeAnalysisLorebookImport } from '../services/novel-analysis-service';
@@ -943,7 +947,15 @@ ${e.content || ''}`)
         saving={saving}
         extraActions={step3ExtraActions}
       >
-        {renderStep()}
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center py-20">
+              <div className="animate-spin w-8 h-8 border-3 border-[var(--color-primary)] border-t-transparent rounded-full" />
+            </div>
+          }
+        >
+          {renderStep()}
+        </Suspense>
       </WizardShell>
     </div>
   );
