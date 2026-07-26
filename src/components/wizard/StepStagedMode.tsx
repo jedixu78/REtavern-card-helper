@@ -49,6 +49,7 @@ import {
   generateStatusBarHtml,
 } from '../../services/status-bar-templates';
 import { MultiCharTemplateModal } from './MultiCharTemplateModal';
+import { StageDispatchSimulator } from './StageDispatchSimulator';
 
 interface StepStagedModeProps {
   stagedMode: StagedModeConfig;
@@ -603,6 +604,7 @@ export function StepStagedMode({
                       rows={2}
                       className="mb-2 text-[11px]"
                     />
+                    <StageDispatchSimulator character={character} />
                     <div className="space-y-2">
                       {character.stages.map((stage, si) => {
                     const key = `${ci}-${si}`;
