@@ -24,7 +24,8 @@
 import { generateId, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt, REGEX_SCRIPT_NAMES } from '../constants/defaults';
 import type { WizardDraft, LorebookEntry, LorebookPosition, MvuConfig, EjsEntryConfig, LiveStreamChatConfig } from '../constants/defaults';
 import { buildMvuScriptBundle } from './mvu-builder';
-import { migrateStagedDispatcherContent, parseDispatcherContent, escapeEjsSingleQuoted } from './staged-lorebook-builder';
+import { migrateStagedDispatcherContent, escapeEjsSingleQuoted } from './staged-lorebook-builder';
+import { findStagedLorebookEntryIndices } from './lorebook-predicates';
 import { fixLorebookBlueGreenLights } from './card-fixers';
 
 /**
@@ -184,53 +185,6 @@ function appendPlaceholders(draft: WizardDraft, base: string): string {
  *
  * 状态栏渲染通过 regex_scripts 实现，不是世界书条目。
  */
-
-/**
- * 检测哪些世界书条目属于分阶段世界书系统。
- * 返回需要过滤掉的条目索引集合（MVU 未启用时不应导出）。
- */
-export function findStagedLorebookEntryIndices(entries: LorebookEntry[]): Set<number> {
-  const indices = new Set<number>();
-  const childComments = new Set<string>();
-
-  entries.forEach((entry, idx) => {
-    const parsed = parseDispatcherContent(entry.content || '');
-    if (parsed) {
-      indices.add(idx);
-      parsed.childComments.forEach((c) => childComments.add(c));
-    }
-  });
-
-  entries.forEach((entry, idx) => {
-    if (indices.has(idx)) return;
-    const comment = entry.comment || '';
-    const name = entry.name || '';
-    if (childComments.has(comment) || childComments.has(name)) {
-      indices.add(idx);
-    }
-  });
-
-  return indices;
-}
-
-export function isProtectedLorebookEntry(entry: LorebookEntry, idx: number, stagedIndices: Set<number>): boolean {
-  const name = (entry.name || '').trim();
-  const comment = (entry.comment || '').trim();
-  return MVU_LOREBOOK_ENTRY_NAMES.includes(name) || MVU_LOREBOOK_ENTRY_NAMES.includes(comment) || stagedIndices.has(idx);
-}
-
-/** Returns the editable (non-protected) lorebook entries, accounting for staged mode. */
-export function editableLorebookEntries(draft: WizardDraft): LorebookEntry[] {
-  let stagedIndices = new Set<number>();
-  if (draft.stagedMode?.enabled) {
-    try {
-      stagedIndices = findStagedLorebookEntryIndices(draft.lorebookEntries || []);
-    } catch {
-      stagedIndices = new Set();
-    }
-  }
-  return (draft.lorebookEntries || []).filter((entry, idx) => !isProtectedLorebookEntry(entry, idx, stagedIndices));
-}
 
 function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<string, unknown> {
   // 直播间评论面板独立于 MVU，纯正则驱动：只要任一启用就需要构建扩展

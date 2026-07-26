@@ -15,7 +15,7 @@ import { useAIGenerate } from '../../hooks/useAIGenerate';
 import { themeAlpha } from '../../constants/theme';
 import { createEmptyLorebookEntry, MVU_LOREBOOK_ENTRY_NAMES } from '../../constants/defaults';
 import type { LorebookEntry, LorebookPosition, AIOrganizeSuggestion, MvuConfig, WorldAnchor } from '../../constants/defaults';
-import { findStagedLorebookEntryIndices } from '../../services/card-exporter';
+import { findStagedLorebookEntryIndices } from '../../services/lorebook-predicates';
 
 const POSITION_ORDER: Record<LorebookPosition, number> = {
   before_char: 0,

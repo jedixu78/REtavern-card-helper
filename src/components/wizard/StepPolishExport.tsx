@@ -15,7 +15,8 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Button } from '../shared/Button';
 import { useToast } from '../shared/Toast';
-import { exportAsJson, exportAsPng, assembleCard, findStagedLorebookEntryIndices, isProtectedLorebookEntry } from '../../services/card-exporter';
+import { exportAsJson, exportAsPng, assembleCard } from '../../services/card-exporter';
+import { findStagedLorebookEntryIndices, isProtectedLorebookEntry } from '../../services/lorebook-predicates';
 import { validateCard } from '../../services/card-validator';
 import { validateMvuConsistency } from '../../services/mvu-builder';
 import { autoFixEntries } from '../../services/card-fixers';

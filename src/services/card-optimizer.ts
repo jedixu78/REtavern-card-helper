@@ -11,7 +11,7 @@
  */
 import type { WizardDraft, LorebookEntry, MvuSchemaSection } from '../constants/defaults';
 import { parseAIJson } from './ai-json';
-import { findStagedLorebookEntryIndices, isProtectedLorebookEntry, editableLorebookEntries } from './card-exporter';
+import { findStagedLorebookEntryIndices, isProtectedLorebookEntry, editableLorebookEntries } from './lorebook-predicates';
 
 export type OptimizeFieldKey =
   | 'cardName'

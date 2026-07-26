@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { assembleCard, cardToDraft, findStagedLorebookEntryIndices } from './card-exporter';
+import { assembleCard, cardToDraft } from './card-exporter';
+import { findStagedLorebookEntryIndices } from './lorebook-predicates';
 import { createEmptyDraft, createEmptyLorebookEntry, createEmptyCharacter } from '../constants/defaults';
 import type { WizardDraft, LorebookEntry } from '../constants/defaults';
 import { generateLiveChatHtml } from './live-chat-templates';

@@ -10,7 +10,8 @@
  */
 import type { WizardDraft } from '../constants/defaults';
 import { validateCard } from './card-validator';
-import { assembleCard, findStagedLorebookEntryIndices, isProtectedLorebookEntry } from './card-exporter';
+import { assembleCard } from './card-exporter';
+import { findStagedLorebookEntryIndices, isProtectedLorebookEntry } from './lorebook-predicates';
 
 /** 每次 runQualityCheck 调用期间的 assembleCard 缓存，避免重复计算 */
 let _cachedCard: Record<string, unknown> | null = null;

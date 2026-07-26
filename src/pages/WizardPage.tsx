@@ -28,7 +28,7 @@ import { generateId, createEmptyDraft, createEmptyLorebookEntry, createEmptyMvuC
 import type { LorebookEntry, WizardCharacter, WizardDraft } from '../constants/defaults';
 import { consumeAnalysisLorebookImport } from '../services/novel-analysis-service';
 import { consumeWorkshopLorebookImport, mergeVariableBlueprintsIntoMvu } from '../services/novel-workshop-bridge';
-import { findStagedLorebookEntryIndices } from '../services/card-exporter';
+import { findStagedLorebookEntryIndices } from '../services/lorebook-predicates';
 import { escapeEjsDoubleQuoted } from '../services/staged-lorebook-builder';
 import { useTranslation } from '../i18n/I18nContext';
 import { logger } from '../services/logger';
