@@ -140,7 +140,11 @@ export function MultiCharTemplateModal({
     if (isOpen && template && template.categoryId !== selectedCategoryId) {
       setSelectedCategoryId(template.categoryId);
     }
-  }, [isOpen]); // 故意只依赖 isOpen，避免切换大类时反向覆盖
+    // 故意只依赖 isOpen：仅在模态框打开时同步一次大类。若把 template /
+    // selectedCategoryId 也加进依赖，切换到「没有模板的大类」时会被立刻反向覆盖，
+    // 用户点不动分类标签。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   /** 构造已有世界书上下文（comment + content 截断） */
   const existingWorldbookContext = (() => {

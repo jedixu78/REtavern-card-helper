@@ -3,7 +3,7 @@
  * Supports AI generation with real-time streaming progress, word count control,
  * custom writing requirements, and empty response detection with auto-retry.
  */
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { TextArea } from '../shared/TextArea';
 import { Button } from '../shared/Button';
 import { AIProgressPanel, type AIProgressStatus } from '../shared/AIProgressPanel';
@@ -64,7 +64,7 @@ export function StepFirstMessage({
     if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
   }, []);
 
-  const greetings = [firstMessage, ...alternateGreetings];
+  const greetings = useMemo(() => [firstMessage, ...alternateGreetings], [firstMessage, alternateGreetings]);
 
   const getCurrentText = useCallback(() => {
     return greetings[activeIndex] ?? '';

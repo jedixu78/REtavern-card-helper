@@ -52,6 +52,11 @@ interface ConsistencyIssue {
   fix?: MvuConsistencyIssue['fix'];
 }
 
+// 模块级常量：内容固定且不会被修改，标识稳定，因此无需进入任何 hook 依赖数组。
+const VALID_OPTIMIZE_FIELDS: OptimizeFieldKey[] = [
+  'cardName', 'tags', 'firstMessage', 'lorebookEntries', 'mvu.statusBarHtml', 'mvu.schemaSections',
+];
+
 export function StepPolishExport({ draft, cardName, characterDescriptions, worldbookContext, pngBuffer, onPngFileSelect, onFixEntries, onUpdateDraft, onJumpToStep }: StepPolishExportProps) {
   const { addToast } = useToast();
   const { generateText } = useAIGenerate();
@@ -91,10 +96,6 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
     };
   }, [pngBuffer]);
 
-  const VALID_OPTIMIZE_FIELDS: OptimizeFieldKey[] = [
-    'cardName', 'tags', 'firstMessage', 'lorebookEntries', 'mvu.statusBarHtml', 'mvu.schemaSections',
-  ];
-
   const handleOpenOptimize = useCallback((fields: string[]) => {
     const validSet = new Set(VALID_OPTIMIZE_FIELDS as string[]);
     const valid = (fields || []).filter((f): f is OptimizeFieldKey => Boolean(f) && validSet.has(f));
@@ -117,7 +118,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
     const ejsEntryCount = draft.mvu?.ejsConfigs?.length || 0;
 
     return { entryCount, enabledCount, constantCount, totalContentChars, estimatedTokens, mvuVarCount, ejsEntryCount };
-  }, [draft]);
+  }, [draft, characterDescriptions.length]);
 
   // ── Validation ───────────────────────────────────────────────────────────
   const runValidation = useCallback(() => {
@@ -227,7 +228,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
     } else {
       addToast('error', `校验完成：${allIssues.filter(i => i.type === 'error').length} 个错误，${allIssues.filter(i => i.type === 'warning').length} 个警告`);
     }
-  }, [draft, stats, addToast]);
+  }, [draft, addToast]);
 
   // ── Auto-fix ─────────────────────────────────────────────────────────────
   const handleAutoFix = useCallback(() => {

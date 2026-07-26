@@ -208,7 +208,7 @@ export function DialogueCreator() {
       setStreamingText('');
       setIsNewMessage(false);
     }
-  }, [inputValue, isStreaming, messages, currentChatId, saveChat, addToast]);
+  }, [inputValue, isStreaming, messages, currentChatId, saveChat, addToast, systemPrompt, t]);
 
   // ── Clear all chats ───────────────────────────────────────────────────────
   const handleClearAll = useCallback(async () => {
@@ -276,7 +276,7 @@ export function DialogueCreator() {
       setStreamingText('');
       setIsNewMessage(false);
     }
-  }, [isStreaming, messages, currentChatId, saveChat, addToast]);
+  }, [isStreaming, messages, currentChatId, saveChat, addToast, systemPrompt, t]);
 
   const quickPrompts = [
     t('dialogue.quickPrompt1'),

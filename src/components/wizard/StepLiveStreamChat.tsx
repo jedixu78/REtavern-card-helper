@@ -38,7 +38,7 @@ export function StepLiveStreamChat({ config, onChange }: StepLiveStreamChatProps
   const themeId = config.themeId || 'terminal';
   const title = config.title || '直播间';
   const maxVisible = config.maxVisible ?? 10;
-  const initialComments = config.initialComments ?? [];
+  const initialComments = useMemo(() => config.initialComments ?? [], [config.initialComments]);
 
   // 根据 options 生成 HTML，并写回 config.html
   const regenerateHtml = (opts: Partial<LiveStreamChatConfig>) => {
@@ -105,7 +105,7 @@ export function StepLiveStreamChat({ config, onChange }: StepLiveStreamChatProps
     const html = localPreviewHtml || config.html;
     if (!html.trim()) return '';
     return html.replace(/^```html\n/, '').replace(/\n```$/, '');
-  }, [localPreviewHtml, config.html, previewKey]);
+  }, [localPreviewHtml, config.html]);
 
   return (
     <div className="space-y-4">

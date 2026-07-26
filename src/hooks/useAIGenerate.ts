@@ -581,20 +581,20 @@ export function useAIGenerate() {
       userPrompt: string,
     ): Promise<string> => {
       return callAIWithPrompt(systemPrompt, userPrompt, { temperature: 0.7, presetMode: 'force' });
-    }, [lang]),
+    }, []),
     generateTextWithoutPreset: useCallback(async (
       systemPrompt: string,
       userPrompt: string,
     ): Promise<string> => {
       return callAIWithPrompt(systemPrompt, userPrompt, { temperature: 0.7, presetMode: 'none' });
-    }, [lang]),
+    }, []),
     generateTextWithoutPresetStreaming: useCallback(async (
       systemPrompt: string,
       userPrompt: string,
       onChunk: StreamCallback,
     ): Promise<string> => {
       return callAIWithPromptStreaming(systemPrompt, userPrompt, onChunk, { temperature: 0.7, presetMode: 'none', max_tokens: 12000 });
-    }, [lang]),
+    }, []),
     /**
      * Step 1 of multi-char template: AI reads worldbook and detects characters.
      * Returns list of { name, comment, summary, suitable }.
