@@ -245,6 +245,7 @@ export const translations = {
       draftLoaded: '草稿已加载',
       draftLoadFailed: '草稿加载失败',
       loadDraftOverwriteConfirm: '打开这份草稿会替换「创建卡片」里正在进行的未保存内容。如需保留当前内容，请先回到创建页点「保存草稿」存入草稿箱。确定继续打开吗？',
+      removeCharacterWithEntriesConfirm: '删除该角色会同时删除其 {{count}} 条「角色设定」世界书条目（否则会留下持续占用 token 的孤儿条目）。确定删除吗？',
       draftDeleted: '草稿已删除',
       draftDeleteFailed: '草稿删除失败',
       changeCover: '更换封面',
@@ -286,6 +287,11 @@ export const translations = {
       generateFailed: '生成「{{name}}」失败：{{message}}',
       batchGenerateInProgress: '生成中 {{current}}/{{total}}...',
       batchGenerateAllCharacters: 'AI 生成全部角色',
+      batchGenerateStopButton: '停止生成 ({{current}}/{{total}})',
+      stepNavDisabledDuringBatch: '批量生成进行中，暂不能切换步骤（可先点「停止生成」）',
+      generateCancelled: '已停止生成',
+      batchGenerateOverwriteConfirm: '批量生成会覆盖 {{count}} 个角色的现有描述（版本历史仅本次会话内有效）。确定继续吗？',
+      batchGenerateStopped: '已停止批量生成，本次已完成 {{count}} 个角色',
       batchGenerateSkippedEmpty: '「{{name}}」AI 返回了空内容，已跳过',
       batchGenerateSkippedFormat: '「{{name}}」AI 返回格式异常，已跳过',
       batchGenerateFailed: '「{{name}}」生成失败：{{message}}',
@@ -983,6 +989,12 @@ export const translations = {
       eggTrigger: '触发条件：{{value}}',
       eggKeys: '触发关键词：{{keys}}',
       eggStagedHint: '彩蛋内容默认不注入；当对应 `彩蛋.{{id}}` 布尔变量被卡片 updateRules 置为 true 时才会注入。',
+      // NEW: prompt token precheck / analysis JSON re-import
+      tokenPrecheckDegraded: '全文较长，提示词超出当前模型安全上限（约 {{limit}} tokens），已自动压缩抽样至约 {{tokens}} tokens 后继续分析。',
+      tokenPrecheckExceeds: '提示词估算约 {{tokens}} tokens，即使压缩抽样后仍超出当前模型安全上限（约 {{limit}} tokens），分析可能失败或被截断。建议减少文本量或换用长上下文模型。',
+      importAnalysis: '导入分析结果',
+      importAnalysisSuccess: '已导入分析结果：{{count}} 条世界书条目。可继续「导入到世界书」或「用分析启动小说工坊」。',
+      importAnalysisFailed: '导入分析结果失败',
     },
     // Chat page
     chat: {
@@ -1067,6 +1079,13 @@ export const translations = {
       scopeSelected: '只优化已勾选字段，不会修改未选字段',
       scopeProtected: '不会修改 MVU 系统条目、分阶段调度条目和受保护世界书',
       scopeManualApply: 'AI 返回后仅展示对比，必须手动应用才会写入草稿',
+    },
+    // AI card editor chat page
+    cardEditorChat: {
+      losslessBadge: '无损模式',
+      losslessHint: '无损模式：未编辑的字段将原样保留',
+      losslessDisabledBadge: '无损模式已关闭',
+      losslessDivergedHint: '部分修改无法无损应用到原卡（如原卡缺少世界书/正则结构），导出将改用完整重建以保证与界面一致',
     },
   },
 } as const;

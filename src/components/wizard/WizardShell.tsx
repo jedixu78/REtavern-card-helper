@@ -14,6 +14,8 @@ interface WizardShellProps {
   onPrev: () => void;
   onNext: () => void;
   onSave: () => void;
+  /** 步骤圆点点击跳转（向前跳由调用方逐步校验，向后跳直接放行）。 */
+  onStepClick?: (step: number) => void;
   /** 编辑模式下每一步都显示「保存」——编辑模式没有自动保存，这是中途持久化的唯一入口。 */
   alwaysShowSave?: boolean;
   onSaveDraft?: () => void;
@@ -26,7 +28,7 @@ interface WizardShellProps {
   children: React.ReactNode;
 }
 
-export function WizardShell({ currentStep, onPrev, onNext, onSave, alwaysShowSave, onSaveDraft, onClear, onClearStep, stepError, saving, extraActions, hideBottomNav, children }: WizardShellProps) {
+export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, alwaysShowSave, onSaveDraft, onClear, onClearStep, stepError, saving, extraActions, hideBottomNav, children }: WizardShellProps) {
   const { t } = useTranslation();
   const isFirst = currentStep === 1;
   const isLast = currentStep === WIZARD_STEPS.length;
@@ -50,8 +52,14 @@ export function WizardShell({ currentStep, onPrev, onNext, onSave, alwaysShowSav
                 return (
                   <div key={step.id} className="flex items-center shrink-0">
                     <div className="flex flex-col items-center">
-                      <div
+                      <button
+                        type="button"
+                        onClick={onStepClick ? () => onStepClick(step.id) : undefined}
+                        disabled={!onStepClick || isCurrent}
+                        aria-label={t(stepKeys[step.id - 1])}
+                        aria-current={isCurrent ? 'step' : undefined}
                         className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-semibold transition-all duration-300
+                          ${onStepClick && !isCurrent ? 'cursor-pointer hover:scale-110 hover:shadow-md' : ''}
                           ${isCurrent
                             ? 'bg-gradient-primary text-inverse shadow-lg shadow-primary-glow scale-110'
                             : isCompleted
@@ -61,7 +69,7 @@ export function WizardShell({ currentStep, onPrev, onNext, onSave, alwaysShowSav
                         style={!isCurrent && !isCompleted ? { backgroundColor: 'color-mix(in srgb, var(--color-surface-elevated) 60%, transparent)' } : undefined}
                       >
                         {isCompleted ? <Check size={12} strokeWidth={3} /> : step.id}
-                      </div>
+                      </button>
                       <span
                         className={`mt-1 sm:mt-1.5 text-[10px] sm:text-[11px] font-medium whitespace-nowrap transition-colors duration-200 ${isCurrent ? 'text-primary-bright' : ''}`}
                         style={{ color: isCurrent ? undefined : isCompleted ? 'color-mix(in srgb, var(--color-status-success) 70%, transparent)' : 'var(--color-text-muted)' }}

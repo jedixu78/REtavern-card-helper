@@ -27,6 +27,7 @@ const StepPolishExport = lazy(() => import('../components/wizard/StepPolishExpor
 import { generateId, createEmptyDraft, createEmptyLorebookEntry, createEmptyMvuConfig, MVU_LOREBOOK_ENTRY_NAMES } from '../constants/defaults';
 import type { LorebookEntry, WizardCharacter, WizardDraft } from '../constants/defaults';
 import { consumeAnalysisLorebookImport } from '../services/novel-analysis-service';
+import { cancelActiveAIRequests, AIGenerationCancelledError } from '../services/ai-service';
 import { consumeWorkshopLorebookImport, mergeVariableBlueprintsIntoMvu } from '../services/novel-workshop-bridge';
 import { findStagedLorebookEntryIndices } from '../services/lorebook-predicates';
 import { escapeEjsDoubleQuoted } from '../services/staged-lorebook-builder';
@@ -213,6 +214,7 @@ export function WizardPage() {
     updateCharacter,
     goNext,
     goPrev,
+    goToStep,
     setCurrentStep,
     saveCard,
     saveDraftNow,
@@ -225,6 +227,8 @@ export function WizardPage() {
   const [generatingIndex, setGeneratingIndex] = useState<number | null>(null);
   const [modifyingIndex, setModifyingIndex] = useState<number | null>(null);
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
+  // 批量生成的停止标记：点「停止」后置 true，循环在下一轮退出（配合 cancelActiveAIRequests 中止在途请求）
+  const batchCancelRef = useRef(false);
   const [pngBuffer, setPngBuffer] = useState<ArrayBuffer | null>(null);
   const { generateCharacterParsedStreaming, modifyCharacterDescription, polishSelection } = useAIGenerate();
   const { addToast } = useToast();
@@ -378,15 +382,54 @@ ${t('common.content')}:
 ${e.content || ''}`)
     .join('\n\n---\n\n');
 
-  /** Sync character data to world book entries; recomputed whenever draft changes. */
-  const draftWithCharacterEntries = useMemo(() => {
-    const { entries, characters } = syncCharacterEntries(draft.characters, draft.lorebookEntries, t);
-    return { ...draft, lorebookEntries: entries, characters };
-  }, [draft, t]);
-
+  // 函数式更新：基于 setState 队列中的最新 draft 计算，而不是渲染期快照。
+  // 否则批量生成期间点跳步，闭包里的旧快照会整份 spread 覆盖 characters，
+  // 把刚生成完、尚未提交渲染的角色描述静默冲掉（TOCTOU）。
   const injectCharacterEntries = useCallback(() => {
-    updateDraft(draftWithCharacterEntries);
-  }, [draftWithCharacterEntries, updateDraft]);
+    updateDraft((prev) => {
+      const { entries, characters } = syncCharacterEntries(prev.characters, prev.lorebookEntries, t);
+      return { lorebookEntries: entries, characters };
+    });
+  }, [updateDraft, t]);
+
+  /**
+   * 删除角色并联动清理其「角色设定」世界书条目（含 >2000 字分块产生的 (2)/(3) 残留）。
+   * 不清理会留下孤儿蓝灯常驻条目持续吃 token，用户还得自己去世界书里找。
+   * 匹配双通道：entryIds 关联 + 名称前缀（与 syncCharacterEntries 的复用逻辑一致）。
+   */
+  const handleRemoveCharacter = useCallback((index: number) => {
+    const char = draft.characters[index];
+    if (!char) return;
+    const entryIds = new Set(char.entryIds ?? []);
+    // 名称匹配的两道保护（复查确认的误删链路）：
+    // ① 存在另一个同名幸存角色时禁用名称匹配，只按 entryIds 删——
+    //    否则删 A 会连带删掉同名 B 的设定条目；
+    // ② 名称命中必须是「精确条目名」或「分块后缀 (N)」——避免把用户手工创建的
+    //    「X - 角色设定·补充」之类自定义条目扫进来。
+    const charName = char.name?.trim();
+    const otherHasSameName = !!charName && draft.characters.some(
+      (c, i) => i !== index && c.name?.trim() === charName,
+    );
+    const namePrefix = charName && !otherHasSameName
+      ? t('wizard.roleSettingEntryName', { name: char.name })
+      : null;
+    const matchesRoleEntryName = (name: string): boolean => {
+      if (namePrefix === null || !name.startsWith(namePrefix)) return false;
+      const rest = name.slice(namePrefix.length);
+      return rest === '' || /^ \(\d+\)$/.test(rest);
+    };
+    const linked = draft.lorebookEntries.filter(
+      (e) => entryIds.has(e.id) || matchesRoleEntryName(e.name),
+    );
+    if (linked.length > 0) {
+      if (!window.confirm(t('wizard.removeCharacterWithEntriesConfirm', { count: String(linked.length) }))) {
+        return;
+      }
+      const removeIds = new Set(linked.map((e) => e.id));
+      updateDraft({ lorebookEntries: draft.lorebookEntries.filter((e) => !removeIds.has(e.id)) });
+    }
+    removeCharacter(index);
+  }, [draft.characters, draft.lorebookEntries, removeCharacter, updateDraft, t]);
 
   /** Navigate to next step, injecting entries when leaving Step 3 (characters). */
   const handleNext = useCallback(() => {
@@ -396,6 +439,46 @@ ${e.content || ''}`)
     const error = goNext();
     setStepError(error);
   }, [currentStep, injectCharacterEntries, goNext]);
+
+  /**
+   * 步骤条跳转入口：goToStep 向前跳会逐步校验、向后跳直接放行。
+   * 从步骤 ≤3 跨到 >3 时同步角色→世界书条目（幂等，syncCharacterEntries
+   * 按 entryIds/名称复用条目 ID）。注意顺序：先校验导航、成功后才注入——
+   * 否则校验失败也已执行注入副作用。批量生成期间禁用跳步（否则停止按钮
+   * 会离开视野，且并发注入有覆盖风险）。
+   */
+  const handleStepClick = useCallback((step: number) => {
+    if (step === currentStep) return;
+    if (batchGenerating) {
+      addToast('info', t('wizard.stepNavDisabledDuringBatch'));
+      return;
+    }
+    const crossing = currentStep <= 3 && step > 3;
+    const error = goToStep(step);
+    setStepError(error);
+    if (!error && crossing) {
+      injectCharacterEntries();
+    }
+  }, [currentStep, batchGenerating, addToast, injectCharacterEntries, goToStep, t]);
+
+  /**
+   * 页内「前往步骤 X」快捷按钮（骨架↔细节来回翻、导出页回跳修改）：
+   * 保持无条件直达语义，不走逐步校验——改动前它直连 setCurrentStep，
+   * 校验会让新卡流程（尚无命名角色）里「前往细节」必然弹错并被丢到步骤 3。
+   * 跨过步骤 3 时仍需注入角色条目。
+   */
+  const handleQuickJump = useCallback((step: number) => {
+    if (step === currentStep) return;
+    if (batchGenerating) {
+      addToast('info', t('wizard.stepNavDisabledDuringBatch'));
+      return;
+    }
+    if (currentStep <= 3 && step > 3) {
+      injectCharacterEntries();
+    }
+    setCurrentStep(step);
+    setStepError(null);
+  }, [currentStep, batchGenerating, addToast, injectCharacterEntries, setCurrentStep, t]);
 
   const handleSave = async () => {
     const success = await saveCard(draft);
@@ -478,6 +561,9 @@ ${e.content || ''}`)
   const handleGenerateCharacter = async (index: number) => {
     const char = draft.characters[index];
     if (!char?.name?.trim()) return;
+    // 批量生成期间禁止启动并发的单角色生成：cancelActiveAIRequests 是全局全停，
+    // 点「停止批量」会把并发生成一起误杀并弹误导性的失败提示
+    if (batchGenerating) return;
 
     setGeneratingIndex(index);
     try {
@@ -529,6 +615,11 @@ ${e.content || ''}`)
         addToast('error', t('wizard.generateFormatError', { name: char.name }));
       }
     } catch (err: unknown) {
+      // 用户主动停止：中性提示，不弹「生成失败」红错
+      if (err instanceof AIGenerationCancelledError) {
+        addToast('info', t('wizard.generateCancelled'));
+        return;
+      }
       const msg = err instanceof Error ? err.message : t('common.unknownError');
       addToast('error', t('wizard.generateFailed', { name: char.name, message: msg }));
     } finally {
@@ -543,6 +634,15 @@ ${e.content || ''}`)
       .filter(({ char }) => char.name?.trim());
     if (toGenerate.length === 0) return;
 
+    // 批量生成会覆盖已有描述（版本历史只在内存，刷新即失）——有存量描述时先确认
+    const withExisting = toGenerate.filter(({ char }) => char.description?.trim());
+    if (withExisting.length > 0 && !window.confirm(
+      t('wizard.batchGenerateOverwriteConfirm', { count: String(withExisting.length) }),
+    )) {
+      return;
+    }
+
+    batchCancelRef.current = false;
     setBatchGenerating(true);
     setBatchProgress({ current: 0, total: toGenerate.length });
 
@@ -559,8 +659,13 @@ ${e.content || ''}`)
     let successCount = 0;
     let errorCount = 0;
 
+    let cancelled = false;
     try {
       for (let i = 0; i < toGenerate.length; i++) {
+        if (batchCancelRef.current) {
+          cancelled = true;
+          break;
+        }
         const { char, index } = toGenerate[i];
         setBatchProgress({ current: i + 1, total: toGenerate.length });
         setGeneratingIndex(index); // Show loading on individual character editor
@@ -630,6 +735,11 @@ ${e.content || ''}`)
             errorCount++;
           }
         } catch (err: unknown) {
+          // 用户点了停止：不计入失败，直接结束循环
+          if (err instanceof AIGenerationCancelledError || batchCancelRef.current) {
+            cancelled = true;
+            break;
+          }
           errorCount++;
           const msg = err instanceof Error ? err.message : t('common.unknownError');
           console.error(`[批量生成] 角色 ${char.name} 生成失败:`, err);
@@ -652,17 +762,26 @@ ${e.content || ''}`)
     setBatchGenerating(false);
     setBatchProgress({ current: 0, total: 0 });
 
-    if (successCount > 0 && errorCount > 0) {
+    if (cancelled) {
+      addToast('info', t('wizard.batchGenerateStopped', { count: String(successCount) }));
+    } else if (successCount > 0 && errorCount > 0) {
       addToast('success', t('wizard.batchGeneratePartialSuccess', { success: String(successCount), error: String(errorCount) }));
     } else if (successCount > 0) {
       addToast('success', t('wizard.batchGenerateAllSuccess', { count: String(successCount) }));
     }
   };
 
+  /** 停止批量生成：中止在途 AI 请求并让循环在下一轮退出。 */
+  const handleStopBatchGenerate = () => {
+    batchCancelRef.current = true;
+    cancelActiveAIRequests();
+  };
+
   // ── Partial modification of character description ──────────────────
   const handleModifyCharacter = async (index: number, instructions: string, currentDescription: string) => {
     const char = draft.characters[index];
     if (!char?.name?.trim() || !currentDescription?.trim()) return;
+    if (batchGenerating) return; // 见 handleGenerateCharacter 的说明
 
     setModifyingIndex(index);
     try {
@@ -689,6 +808,10 @@ ${e.content || ''}`)
         addToast('success', t('wizard.modifyComplete', { name: char.name }));
       }
     } catch (err: unknown) {
+      if (err instanceof AIGenerationCancelledError) {
+        addToast('info', t('wizard.generateCancelled'));
+        return;
+      }
       const msg = err instanceof Error ? err.message : t('common.unknownError');
       addToast('error', t('wizard.modifyFailed', { name: char.name, message: msg }));
     } finally {
@@ -724,6 +847,10 @@ ${e.content || ''}`)
         addToast('success', t('wizard.polishComplete', { name: char.name }));
       }
     } catch (err: unknown) {
+      if (err instanceof AIGenerationCancelledError) {
+        addToast('info', t('wizard.generateCancelled'));
+        return;
+      }
       const msg = err instanceof Error ? err.message : t('common.unknownError');
       addToast('error', t('wizard.polishFailed', { name: char.name, message: msg }));
     } finally {
@@ -789,7 +916,9 @@ ${e.content || ''}`)
             onBatchCountPersist={(worldbookBatchCount) => updateDraft({ worldbookBatchCount })}
             skeletonModeValue={draft.skeletonModeEnabled ?? true}
             onSkeletonModePersist={(skeletonModeEnabled) => updateDraft({ skeletonModeEnabled })}
-            onJumpToStep={setCurrentStep}
+            worldAnchor={draft.worldAnchor}
+            onWorldAnchorChange={(worldAnchor) => updateDraft({ worldAnchor })}
+            onJumpToStep={handleQuickJump}
           />
         );
       case 3:
@@ -799,7 +928,7 @@ ${e.content || ''}`)
             characters={draft.characters}
             entries={draft.lorebookEntries}
             onAdd={addCharacter}
-            onRemove={removeCharacter}
+            onRemove={handleRemoveCharacter}
             onUpdate={updateCharacter}
             onGenerateCharacter={handleGenerateCharacter}
             onModifyCharacter={handleModifyCharacter}
@@ -838,7 +967,9 @@ ${e.content || ''}`)
             onBatchCountPersist={(worldbookBatchCount) => updateDraft({ worldbookBatchCount })}
             skeletonModeValue={draft.skeletonModeEnabled ?? true}
             onSkeletonModePersist={(skeletonModeEnabled) => updateDraft({ skeletonModeEnabled })}
-            onJumpToStep={setCurrentStep}
+            worldAnchor={draft.worldAnchor}
+            onWorldAnchorChange={(worldAnchor) => updateDraft({ worldAnchor })}
+            onJumpToStep={handleQuickJump}
           />
         );
       case 5:
@@ -908,7 +1039,7 @@ ${e.content || ''}`)
             onPngFileSelect={setPngBuffer}
             onFixEntries={(entries) => updateDraft({ lorebookEntries: entries })}
             onUpdateDraft={updateDraft}
-            onJumpToStep={setCurrentStep}
+            onJumpToStep={handleQuickJump}
           />
         );
       default:
@@ -916,18 +1047,22 @@ ${e.content || ''}`)
     }
   };
 
-  // Build extra actions for step 3 (characters)
+  // Build extra actions for step 3 (characters).
+  // 批量生成进行中按钮变为可点击的「停止」——生成是真金白银的 token，必须可中断。
   const step3ExtraActions = currentStep === 3 && namedCharacterCount > 0 ? (
-    <Button
-      variant="secondary"
-      onClick={handleBatchGenerateCharacters}
-      disabled={isGenerating}
-    >
-      {batchGenerating
-        ? t('wizard.batchGenerateInProgress', { current: String(batchProgress.current), total: String(batchProgress.total) })
-        : t('wizard.batchGenerateAllCharacters')
-      }
-    </Button>
+    batchGenerating ? (
+      <Button variant="secondary" onClick={handleStopBatchGenerate}>
+        ⏹ {t('wizard.batchGenerateStopButton', { current: String(batchProgress.current), total: String(batchProgress.total) })}
+      </Button>
+    ) : (
+      <Button
+        variant="secondary"
+        onClick={handleBatchGenerateCharacters}
+        disabled={isGenerating}
+      >
+        {t('wizard.batchGenerateAllCharacters')}
+      </Button>
+    )
   ) : undefined;
 
   return (
@@ -943,6 +1078,7 @@ ${e.content || ''}`)
         currentStep={currentStep}
         onPrev={goPrev}
         onNext={handleNext}
+        onStepClick={handleStepClick}
         onSave={handleSave}
         alwaysShowSave={isEditMode}
         onSaveDraft={isEditMode ? undefined : saveDraftNow}

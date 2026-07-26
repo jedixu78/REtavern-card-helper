@@ -13,7 +13,7 @@ import { WorldAnchorPanel } from './WorldAnchorPanel';
 import { OrganizePreviewTable } from './OrganizePreviewTable';
 import { useAIGenerate } from '../../hooks/useAIGenerate';
 import { themeAlpha } from '../../constants/theme';
-import { createEmptyLorebookEntry, MVU_LOREBOOK_ENTRY_NAMES } from '../../constants/defaults';
+import { createEmptyLorebookEntry, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt } from '../../constants/defaults';
 import type { LorebookEntry, LorebookPosition, AIOrganizeSuggestion, MvuConfig, WorldAnchor } from '../../constants/defaults';
 import { findStagedLorebookEntryIndices } from '../../services/lorebook-predicates';
 
@@ -251,6 +251,7 @@ export function StepWorldBook({
               return fullText;
             }),
             consistencyRules || undefined,
+            formatWorldAnchorForPrompt(worldAnchor) || undefined,
           );
           allSkeletons = [...allSkeletons, ...skeletons];
           remaining -= batchSize;
@@ -366,6 +367,7 @@ export function StepWorldBook({
           : effectiveCharacterContext,
         undefined,
         entry.expandNsfw,
+        formatWorldAnchorForPrompt(worldAnchor) || undefined,
       );
       updateEntry(index, {
         comment: result.comment,
