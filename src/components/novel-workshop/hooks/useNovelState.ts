@@ -10,8 +10,11 @@ import type {
   EntityCategory,
   EntryStrategy,
   RevealFlag,
+  RevealFlagData,
   EntityIndex,
+  EntityIndexData,
   GeneratedEntry,
+  EntryData,
   VariableBlueprint,
   ImportedFileMeta,
   WorkflowRunState,
@@ -294,10 +297,10 @@ export function useNovelState() {
         next.summary = String(data.summary || '').trim();
         next.stageOrder = stageOptionsForMode(next.gateMode, data.stageOrder as string[] | undefined);
         next.currentStage = next.stageOrder.indexOf(data.currentStage as string) >= 0 ? (data.currentStage as string) : next.stageOrder[0];
-        next.flags = normalizeFlags((data.flags as unknown[]) || [], []);
-        next.entityIndex = normalizeEntityIndex((data.entityIndex as unknown[]) || []);
-        next.generatedEntries = normalizeEntries((data.generatedEntries as unknown[]) || [], next.stageOrder);
-        next.generatedVariables = normalizeVariables((data.generatedVariables as unknown[]) || []);
+        next.flags = normalizeFlags(data.flags, []);
+        next.entityIndex = normalizeEntityIndex(data.entityIndex);
+        next.generatedEntries = normalizeEntries(data.generatedEntries, next.stageOrder);
+        next.generatedVariables = normalizeVariables(data.generatedVariables);
         next.generatedAt = String(data.generatedAt || '').trim();
         return loadRawState(next);
       });
@@ -391,11 +394,39 @@ export function useNovelState() {
 
 // ── Normalization Helpers ──────────────────────────────────────────────────
 
-function normalizeFlags(flags: any[], prevFlags: RevealFlag[]): RevealFlag[] {
+/**
+ * 这几个 normalize* 的输入来自 localStorage 中 novelWorkshop 的 JSON。
+ * 生产者不止本应用的自动持久化，还有外部 AI 数据包——它们读的是
+ * public_summary / entity_id / required_flags 等 snake_case 字段，本应用从不写。
+ * 也就是说元素类型并不归本代码库所有，因此一律按 unknown 收进来，再逐个收窄。
+ */
+type FlagInput = Partial<RevealFlagData> & { key?: string; value?: boolean };
+type EntityInput = Partial<EntityIndexData>;
+type VariableInput = Partial<VariableBlueprint> & { name?: string };
+
+/** 存档损坏时可能不是数组，兜底成空数组，避免 .map 抛错。 */
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/**
+ * 把一个不受信任的 JSON 元素收窄为对象；null / 字符串 / 数字一律当空对象。
+ *
+ * 这一步不只是消除 any：这些 normalize* 是在 setState 的 updater 里调用的
+ * （见 loadFromExtension），React 可能在渲染期执行它，此时抛错不会被外层
+ * try/catch 接住，会直接让组件崩溃。元素若是 null 或原始值，原先的
+ * flag.id / entity.name / {...v} 就会抛 TypeError。
+ */
+function asRecord<T extends object>(value: unknown): T {
+  return (value && typeof value === 'object' ? value : {}) as T;
+}
+
+function normalizeFlags(flags: unknown, prevFlags: RevealFlag[]): RevealFlag[] {
   const prevMap: Record<string, RevealFlag> = {};
   (prevFlags || []).forEach((flag) => { prevMap[flag.id] = flag; });
-  return (flags || []).map((flag: any, index: number) => {
-    const id = stableId('flag', flag.id || flag.key || flag.label, index);
+  return asArray(flags).map((raw, index) => {
+    const flag = asRecord<FlagInput>(raw);
+    const id = stableId('flag', flag.id || flag.key || flag.label || '', index);
     const prev = prevMap[id];
     return {
       id,
@@ -403,14 +434,16 @@ function normalizeFlags(flags: any[], prevFlags: RevealFlag[]): RevealFlag[] {
       description: String(flag.description || flag.desc || '').trim(),
       value: prev ? !!prev.value : (flag.value !== undefined ? !!flag.value : flag.default === true),
     };
-  }).filter((flag: RevealFlag, index: number, list: RevealFlag[]) =>
+  }).filter((flag, index, list) =>
     list.findIndex((item) => item.id === flag.id) === index
   ).slice(0, 16);
 }
 
-function normalizeEntityIndex(entityIndex: any[]): EntityIndex[] {
-  return (entityIndex || []).map((entity: any, index: number) => {
+function normalizeEntityIndex(entityIndex: unknown): EntityIndex[] {
+  return asArray(entityIndex).map((raw, index) => {
+    const entity = asRecord<EntityInput>(raw);
     const name = String(entity.name || '未命名实体').trim();
+    // category 是外部输入，先小写再断言；此处必须用 EntityIndexData 的宽 string 类型
     const category = String(entity.category || 'character').toLowerCase() as EntityCategory;
     return {
       id: stableId('entity', entity.id || name, index),
@@ -419,15 +452,17 @@ function normalizeEntityIndex(entityIndex: any[]): EntityIndex[] {
       aliases: uniqueStrings(entity.aliases || []),
       summary: String(entity.public_summary || entity.summary || '').trim(),
     };
-  }).filter((entity: { id: string; name: string }) => entity.id && entity.name)
-    .filter((entity: { id: string; name: string }, index: number, list: { id: string; name: string }[]) =>
+  }).filter((entity) => entity.id && entity.name)
+    .filter((entity, index, list) =>
       list.findIndex((item) => item.id === entity.id || item.name === entity.name) === index
-    ) as EntityIndex[];
+    );
 }
 
-function normalizeEntries(entries: any[], stageOrder: string[]): GeneratedEntry[] {
-  return (entries || []).map((entry: any, index: number) => {
-    const stage = stageOrder.indexOf(entry.stage) >= 0 ? entry.stage : stageOrder[0];
+function normalizeEntries(entries: unknown, stageOrder: string[]): GeneratedEntry[] {
+  return asArray(entries).map((raw, index) => {
+    const entry = asRecord<EntryData>(raw);
+    // 与原写法等价：stage 为 undefined 时 indexOf 也返回 -1，同样回落到首个阶段
+    const stage = entry.stage && stageOrder.indexOf(entry.stage) >= 0 ? entry.stage : stageOrder[0];
     const name = String(entry.name || entry.title || '未命名条目').trim();
     const category = String(entry.category || 'rule').toLowerCase() as EntityCategory;
     let strategy = String(entry.strategy || '').toLowerCase() as EntryStrategy;
@@ -445,25 +480,28 @@ function normalizeEntries(entries: any[], stageOrder: string[]): GeneratedEntry[
       strategy,
       priority: clampNumber(entry.priority, 100, 1000, 700),
     };
-  }).filter((entry: { name: string; content: string }) => entry.name && entry.content)
-    .filter((entry: { entityId: string; category: string; stage: string; aspect: string; name: string }, index: number, list: { entityId: string; category: string; stage: string; aspect: string; name: string }[]) => {
+  }).filter((entry) => entry.name && entry.content)
+    .filter((entry, index, list) => {
       const key = [entry.entityId, entry.category, entry.stage, entry.aspect || entry.name].join('|');
       return list.findIndex((item) =>
         [item.entityId, item.category, item.stage, item.aspect || item.name].join('|') === key
       ) === index;
-    }) as GeneratedEntry[];
+    });
 }
 
-function normalizeVariables(vars: any[]): VariableBlueprint[] {
+function normalizeVariables(vars: unknown): VariableBlueprint[] {
   const seen = new Set<string>();
-  return (vars || []).map((v: any) => {
-    const copy = { ...(v || {}) };
+  return asArray(vars).map((raw) => {
+    const copy = { ...asRecord<VariableInput>(raw) };
     if (!copy.path) copy.path = copy.name || '';
     return copy;
-  }).filter((v: VariableBlueprint) => {
+  }).filter((v) => {
     const path = String(v.path || '').trim();
     if (!path || seen.has(path)) return false;
     seen.add(path);
     return true;
-  });
+  // 断言是不严谨的：这里只保证了 path 非空，VariableBlueprint 必填的 type /
+  // description 既没校验也没补默认值。保持既有行为不变，但这个洞是真实存在的
+  // ——若要收紧，应改成真正的类型守卫或把返回类型降为 Partial<VariableBlueprint>[]。
+  }) as VariableBlueprint[];
 }
