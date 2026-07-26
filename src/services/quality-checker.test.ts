@@ -152,6 +152,75 @@ describe('runQualityCheck', () => {
   });
 });
 
+describe('runQualityCheck — token 预算维度', () => {
+  it('常驻开销在健康线内时 tokenBudget 检查通过', () => {
+    const draft = makeDraft({
+      lorebookEntries: [
+        { ...createEmptyLorebookEntry(), name: '常驻设定', comment: '常驻设定', content: '简短的常驻设定', constant: true },
+      ],
+    });
+    const check = runQualityCheck(draft).results.find((r) => r.id === 'tokenBudget');
+    expect(check?.applicable).toBe(true);
+    expect(check?.passed).toBe(true);
+    expect(check?.fixHint).toBe('');
+  });
+
+  it('常驻（蓝灯）条目总量超阈值时 tokenBudget 检查失败，并点名最占空间的条目', () => {
+    const draft = makeDraft({
+      lorebookEntries: [
+        { ...createEmptyLorebookEntry(), name: '巨型常驻设定', comment: '巨型常驻设定', content: '设'.repeat(3000), constant: true },
+        { ...createEmptyLorebookEntry(), name: '小常驻设定', comment: '小常驻设定', content: '设'.repeat(20), constant: true },
+      ],
+    });
+    const check = runQualityCheck(draft).results.find((r) => r.id === 'tokenBudget');
+    expect(check?.passed).toBe(false);
+    expect(check?.actual).toContain('token/轮');
+    expect(check?.fixHint).toContain('巨型常驻设定');
+    expect(check?.fixHint).toContain('关键词触发');
+  });
+
+  it('同样体量的内容放在绿灯条目上不会触发 tokenBudget 失败', () => {
+    const draft = makeDraft({
+      lorebookEntries: [
+        {
+          ...createEmptyLorebookEntry(),
+          name: '巨型触发设定',
+          comment: '巨型触发设定',
+          content: '设'.repeat(3000),
+          constant: false,
+          keys: ['关键词'],
+        },
+      ],
+    });
+    const check = runQualityCheck(draft).results.find((r) => r.id === 'tokenBudget');
+    expect(check?.passed).toBe(true);
+  });
+
+  it('tokenBudget 归入 lorebook 类别，不新增质量检查类别', () => {
+    const report = runQualityCheck(makeDraft());
+    const check = report.results.find((r) => r.id === 'tokenBudget');
+    expect(check?.category).toBe('lorebook');
+    const categories = new Set(report.results.map((r) => r.category));
+    expect(categories.has('lorebook')).toBe(true);
+    expect(categories.size).toBeLessThanOrEqual(7);
+  });
+
+  it('token 预算超标只算 suggestion，不会把导出状态卡成 blocked', () => {
+    const draft = makeDraft({
+      cardName: '完整卡片',
+      tags: ['a', 'b', 'c'],
+      firstMessage: '这是一段足够长的开场白，用于通过质量检查。'.repeat(10),
+      characters: [{ id: '1', name: '角色', description: '描述' }],
+      lorebookEntries: [
+        { ...createEmptyLorebookEntry(), name: '巨型常驻', comment: '巨型常驻', content: '设'.repeat(3000), constant: true },
+      ],
+    });
+    const check = runQualityCheck(draft).results.find((r) => r.id === 'tokenBudget');
+    expect(check?.severity).toBe('suggestion');
+    expect(check?.passed).toBe(false);
+  });
+});
+
 describe('scoreColor', () => {
   it('80+ 返回 success', () => {
     expect(scoreColor(80)).toBe('success');

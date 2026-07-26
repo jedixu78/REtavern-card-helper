@@ -12,10 +12,16 @@ import { AIGeneratePanel } from './AIGeneratePanel';
 import { WorldAnchorPanel } from './WorldAnchorPanel';
 import { OrganizePreviewTable } from './OrganizePreviewTable';
 import { useAIGenerate } from '../../hooks/useAIGenerate';
-import { themeAlpha } from '../../constants/theme';
+import { themeAlpha, THEME_TOKENS } from '../../constants/theme';
+import type { StatusColor } from '../../constants/theme';
 import { createEmptyLorebookEntry, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt } from '../../constants/defaults';
 import type { LorebookEntry, LorebookPosition, AIOrganizeSuggestion, MvuConfig, WorldAnchor } from '../../constants/defaults';
 import { findStagedLorebookEntryIndices } from '../../services/lorebook-predicates';
+import {
+  analyzeLorebookTokens,
+  TOKEN_BUDGET_HEALTHY_MAX,
+} from '../../services/token-budget';
+import type { TokenBudgetLevel } from '../../services/token-budget';
 
 const POSITION_ORDER: Record<LorebookPosition, number> = {
   before_char: 0,
@@ -36,6 +42,18 @@ function sortLorebookEntries(entries: LorebookEntry[]): LorebookEntry[] {
     return (a.insertion_order ?? 100) - (b.insertion_order ?? 100);
   });
 }
+
+/** Token 预算分级 → 状态色 / 文案键 */
+const BUDGET_TONE: Record<TokenBudgetLevel, StatusColor> = {
+  healthy: 'success',
+  high: 'warning',
+  danger: 'danger',
+};
+const BUDGET_LEVEL_KEY: Record<TokenBudgetLevel, string> = {
+  healthy: 'worldBook.tokenBudget.levelHealthy',
+  high: 'worldBook.tokenBudget.levelHigh',
+  danger: 'worldBook.tokenBudget.levelDanger',
+};
 
 function getProtectedEntryLabel(entry: LorebookEntry, idx: number, stagedIndices: Set<number>): string | null {
   const name = (entry.name || '').trim();
@@ -186,6 +204,18 @@ export function StepWorldBook({
       return new Set<number>();
     }
   }, [entries]);
+
+  // 逐条 token 明细 + 常驻总量（下标与 entries 一一对应）
+  const tokenBreakdown = useMemo(
+    () => analyzeLorebookTokens(entries, { stagedIndices }),
+    [entries, stagedIndices],
+  );
+  const budgetTone = BUDGET_TONE[tokenBreakdown.constantLevel];
+  const budgetOverThreshold = tokenBreakdown.constantLevel !== 'healthy';
+  const budgetTopOffenders = tokenBreakdown.topConstantEntries
+    .slice(0, 3)
+    .map((e) => `「${e.label}」${e.tokens}`)
+    .join('、');
 
   const setEntryLevel = (id: string, level: EntryExpandLevel) => {
     setExpandLevels(prev => {
@@ -501,7 +531,9 @@ export function StepWorldBook({
     const ejsConfig = mvu?.enabled ? mvu.ejsConfigs.find(c => c.entryId === entry.id) : undefined;
     const isUnexpandedSkeleton = entry.fromSkeleton === true && entry.skeletonExpanded !== true;
     const isExpandedSkeleton = entry.fromSkeleton === true && entry.skeletonExpanded === true;
-    const showBadges = !!(protectedLabel || ejsConfig || isUnexpandedSkeleton || isExpandedSkeleton);
+    const tokenInfo = tokenBreakdown.entries[index];
+    const showTokens = !!tokenInfo && tokenInfo.tokens > 0;
+    const showBadges = !!(protectedLabel || ejsConfig || isUnexpandedSkeleton || isExpandedSkeleton) || showTokens;
     return (
       <div key={entry.id} className="relative">
         {showBadges && (
@@ -529,6 +561,24 @@ export function StepWorldBook({
             )}
             {ejsConfig && (
               <span className="rounded border px-1.5 py-0.5" style={{ borderColor: themeAlpha('info', 30), backgroundColor: themeAlpha('info', 10), color: C.info }}>EJS · {ejsConfig.complexity}</span>
+            )}
+            {showTokens && tokenInfo && (
+              <span
+                className="rounded border px-1.5 py-0.5 tabular-nums"
+                style={{ borderColor: borderA(60), backgroundColor: surfaceA(45), color: C.secondary }}
+                title={t('worldBook.tokenBudget.entryTokensTooltip')}
+              >
+                {t('worldBook.tokenBudget.entryTokens', { tokens: String(tokenInfo.tokens) })}
+              </span>
+            )}
+            {showTokens && tokenInfo?.alwaysOn && (
+              <span
+                className="rounded border px-1.5 py-0.5"
+                style={{ borderColor: themeAlpha('warning', 35), backgroundColor: themeAlpha('warning', 10), color: C.warning }}
+                title={t('worldBook.tokenBudget.perTurnTooltip')}
+              >
+                🔵 {t('worldBook.tokenBudget.perTurnBadge')}
+              </span>
             )}
             {protectedLabel && <span>{t('worldBook.protectedEntryHint')}</span>}
           </div>
@@ -688,6 +738,69 @@ export function StepWorldBook({
         <div className="text-center py-12 border border-dashed rounded-xl" style={{ color: C.muted, borderColor: C.border }}>
           <p>{t('worldBook.emptyEntriesTitle')}</p>
           <p className="text-sm mt-1">{t('worldBook.emptyEntriesHint')}</p>
+        </div>
+      )}
+
+      {/* ── Token 预算摘要 ────────────────────────────────────────────────
+          蓝灯（常驻）条目每一轮对话都会进提示词，这里给出「每轮固定开销」
+          与超阈值提示，避免一张卡在对话开始前就吃掉几千 token 而作者无感。 */}
+      {entries.length > 0 && (
+        <div
+          className="mb-3 rounded-lg border px-3 py-2.5"
+          style={{ borderColor: themeAlpha(budgetTone, 30), backgroundColor: themeAlpha(budgetTone, 8) }}
+        >
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <span className="text-xs font-semibold shrink-0" style={{ color: C.text }}>
+              {t('worldBook.tokenBudget.summaryTitle')}
+            </span>
+            <span
+              className="rounded border px-2 py-0.5 text-[11px] font-medium tabular-nums"
+              style={{
+                borderColor: themeAlpha(budgetTone, 40),
+                backgroundColor: themeAlpha(budgetTone, 14),
+                color: THEME_TOKENS[budgetTone],
+              }}
+              title={t('worldBook.tokenBudget.constantTooltip')}
+            >
+              {t('worldBook.tokenBudget.constantTotal', {
+                tokens: String(tokenBreakdown.constantTotal),
+              })}
+              {' · '}
+              {t(BUDGET_LEVEL_KEY[tokenBreakdown.constantLevel])}
+            </span>
+            <span className="text-[11px] tabular-nums" style={{ color: C.secondary }}>
+              {t('worldBook.tokenBudget.constantCount', {
+                count: String(tokenBreakdown.constantCount),
+              })}
+            </span>
+            <span className="text-[11px] tabular-nums" style={{ color: C.muted }}>
+              {t('worldBook.tokenBudget.onDemandTotal', {
+                tokens: String(tokenBreakdown.selectiveTotal),
+                count: String(tokenBreakdown.selectiveCount),
+              })}
+            </span>
+            {tokenBreakdown.disabledTotal > 0 && (
+              <span className="text-[11px] tabular-nums" style={{ color: C.muted }}>
+                {t('worldBook.tokenBudget.disabledTotal', {
+                  tokens: String(tokenBreakdown.disabledTotal),
+                })}
+              </span>
+            )}
+            <span className="text-[10px] sm:ml-auto" style={{ color: C.muted }}>
+              {t('worldBook.tokenBudget.estimateHint')}
+            </span>
+          </div>
+          {budgetOverThreshold && (
+            <p className="mt-2 text-[11px] leading-relaxed" style={{ color: THEME_TOKENS[budgetTone] }}>
+              {t('worldBook.tokenBudget.overThresholdHint', { limit: String(TOKEN_BUDGET_HEALTHY_MAX) })}
+              {budgetTopOffenders && (
+                <>
+                  {' '}
+                  {t('worldBook.tokenBudget.topOffenders', { list: budgetTopOffenders })}
+                </>
+              )}
+            </p>
+          )}
         </div>
       )}
 

@@ -12,6 +12,12 @@ import type { WizardDraft } from '../constants/defaults';
 import { validateCard } from './card-validator';
 import { assembleCard } from './card-exporter';
 import { findStagedLorebookEntryIndices, isProtectedLorebookEntry } from './lorebook-predicates';
+import {
+  analyzeCardTokenBudget,
+  describeTokenBudgetAdvice,
+  TOKEN_BUDGET_HEALTHY_MAX,
+  TOKEN_BUDGET_LEVEL_LABEL,
+} from './token-budget';
 
 /** 每次 runQualityCheck 调用期间的 assembleCard 缓存，避免重复计算 */
 let _cachedCard: Record<string, unknown> | null = null;
@@ -235,6 +241,31 @@ const CHECK_ITEMS: CheckItem[] = [
         passed: noKeys.length === 0,
         actual: `${noKeys.length} 条缺触发词`,
         fixHint: noKeys.length === 0 ? '' : `${noKeys.length} 条非蓝灯条目没有触发词，将无法被激活`,
+      };
+    },
+  },
+  {
+    // Token 预算维度：结构计数看不出「这张卡每轮固定烧多少 token」。
+    // 蓝灯（常驻）条目每轮都会进提示词，社区长期缺少这个计数器，
+    // 一张卡可能在对话开始前就吃掉几千 token 而作者毫无感知。
+    // 归入 lorebook 类别（而非新开一类）：常驻开销的可操作抓手就在世界书里，
+    // 同时也避免给 groupByCategory 的类别顺序引入破坏性变更。
+    id: 'tokenBudget',
+    category: 'lorebook',
+    label: '常驻 Token 开销',
+    weight: 10,
+    severity: 'suggestion',
+    jumpStep: 4,
+    optimizeFields: ['lorebookEntries'],
+    threshold: `≤${TOKEN_BUDGET_HEALTHY_MAX} token/轮`,
+    applicable: () => true,
+    check: (d) => {
+      const budget = analyzeCardTokenBudget(d);
+      const passed = budget.level === 'healthy';
+      return {
+        passed,
+        actual: `${budget.perTurnFixed} token/轮（${TOKEN_BUDGET_LEVEL_LABEL[budget.level]}）`,
+        fixHint: passed ? '' : describeTokenBudgetAdvice(budget),
       };
     },
   },
