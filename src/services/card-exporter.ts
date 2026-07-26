@@ -25,6 +25,7 @@ import { generateId, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt } from
 import type { WizardDraft, LorebookEntry, LorebookPosition, MvuConfig, EjsEntryConfig, LiveStreamChatConfig } from '../constants/defaults';
 import { buildMvuScriptBundle } from './mvu-builder';
 import { migrateStagedDispatcherContent, parseDispatcherContent } from './staged-lorebook-builder';
+import { fixLorebookBlueGreenLights } from './card-fixers';
 
 /**
  * Position string → numeric index mapping.
@@ -579,8 +580,10 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
     ...entry,
     content: migrateStagedDispatcherContent(entry.content || ''),
   }));
-  const stagedIndices = findStagedLorebookEntryIndices(migratedLorebookEntries);
-  const entries = migratedLorebookEntries
+  // 导出前自动修复蓝绿灯问题（绿灯无 keys、selective 无 secondary_keys 等）
+  const fixedLorebookEntries = fixLorebookBlueGreenLights(migratedLorebookEntries);
+  const stagedIndices = findStagedLorebookEntryIndices(fixedLorebookEntries);
+  const entries = fixedLorebookEntries
     .filter((entry, idx) => {
       if (mvuEnabled) return true;
       if (MVU_LOREBOOK_ENTRY_NAMES.includes(entry.name)) return false;

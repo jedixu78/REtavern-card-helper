@@ -183,3 +183,34 @@ function generateEmptyLorebookEntry(): LorebookEntry {
     extensions: {},
   };
 }
+
+/**
+ * 轻量级蓝绿灯修复（导出时自动调用）。
+ *
+ * 仅修复影响触发逻辑的字段，不改变条目数量与结构：
+ *   - selective 无 secondary_keys -> 移除 selective（否则绿灯条目永远无法触发）
+ *   - 绿灯（constant=false）已启用条目无 keys -> 用条目名作为 key
+ *
+ * 与 autoFixEntries 的区别：不拆分长内容、不禁用空内容条目，
+ * 保持用户在向导中看到的条目结构不变。
+ */
+export function fixLorebookBlueGreenLights(entries: LorebookEntry[]): LorebookEntry[] {
+  return entries.map((e) => {
+    const fixed = { ...e };
+
+    // Fix: selective 无 secondary_keys -> 移除 selective
+    if (fixed.selective && (!fixed.secondary_keys || fixed.secondary_keys.length === 0)) {
+      fixed.selective = false;
+    }
+
+    // Fix: 绿灯已启用条目无 keys -> 用条目名作为 key
+    if (!fixed.constant && fixed.enabled && (!fixed.keys || fixed.keys.length === 0)) {
+      const nameKey = (fixed.name || fixed.comment || '').trim();
+      if (nameKey.length > 0) {
+        fixed.keys = [nameKey];
+      }
+    }
+
+    return fixed;
+  });
+}
