@@ -25,6 +25,7 @@ import {
   type CardBookEntry,
 } from '../services/prompt-builder';
 import { applyRegexScripts, extractRegexScripts, type CardRegexScript } from '../services/chat-render';
+import { buildVariableTimeline, stripStatusCurrentVariable, type MvuTimeline } from '../services/mvu-sim';
 import type { TriggerResult } from '../services/lorebook-trigger';
 
 interface ChatMessage {
@@ -71,6 +72,29 @@ export function useAIChat(card: CardForChat | null) {
 
   /** 卡内 SillyTavern 正则脚本（状态栏 / 直播间 / 变量更新美化等） */
   const regexScripts = useMemo<CardRegexScript[]>(() => extractRegexScripts(card), [card]);
+
+  /**
+   * MVU 变量时间线：初始值（[InitVar] 条目 + 开场白 setvar）按消息序列重放。
+   * messages 是唯一事实来源——重 roll 截断消息后重算即自动回滚。
+   */
+  // 纵深防御：模拟器处理的是不可信文本，这个 useMemo 在渲染期同步执行——
+  // 任何未预料的异常都会被根 ErrorBoundary 接管掀翻整站，且消息已落 IndexedDB、
+  // 刷新会再次崩溃。宁可退化成「没有变量模拟」也不能让页面挂掉。
+  const mvuTimeline = useMemo<MvuTimeline>(() => {
+    try {
+      return buildVariableTimeline(card, messages);
+    } catch (err) {
+      console.error('MVU 变量模拟失败，本次退化为不模拟：', err);
+      return {
+        active: false,
+        init: { statData: {}, sources: [], warnings: ['变量模拟失败：数据结构异常'] },
+        snapshots: [],
+        changesByMessage: [],
+        warningsByMessage: [],
+      };
+    }
+  }, [card, messages]);
+  const mvuActive = mvuTimeline.active;
 
   // Initialize session when card changes
   useEffect(() => {
@@ -155,10 +179,15 @@ export function useAIChat(card: CardForChat | null) {
 
     let fullText = '';
     try {
+      // MVU 激活时镜像真实运行时的消息改写：<status_current_variable> 块被 MVU 从
+      // 消息存储里物理删除，后续轮次的提示词历史与 WI 扫描都看不到它
+      const mvuStrip = (role: string, content: string) =>
+        mvuActive && role === 'assistant' ? stripStatusCurrentVariable(content) : content;
+
       // 世界书扫描用「用户看到的原文」，与 ST 的 WI 扫描口径一致
       const scanMessages = history
         .filter((m) => m.role !== 'system')
-        .map((m) => ({ role: m.role, content: m.content }));
+        .map((m) => ({ role: m.role, content: mvuStrip(m.role, m.content) }));
 
       const { prompt: systemPrompt, triggers } = buildSystemPromptWithTriggers(activeCard, scanMessages);
       setTriggerReport(triggers);
@@ -169,7 +198,7 @@ export function useAIChat(card: CardForChat | null) {
         apiMessages.push({
           role: msg.role,
           // promptOnly 脚本负责把状态栏/直播间占位符从提示词里剔除
-          content: applyRegexScripts(msg.content, regexScripts, { pass: 'prompt', role: msg.role }),
+          content: applyRegexScripts(mvuStrip(msg.role, msg.content), regexScripts, { pass: 'prompt', role: msg.role }),
         });
       }
 
@@ -209,7 +238,7 @@ export function useAIChat(card: CardForChat | null) {
       setSending(false);
       setStreamingContent('');
     }
-  }, [regexScripts, saveSession]);
+  }, [regexScripts, saveSession, mvuActive]);
 
   /** Send a user message and get AI response */
   const sendMessage = useCallback(async (content: string) => {
@@ -252,10 +281,14 @@ export function useAIChat(card: CardForChat | null) {
     if (!activeCard) return null;
     const scan = messages
       .filter((m) => m.role !== 'system')
-      .map((m) => ({ role: m.role, content: m.content }));
+      .map((m) => ({
+        role: m.role,
+        // 与 runTurn 同口径：MVU 会从消息存储里删掉 <status_current_variable> 块
+        content: mvuActive && m.role === 'assistant' ? stripStatusCurrentVariable(m.content) : m.content,
+      }));
     if (pendingInput.trim()) scan.push({ role: 'user', content: pendingInput });
     return evaluateCardLorebook(activeCard, scan, { random: () => 0 });
-  }, [messages]);
+  }, [messages, mvuActive]);
 
   /** Reset chat session */
   const resetSession = useCallback(async () => {
@@ -297,6 +330,7 @@ export function useAIChat(card: CardForChat | null) {
     error,
     triggerReport,
     regexScripts,
+    mvuTimeline,
     canRegenerate,
     sendMessage,
     regenerate,

@@ -21,6 +21,14 @@ import {
   type CardRegexScript,
   type ChatRole,
 } from '../services/chat-render';
+import {
+  applyMvuDisplayPostProcess,
+  substituteVariableMacros,
+  yamlStringify,
+  omitDollarKeysDeep,
+  type MvuChange,
+  type StatData,
+} from '../services/mvu-sim';
 import type { ActivatedEntry, SkippedEntry, SkipReason, TriggerResult } from '../services/lorebook-trigger';
 
 const borderColor = 'var(--color-border-default)';
@@ -67,23 +75,45 @@ function SandboxFrame({ html }: { html: string }) {
   );
 }
 
-/** 消息正文：先过显示通道的正则脚本，再把 HTML 段交给沙盒渲染。 */
+/**
+ * 消息正文：MVU 激活时先做显示预处理（补状态栏占位符 / 删变量块，对齐真实
+ * MagVarUpdate 行为），过显示通道的正则脚本，替换变量宏，再把 HTML 段交给沙盒渲染。
+ */
 function MessageBody({
   text,
   role,
   scripts,
   allowHtml,
+  mvuActive,
+  statData,
+  appendPlaceholder,
 }: {
   text: string;
   role: ChatRole;
   scripts: CardRegexScript[];
   allowHtml: boolean;
+  mvuActive: boolean;
+  statData: StatData | null;
+  appendPlaceholder: boolean;
 }) {
   const segments = useMemo(() => {
-    const rendered = applyRegexScripts(text, scripts, { pass: 'display', role });
-    if (!allowHtml) return [{ type: 'text' as const, content: rendered }];
-    return segmentRenderedMessage(rendered);
-  }, [text, scripts, role, allowHtml]);
+    // 纵深防御：MVU 处理链吃的是不可信文本，异常在渲染期抛出会被根 ErrorBoundary
+    // 接管掀翻整站。出错就退回原文显示。
+    let processed = text;
+    try {
+      let source = text;
+      if (mvuActive && role === 'assistant') {
+        source = applyMvuDisplayPostProcess(source, { appendPlaceholder });
+      }
+      const rendered = applyRegexScripts(source, scripts, { pass: 'display', role });
+      processed = mvuActive && statData ? substituteVariableMacros(rendered, statData).html : rendered;
+    } catch (err) {
+      console.error('消息渲染管线失败，退回原文显示：', err);
+      processed = text;
+    }
+    if (!allowHtml) return [{ type: 'text' as const, content: processed }];
+    return segmentRenderedMessage(processed);
+  }, [text, scripts, role, allowHtml, mvuActive, statData, appendPlaceholder]);
 
   if (segments.length === 0) return <span className="whitespace-pre-wrap">{text}</span>;
 
@@ -153,6 +183,7 @@ export function ChatPage() {
     error,
     triggerReport,
     regexScripts,
+    mvuTimeline,
     canRegenerate,
     sendMessage,
     regenerate,
@@ -160,6 +191,69 @@ export function ChatPage() {
     previewTriggers,
     resetSession,
   } = useAIChat(selectedCard as Parameters<typeof useAIChat>[0]);
+
+  const [mvuPanelOpen, setMvuPanelOpen] = useState(false);
+
+  /** 只有卡里带状态栏占位符替换脚本时，才模拟真实 MVU 的「缺占位符自动补」行为 */
+  const appendPlaceholder = useMemo(
+    () => regexScripts.some((s) => (s.findRegex ?? '').includes('StatusPlaceHolder')),
+    [regexScripts],
+  );
+
+  /** 变量状态面板数据：最新快照 + 最近一轮变更 + 未解析宏 + 警告 */
+  const mvuPanel = useMemo(() => {
+    if (!mvuTimeline.active) return null;
+    const lastSnapshot =
+      mvuTimeline.snapshots.length > 0
+        ? mvuTimeline.snapshots[mvuTimeline.snapshots.length - 1]
+        : mvuTimeline.init.statData;
+    const baseWarnings = [...mvuTimeline.init.warnings, ...mvuTimeline.warningsByMessage.flat()];
+    // 「本轮变更」= 最后一条 AI 消息产生的命令（不能倒序找「最近非空」——
+    // 无命令的轮次会把上一轮的旧记录当成本轮展示）
+    let lastChanges: MvuChange[] = [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== 'assistant') continue;
+      lastChanges = mvuTimeline.changesByMessage[i] ?? [];
+      break;
+    }
+    try {
+      // 未解析宏：对最后一条 AI 消息按与 MessageBody 相同的管线复算一遍
+      let unresolved: string[] = [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role !== 'assistant') continue;
+        const processed = applyMvuDisplayPostProcess(messages[i].content, { appendPlaceholder });
+        const rendered = applyRegexScripts(processed, regexScripts, { pass: 'display', role: 'assistant' });
+        unresolved = substituteVariableMacros(rendered, mvuTimeline.snapshots[i] ?? lastSnapshot).unresolved;
+        break;
+      }
+      return {
+        stateYaml: yamlStringify(omitDollarKeysDeep(lastSnapshot)),
+        topLevelCount: Object.keys(lastSnapshot).length,
+        lastChanges,
+        unresolved,
+        warnings: baseWarnings,
+        sources: mvuTimeline.init.sources,
+      };
+    } catch (err) {
+      // 纵深防御：面板在渲染期同步计算，异常会掀翻整站（见 useAIChat 的同类保护）
+      console.error('变量状态面板渲染失败：', err);
+      return {
+        stateYaml: '',
+        topLevelCount: Object.keys(lastSnapshot).length,
+        lastChanges,
+        unresolved: [],
+        warnings: [...baseWarnings, '变量状态渲染失败：数据结构异常'],
+        sources: mvuTimeline.init.sources,
+      };
+    }
+  }, [mvuTimeline, messages, regexScripts, appendPlaceholder]);
+
+  /** 变更值的紧凑显示（长值截断，避免面板被撑爆） */
+  const formatChangeValue = useCallback((value: unknown): string => {
+    if (value === undefined) return 'undefined';
+    const s = typeof value === 'string' ? value : JSON.stringify(value);
+    return s.length > 48 ? `${s.slice(0, 48)}…` : s;
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -297,6 +391,9 @@ export function ChatPage() {
                     role={msg.role}
                     scripts={regexScripts}
                     allowHtml={msg.role === 'assistant'}
+                    mvuActive={mvuTimeline.active}
+                    statData={mvuTimeline.snapshots[i] ?? null}
+                    appendPlaceholder={appendPlaceholder}
                   />
                 </div>
               </div>
@@ -432,6 +529,133 @@ export function ChatPage() {
               </div>
             )}
           </div>
+
+          {/* MVU 变量状态面板：仅在检测到 MVU 结构时出现，默认折叠 */}
+          {mvuPanel && (
+            <div className="shrink-0 border-t" style={{ borderColor }}>
+              <button
+                type="button"
+                onClick={() => setMvuPanelOpen((v) => !v)}
+                className="w-full flex items-center justify-between px-4 py-2 text-xs"
+                style={{ color: mutedText }}
+              >
+                <span className="flex items-center gap-2">
+                  <span>{mvuPanelOpen ? '▾' : '▸'}</span>
+                  <span>📊 {label('chat.mvu.title', '变量状态（MVU 模拟）')}</span>
+                  <span style={{ color: faintText }}>
+                    {label('chat.mvu.summary', '{{count}} 个顶层变量').replace('{{count}}', String(mvuPanel.topLevelCount))}
+                  </span>
+                </span>
+                {mvuPanel.warnings.length > 0 && (
+                  <span style={{ color: 'var(--color-status-warning, #fbbf24)' }}>⚠ {mvuPanel.warnings.length}</span>
+                )}
+              </button>
+
+              {mvuPanelOpen && (
+                <div className="px-4 pb-3 max-h-72 overflow-y-auto text-xs space-y-3" style={{ color: mutedText }}>
+                  {mvuPanel.sources.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span style={{ color: faintText }}>{label('chat.mvu.initSources', '初始值来源')}:</span>
+                      {mvuPanel.sources.map((source, i) => (
+                        <span
+                          key={`src-${i}`}
+                          className="rounded px-1.5 py-0.5"
+                          style={{ backgroundColor: 'color-mix(in srgb, var(--text-color) 10%, transparent)' }}
+                        >
+                          {source}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div>
+                    <p className="font-semibold mb-1" style={{ color: 'var(--text-color)' }}>
+                      {label('chat.mvu.currentState', '当前 stat_data')}
+                    </p>
+                    <pre
+                      className="rounded-lg border p-2 overflow-x-auto whitespace-pre"
+                      style={{ borderColor, backgroundColor: 'color-mix(in srgb, var(--text-color) 4%, transparent)' }}
+                    >
+                      {mvuPanel.stateYaml}
+                    </pre>
+                  </div>
+
+                  <div>
+                    <p className="font-semibold mb-1" style={{ color: 'var(--text-color)' }}>
+                      {label('chat.mvu.lastChanges', '本轮变更')}（{mvuPanel.lastChanges.length}）
+                    </p>
+                    {mvuPanel.lastChanges.length === 0 ? (
+                      <p style={{ color: faintText }}>{label('chat.mvu.lastChangesEmpty', '本轮没有变量命令。')}</p>
+                    ) : (
+                      <ul className="space-y-1">
+                        {mvuPanel.lastChanges.map((change, i) => (
+                          <li key={`chg-${i}`} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span style={{ color: change.ok ? 'var(--color-status-success, #4ade80)' : 'var(--color-status-danger, #f87171)' }}>
+                              {change.ok ? '✓' : '✗'}
+                            </span>
+                            <span
+                              className="rounded px-1.5 py-0.5"
+                              style={{ backgroundColor: 'color-mix(in srgb, var(--text-color) 10%, transparent)' }}
+                            >
+                              {change.op}
+                            </span>
+                            <span style={{ color: 'var(--text-color)' }}>{change.path}</span>
+                            {change.ok ? (
+                              <span style={{ color: faintText }}>
+                                {formatChangeValue(change.from)} → {formatChangeValue(change.to)}
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--color-status-danger, #f87171)' }}>{change.error}</span>
+                            )}
+                            {change.reason && change.reason !== 'json_patch' && (
+                              <span style={{ color: faintText }}>（{change.reason}）</span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  {mvuPanel.unresolved.length > 0 && (
+                    <div>
+                      <p className="font-semibold mb-1" style={{ color: 'var(--text-color)' }}>
+                        {label('chat.mvu.unresolvedMacros', '未解析宏')}（{mvuPanel.unresolved.length}）
+                      </p>
+                      <ul className="space-y-0.5">
+                        {mvuPanel.unresolved.map((macro, i) => (
+                          <li key={`unr-${i}`} className="font-mono break-all" style={{ color: faintText }}>
+                            {macro}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {mvuPanel.warnings.length > 0 && (
+                    <div>
+                      <p className="font-semibold mb-1" style={{ color: 'var(--text-color)' }}>
+                        {label('chat.mvu.warnings', '警告')}（{mvuPanel.warnings.length}）
+                      </p>
+                      <ul className="space-y-0.5">
+                        {mvuPanel.warnings.map((warning, i) => (
+                          <li key={`warn-${i}`} style={{ color: 'var(--color-status-warning, #fbbf24)' }}>
+                            {warning}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <p className="pt-1 border-t" style={{ borderColor, color: faintText }}>
+                    {label(
+                      'chat.mvu.note',
+                      '模拟 MagVarUpdate 的 _.set/insert/delete/add 命令与 JSONPatch 块、[InitVar] 初始值、get/format_message_variable 宏。未模拟：schema 扩展性校验（真实 MVU 可能拒绝向未标记 extensible 的集合插入）、mathjs 函数求值、命令内 ST 宏替换；路径不存在的宏保留原样（真实运行时渲染 null）。',
+                    )}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="shrink-0 border-t px-4 py-3" style={{ borderColor }}>
             <div className="flex gap-2">
