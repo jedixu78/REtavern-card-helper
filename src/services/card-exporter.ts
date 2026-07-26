@@ -21,10 +21,10 @@
  *     2. 对AI隐藏状态栏：把占位符从 prompt 中删除（promptOnly）
  *   first_mes 末尾自动追加占位符，保证开场消息也会渲染状态栏。
  */
-import { generateId, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt } from '../constants/defaults';
+import { generateId, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt, REGEX_SCRIPT_NAMES } from '../constants/defaults';
 import type { WizardDraft, LorebookEntry, LorebookPosition, MvuConfig, EjsEntryConfig, LiveStreamChatConfig } from '../constants/defaults';
 import { buildMvuScriptBundle } from './mvu-builder';
-import { migrateStagedDispatcherContent, parseDispatcherContent } from './staged-lorebook-builder';
+import { migrateStagedDispatcherContent, parseDispatcherContent, escapeEjsSingleQuoted } from './staged-lorebook-builder';
 import { fixLorebookBlueGreenLights } from './card-fixers';
 
 /**
@@ -84,22 +84,6 @@ const LIVE_CHAT_PROMPT_RULE = `---
 /** Default creator notes used when draft.creator_notes is empty */
 const DEFAULT_CREATOR_NOTES = '本卡由「吟游手册」制作。\n请尊重创作者的劳动成果，本卡仅供个人娱乐与学习交流使用，严禁任何形式的商业用途、倒卖、转载售卖或未经授权的二次分发。';
 
-/**
- * Escape a value for use as a single-quoted JS string literal embedded in EJS.
- * Escapes backslash/quote/newline (so multi-line defaults don't break syntax)
- * and neutralises the EJS close delimiter `%>` to prevent early tag termination.
- */
-function escapeEjsJsString(s: unknown): string {
-  return String(s)
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029')
-    .replace(/%>/g, '%\\>');
-}
-
 function buildFirstMessage(draft: WizardDraft): string {
   const base = draft.firstMessage || '';
   let result = base;
@@ -117,7 +101,7 @@ function buildFirstMessage(draft: WizardDraft): string {
           // H11: Escape v.path so a `'`, `\`, or `%>` in user/AI-provided
           // variable paths can't break out of the single-quoted JS string
           // literal in setvar('stat_data....', ...). Same vector as H10.
-          const escapedPath = escapeEjsJsString(v.path);
+          const escapedPath = escapeEjsSingleQuoted(v.path);
           // 数字类型不引号，字符串类型需要引号
           if (v.zodType === 'z.coerce.number()') {
             const numVal = Number(initVal);
@@ -126,7 +110,7 @@ function buildFirstMessage(draft: WizardDraft): string {
             const boolVal = initVal === true || initVal === 'true';
             setvarCalls.push(`setvar('stat_data.${escapedPath}', ${boolVal});`);
           } else {
-            const escapedVal = escapeEjsJsString(initVal);
+            const escapedVal = escapeEjsSingleQuoted(initVal);
             setvarCalls.push(`setvar('stat_data.${escapedPath}', '${escapedVal}');`);
           }
         }
@@ -148,6 +132,15 @@ function buildFirstMessage(draft: WizardDraft): string {
  * - Enables placeholders when the feature is active (and not already present).
  * - Strips residual placeholders when the feature is disabled (user toggled off).
  */
+/**
+ * 移除消息中残留的占位符（用户先启用又禁用某功能时）。
+ * 仅删除占位符本身及其追加时带上的前导换行，不 trim 正文、不折叠空行/段落，
+ * 避免像 "Intro\n\n<Placeholder>\n\nMore" 被压成 "Intro\nMore"。
+ */
+function stripPlaceholder(text: string, placeholder: string): string {
+  return text.split(`\n${placeholder}`).join('').split(placeholder).join('');
+}
+
 function appendPlaceholders(draft: WizardDraft, base: string): string {
   let result = base;
 
@@ -161,7 +154,7 @@ function appendPlaceholders(draft: WizardDraft, base: string): string {
     }
   } else {
     // 移除残留的状态栏占位符（用户可能先启用又禁用）
-    result = result.split(STATUS_BAR_PLACEHOLDER).map((s) => s.trim()).filter(Boolean).join('\n');
+    result = stripPlaceholder(result, STATUS_BAR_PLACEHOLDER);
   }
 
   // 直播间评论面板占位符：启用时追加，禁用时移除（独立于 MVU，纯正则驱动）
@@ -172,7 +165,7 @@ function appendPlaceholders(draft: WizardDraft, base: string): string {
     }
   } else {
     // 移除残留的直播面板占位符
-    result = result.split(LIVE_CHAT_PLACEHOLDER).map((s) => s.trim()).filter(Boolean).join('\n');
+    result = stripPlaceholder(result, LIVE_CHAT_PLACEHOLDER);
   }
 
   return result;
@@ -377,7 +370,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
       // 与参考卡「银帷骑士团」一致。SillyTavern 对纯字符串做字面替换。
       regexScripts.push({
         id: 'c5e7a8d9-1234-4a5b-9c6d-7e8f9a0b1c2d',
-        scriptName: '状态栏界面',
+        scriptName: REGEX_SCRIPT_NAMES.statusBar,
         findRegex: '<StatusPlaceHolderImpl/>',
         replaceString: cleanHtml,
         trimStrings: [],
@@ -424,7 +417,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
     // 直播间界面 — 替换占位符为面板 HTML（仅界面显示，AI 不可见）
     regexScripts.push({
       id: 'e1a2b3c4-5678-9abc-def0-1234567890ab',
-      scriptName: '直播间界面',
+      scriptName: REGEX_SCRIPT_NAMES.liveChat,
       findRegex: LIVE_CHAT_PLACEHOLDER,
       replaceString: liveChatHtml,
       trimStrings: [],
@@ -1033,7 +1026,7 @@ function reconstructMvuConfig(
   // Recover status bar HTML from extensions
   const regexScripts = (ext.regex_scripts || []) as Array<Record<string, unknown>>;
   for (const script of regexScripts) {
-    if ((script.scriptName as string) === '状态栏界面') {
+    if ((script.scriptName as string) === REGEX_SCRIPT_NAMES.statusBar) {
       statusBarHtml = (script.replaceString as string) || '';
       break;
     }
@@ -1116,7 +1109,7 @@ function reconstructLiveStreamChat(
 ): LiveStreamChatConfig | undefined {
   const ext = (data.extensions || {}) as Record<string, unknown>;
   const regexScripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Array<Record<string, unknown>>) : [];
-  const liveChatScript = regexScripts.find((s) => s.scriptName === '直播间界面');
+  const liveChatScript = regexScripts.find((s) => s.scriptName === REGEX_SCRIPT_NAMES.liveChat);
   if (!liveChatScript) return undefined;
   const html = ((liveChatScript.replaceString as string) || '')
     .replace(/^```html\s*/i, '')
@@ -1262,7 +1255,9 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
           depth: (ext.depth as number) ?? (ext.scan_depth as number) ?? 4,
           exclude_recursion: (ext.exclude_recursion as boolean) ?? false,
           prevent_recursion: (ext.prevent_recursion as boolean) ?? false,
-          match_whole_words: (ext.match_whole_words as boolean) ?? true,
+          // 显式 null 表示「继承 ST 全局设置」，须原样保留避免往返时被翻成 true；
+          // 字段缺失（undefined）时沿用工具默认 true。
+          match_whole_words: ext.match_whole_words === null ? null : ((ext.match_whole_words as boolean) ?? true),
           sticky: (ext.sticky as number) ?? 0,
           cooldown: (ext.cooldown as number) ?? 0,
           delay: (ext.delay as number) ?? 0,

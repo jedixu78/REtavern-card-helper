@@ -17,6 +17,7 @@
  */
 
 import type { MvuConfig, MvuSchemaSection, MvuVariable, MvuUpdateRule, EjsEntryConfig } from '../constants/defaults';
+import { escapeEjsSingleQuoted } from './staged-lorebook-builder';
 
 // ── 解析工具 ──────────────────────────────────────────────────────────────
 
@@ -47,22 +48,6 @@ export function parseRangeString(raw: unknown): { min: number; max: number } | u
   const single = Number(s);
   if (Number.isFinite(single)) return { min: 0, max: single };
   return undefined;
-}
-
-/**
- * 将任意值转义为可安全嵌入单引号 JS 字符串字面量的内容。
- * 处理反斜杠、单引号、换行符等，避免多行/含特殊字符的初始值破坏生成的脚本语法。
- * 同时转义 EJS 闭合标签 `%>`，避免在 EJS 模板（如 buildEjsPreprocess 输出）中被提前截断。
- */
-function escapeJsString(s: unknown): string {
-  return String(s)
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029')
-    .replace(/%>/g, '%\\>');
 }
 
 interface SchemaNode {
@@ -154,11 +139,11 @@ function buildLeafZod(v: MvuVariable): { expr: string; defLit: string } {
     if (enumMatch) {
       const values = enumMatch[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
       defVal = typeof initialValue === 'string' && values.includes(initialValue)
-        ? `'${escapeJsString(initialValue)}'`
-        : (values.length > 0 ? `'${escapeJsString(values[0])}'` : "''");
-      enumExpr = `z.enum([${values.map(vv => `'${escapeJsString(vv)}'`).join(', ')}])`;
+        ? `'${escapeEjsSingleQuoted(initialValue)}'`
+        : (values.length > 0 ? `'${escapeEjsSingleQuoted(values[0])}'` : "''");
+      enumExpr = `z.enum([${values.map(vv => `'${escapeEjsSingleQuoted(vv)}'`).join(', ')}])`;
     } else {
-      defVal = typeof initialValue === 'string' ? `'${escapeJsString(initialValue)}'` : "''";
+      defVal = typeof initialValue === 'string' ? `'${escapeEjsSingleQuoted(initialValue)}'` : "''";
     }
     return { expr: `${enumExpr}.prefault(${defVal})`, defLit: defVal };
   }
@@ -173,7 +158,7 @@ function buildLeafZod(v: MvuVariable): { expr: string; defLit: string } {
     let defLit = '[]';
     if (Array.isArray(initialValue) && initialValue.length > 0) {
       defLit = `[${initialValue.map((item) => {
-        if (typeof item === 'string') return `'${escapeJsString(item)}'`;
+        if (typeof item === 'string') return `'${escapeEjsSingleQuoted(item)}'`;
         if (typeof item === 'boolean') return String(item);
         if (typeof item === 'number') return String(item);
         if (item !== null && typeof item === 'object') return JSON.stringify(item);
@@ -187,7 +172,7 @@ function buildLeafZod(v: MvuVariable): { expr: string; defLit: string } {
   if (type.startsWith('z.union(')) {
     let defLit: string;
     if (typeof initialValue === 'string') {
-      defLit = `'${escapeJsString(initialValue)}'`;
+      defLit = `'${escapeEjsSingleQuoted(initialValue)}'`;
     } else if (typeof initialValue === 'boolean') {
       defLit = String(initialValue);
     } else if (typeof initialValue === 'number' && Number.isFinite(initialValue)) {
@@ -206,17 +191,17 @@ function buildLeafZod(v: MvuVariable): { expr: string; defLit: string } {
       const entries = Object.entries(initialValue as Record<string, unknown>);
       if (entries.length > 0) {
         defLit = `{ ${entries.map(([k, val]) => {
-          const ek = escapeJsString(k);
+          const ek = escapeEjsSingleQuoted(k);
           if (val !== null && typeof val === 'object') {
             const subEntries = Object.entries(val as Record<string, unknown>);
             return `'${ek}': { ${subEntries.map(([sk, sv]) => {
-              const esk = escapeJsString(sk);
-              if (typeof sv === 'string') return `'${esk}': '${escapeJsString(sv)}'`;
+              const esk = escapeEjsSingleQuoted(sk);
+              if (typeof sv === 'string') return `'${esk}': '${escapeEjsSingleQuoted(sv)}'`;
               if (typeof sv === 'boolean') return `'${esk}': ${sv}`;
               return `'${esk}': ${sv}`;
             }).join(', ')} }`;
           }
-          if (typeof val === 'string') return `'${ek}': '${escapeJsString(val)}'`;
+          if (typeof val === 'string') return `'${ek}': '${escapeEjsSingleQuoted(val)}'`;
           return `'${ek}': ${val}`;
         }).join(', ')} }`;
       }
@@ -225,7 +210,7 @@ function buildLeafZod(v: MvuVariable): { expr: string; defLit: string } {
   }
 
   // Default: z.string()
-  const strDef = typeof initialValue === 'string' ? `'${escapeJsString(initialValue)}'` : "''";
+  const strDef = typeof initialValue === 'string' ? `'${escapeEjsSingleQuoted(initialValue)}'` : "''";
   return { expr: `z.string().prefault(${strDef})`, defLit: strDef };
 }
 
@@ -345,8 +330,10 @@ export function formatYamlScalar(value: unknown): string {
   if (typeof value === 'number') return String(value);
   if (typeof value === 'string') {
     // If the string contains special YAML chars, quote it
-    if (/[:{}[\]&*#?|<>!=@`"']/.test(value) || value === '' || value.startsWith(' ') || value.endsWith(' ')) {
-      return `"${value.replace(/"/g, '\\"')}"`;
+    if (/[:{}[\]&*#?|<>!=@`"'\\]/.test(value) || value === '' || value.startsWith(' ') || value.endsWith(' ')) {
+      // 在双引号 YAML 标量里 `\` 是转义字符，必须先转义反斜杠再转义引号，
+      // 否则像 `C:\Users` 会生成非法转义序列 `\U` 导致 YAML 解析失败。
+      return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
     }
     return value;
   }
@@ -374,7 +361,12 @@ export function buildUpdateRulesYaml(rules: MvuUpdateRule[]): string {
       // Nested or merged
       lines.push(`  ${key}:`);
       for (const r of subRules) {
-        const subKey = r.path.split('.').slice(1).join('.') || key;
+        // 根路径规则（path 无 '.'）：字段直接挂在 rootKey 下，避免 `关系: → 关系:` 的重复嵌套
+        if (!r.path.includes('.')) {
+          appendRuleFields(lines, r, 4);
+          continue;
+        }
+        const subKey = r.path.split('.').slice(1).join('.');
         lines.push(`    ${subKey}:`);
         appendRuleFields(lines, r, 6);
       }
@@ -450,9 +442,9 @@ export function buildEjsPreprocess(configs: EjsEntryConfig[], sections: MvuSchem
     // H10: Escape varName and statPath so a `'`, `\`, or `%>` in user/AI-provided
     // variable paths can't break out of the single-quoted JS string literals in
     // define('...', getvar('stat_data....', ...)) and cause EJS code injection.
-    const escapedVarName = escapeJsString(varName);
+    const escapedVarName = escapeEjsSingleQuoted(varName);
     if (fullPath) {
-      const escapedStatPath = escapeJsString(fullPath);
+      const escapedStatPath = escapeEjsSingleQuoted(fullPath);
       const defaults = getDefaultForDefine(fullPath, sections);
       lines.push(`define('${escapedVarName}', getvar('stat_data.${escapedStatPath}', { defaults: ${defaults} }));`);
     } else {
@@ -474,7 +466,7 @@ function getDefaultForDefine(path: string, sections: MvuSchemaSection[]): string
           const match = v.zodType.match(/z\.enum\(\[(.+)\]\)/);
           if (match) {
             const first = match[1].split(',').map(s => s.trim().replace(/['"]/g, ''))[0];
-            return `'${escapeJsString(first)}'`;
+            return `'${escapeEjsSingleQuoted(first)}'`;
           }
         }
         return "''";

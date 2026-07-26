@@ -2,9 +2,37 @@
  * MVU Builder Tests - 验证 .prefault() 默认值修复
  */
 import { describe, it, expect } from 'vitest';
-import { buildSchemaTs, buildMvuScriptBundle, buildEjsPreprocess } from './mvu-builder';
+import { buildSchemaTs, buildMvuScriptBundle, buildEjsPreprocess, formatYamlScalar, buildUpdateRulesYaml } from './mvu-builder';
 import { createEmptyMvuConfig } from '../constants/defaults';
-import type { MvuSchemaSection, EjsEntryConfig } from '../constants/defaults';
+import type { MvuSchemaSection, EjsEntryConfig, MvuUpdateRule } from '../constants/defaults';
+
+describe('formatYamlScalar - 反斜杠转义 (B2)', () => {
+  it('含反斜杠的值必须转义反斜杠，避免生成非法 YAML 转义序列', () => {
+    // C:\Users 含 ':' 触发双引号；若不转义反斜杠，"C:\Users" 中的 \U 是非法转义
+    expect(formatYamlScalar('C:\\Users')).toBe('"C:\\\\Users"');
+  });
+
+  it('同时含反斜杠与双引号时两者都转义', () => {
+    expect(formatYamlScalar('a\\b"c')).toBe('"a\\\\b\\"c"');
+  });
+
+  it('普通字符串不加引号', () => {
+    expect(formatYamlScalar('hello')).toBe('hello');
+  });
+});
+
+describe('buildUpdateRulesYaml - 根/子路径共存 (B6)', () => {
+  it('根路径规则字段直接挂在 rootKey 下，不产生 "关系: → 关系:" 的重复嵌套', () => {
+    const rules: MvuUpdateRule[] = [
+      { path: '关系', value: '根级规则' },
+      { path: '关系.好感度', value: '子级规则' },
+    ];
+    const yaml = buildUpdateRulesYaml(rules);
+    expect(yaml).toContain('  关系:');       // rootKey 出现
+    expect(yaml).toContain('    好感度:');   // 子键正常嵌套
+    expect(yaml).not.toContain('    关系:'); // 不应把 rootKey 再嵌套一层
+  });
+});
 
 describe('MVU Builder - .prefault() 修复验证', () => {
   function makeTestSections(): MvuSchemaSection[] {

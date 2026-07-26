@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { WizardDraft } from '../constants/defaults';
+import { createEmptyLorebookEntry } from '../constants/defaults';
 import {
   parseCardChatEdits,
   computeCardChatDiffs,
   applyCardChatPatch,
+  applyPatchesToCardData,
 } from './card-chat-optimizer';
 
 function emptyDraft(overrides: Partial<WizardDraft> = {}): WizardDraft {
@@ -56,6 +58,57 @@ function emptyDraft(overrides: Partial<WizardDraft> = {}): WizardDraft {
     ...overrides,
   };
 }
+
+describe('applyPatchesToCardData - 世界书 id 唯一性 (B1)', () => {
+  it('同批次先 delete 再 add 后，新条目 id 不与保留条目重复', () => {
+    const cardData: Record<string, unknown> = {
+      data: {
+        character_book: {
+          entries: [1, 2, 3, 4, 5].map((n) => ({
+            id: n,
+            comment: `c${n}`,
+            name: `c${n}`,
+            content: '',
+            keys: [],
+          })),
+        },
+      },
+    };
+    const result = applyPatchesToCardData(cardData, [
+      { field: 'lorebookEntries', action: 'delete', comment: 'c3' },
+      { field: 'lorebookEntries', action: 'add', comment: 'c6', content: 'x' },
+    ]);
+    const entries = (result.data as { character_book: { entries: Array<{ id: number }> } })
+      .character_book.entries;
+    const ids = entries.map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length); // 无重复 id
+  });
+});
+
+describe('applyCardChatPatch - 角色描述编辑同步世界书 (B5)', () => {
+  it('characters replace 更新描述后，关联的角色设定条目内容也更新', () => {
+    const draft = emptyDraft({
+      characters: [{ id: 'char-1', name: 'Alice', description: 'old', entryIds: ['role-1'] }],
+      lorebookEntries: [
+        {
+          ...createEmptyLorebookEntry(),
+          id: 'role-1',
+          name: 'Alice - 角色设定',
+          comment: 'Alice 的角色设定',
+          content: 'old',
+        },
+      ],
+    });
+    const result = applyCardChatPatch(draft, {
+      proposedChanges: [
+        { field: 'characters', action: 'replace', id: 'char-1', description: 'Alice is now kind.' },
+      ],
+    });
+    const entry = result.lorebookEntries.find((e) => e.id === 'role-1');
+    expect(entry?.content).toBe('Alice is now kind.');
+    expect(result.characters[0].description).toBe('Alice is now kind.');
+  });
+});
 
 describe('parseCardChatEdits', () => {
   it('parses a markdown-fenced JSON with proposedChanges', () => {

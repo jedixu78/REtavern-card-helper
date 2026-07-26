@@ -8,6 +8,39 @@ function makeDraft(overrides: Partial<WizardDraft> = {}): WizardDraft {
   return { ...createEmptyDraft(), ...overrides };
 }
 
+describe('match_whole_words 往返 (B3)', () => {
+  it('显式 null（继承 ST 默认）往返后仍为 null，不被翻成 true', () => {
+    const draft = makeDraft({
+      cardName: 'T',
+      lorebookEntries: [{ ...createEmptyLorebookEntry(), comment: 'E', name: 'E' }],
+    });
+    const card = assembleCard(draft) as unknown as {
+      data: { character_book: { entries: Array<{ extensions: Record<string, unknown> }> } };
+    };
+    // 模拟外部卡片显式声明 inherit（null）
+    card.data.character_book.entries[0].extensions.match_whole_words = null;
+    const restored = cardToDraft(card as unknown as Record<string, unknown>);
+    const entry = restored.lorebookEntries.find((e) => e.comment === 'E');
+    expect(entry?.match_whole_words).toBeNull();
+  });
+});
+
+describe('appendPlaceholders 关闭功能时移除占位符 (B4)', () => {
+  it('移除残留占位符但不折叠正文的段落空行', () => {
+    const draft = makeDraft({
+      cardName: 'T',
+      firstMessage: 'Intro\n\n<StatusPlaceHolderImpl/>\n\nMore',
+    });
+    const card = assembleCard(draft) as unknown as { data: { first_mes: string } };
+    const fm = card.data.first_mes;
+    expect(fm).not.toContain('<StatusPlaceHolderImpl/>');
+    expect(fm).toContain('Intro');
+    expect(fm).toContain('More');
+    expect(fm).not.toBe('Intro\nMore'); // 不应被压成单行
+    expect(fm).toMatch(/Intro\n\n[\s\S]*More/); // 段落空行保留
+  });
+});
+
 describe('assembleCard', () => {
   it('生成符合 V3 spec 的卡片结构', () => {
     const draft = makeDraft({ cardName: '测试角色' });

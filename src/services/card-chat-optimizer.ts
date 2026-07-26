@@ -6,9 +6,10 @@
  */
 
 import type { WizardDraft } from '../constants/defaults';
-import { generateId, createEmptyLorebookEntry, createEmptyMvuConfig } from '../constants/defaults';
+import { generateId, createEmptyLorebookEntry, createEmptyMvuConfig, REGEX_SCRIPT_NAMES } from '../constants/defaults';
 import { parseAIJson } from '../constants/prompts';
 import { editableLorebookEntries } from './card-exporter';
+import { deepClone } from '../utils/deep-clone';
 
 // ════════════════════════════════════════════════════════════════════════════
 // 原始 JSON 补丁系统
@@ -391,11 +392,33 @@ export function applyCardChatPatch(draft: WizardDraft, proposals: CardChatPropos
     } else if (change.field === 'characters') {
       if (change.action === 'replace' && change.id &&
           (typeof change.description === 'string' || typeof change.name === 'string')) {
+        const targetChar = next.characters.find((c) => c.id === change.id);
         next.characters = next.characters.map((c) =>
           c.id === change.id
             ? { ...c, description: change.description ?? c.description, name: change.name ?? c.name }
             : c
         );
+        // B5: 角色描述实际喂给 AI 的是「角色设定」世界书条目，仅改 characters 不会写回条目，
+        // 导致应用后的编辑对导出卡片无效。这里通过 entryIds 关联把新描述同步到世界书条目：
+        // 将可能被拆分的多条合并为一条（保留首条的 name/comment 等元数据），并让 entryIds 指向它。
+        if (targetChar && typeof change.description === 'string') {
+          const linkedIds = new Set(targetChar.entryIds ?? []);
+          const currentEntries = next.lorebookEntries || [];
+          const linked = linkedIds.size > 0 ? currentEntries.filter((e) => linkedIds.has(e.id)) : [];
+          if (linked.length > 0) {
+            const primaryId = linked[0].id;
+            next.lorebookEntries = currentEntries
+              .filter((e) => e.id === primaryId || !linkedIds.has(e.id))
+              .map((e) =>
+                e.id === primaryId
+                  ? { ...e, content: change.description as string, name: change.name ?? e.name }
+                  : e
+              );
+            next.characters = next.characters.map((c) =>
+              c.id === change.id ? { ...c, entryIds: [primaryId] } : c
+            );
+          }
+        }
       } else if (change.action === 'add' && typeof change.description === 'string') {
         next.characters = [
           ...next.characters,
@@ -469,22 +492,6 @@ export function applyCardChatPatch(draft: WizardDraft, proposals: CardChatPropos
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * 深拷贝工具：优先使用 structuredClone，降级到 JSON.parse(JSON.stringify(...))。
- * 用于在应用补丁前复制原始 cardData，避免修改底版。
- */
-function deepClone<T>(obj: T): T {
-  if (obj === undefined || obj === null) return obj;
-  if (typeof structuredClone === 'function') {
-    try {
-      return structuredClone(obj);
-    } catch {
-      // 降级
-    }
-  }
-  return JSON.parse(JSON.stringify(obj)) as T;
-}
-
-/**
  * 在原始卡片 JSON 上应用单个补丁。
  *
  * 与 applyCardChatPatch（作用于 WizardDraft）不同，此函数直接操作原始 JSON 结构，
@@ -529,7 +536,7 @@ export function applyPatchToCardData(
     // 直接修改 regex_scripts 中对应脚本的 replaceString
     const ext = (data.extensions || {}) as Record<string, unknown>;
     const scripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Array<Record<string, unknown>>) : [];
-    const target = scripts.find((s) => s.scriptName === '状态栏界面');
+    const target = scripts.find((s) => s.scriptName === REGEX_SCRIPT_NAMES.statusBar);
     if (target) {
       target.replaceString = change.value;
     }
@@ -537,7 +544,7 @@ export function applyPatchToCardData(
   } else if (change.field === 'liveStreamChat.html' && typeof change.value === 'string') {
     const ext = (data.extensions || {}) as Record<string, unknown>;
     const scripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Array<Record<string, unknown>>) : [];
-    const target = scripts.find((s) => s.scriptName === '直播间界面');
+    const target = scripts.find((s) => s.scriptName === REGEX_SCRIPT_NAMES.liveChat);
     if (target) {
       target.replaceString = change.value;
     }
@@ -598,9 +605,15 @@ export function applyPatchToCardData(
           ...(Array.isArray(change.keys) ? { keys: change.keys } : {}),
         };
       } else {
-        // 新增条目：使用最小字段集，不预设未涉及的依赖
+        // 新增条目：使用最小字段集，不预设未涉及的依赖。
+        // id 取现有条目最大数值 id + 1，避免同批次先 delete 再 add 时 length 缩水
+        // 导致新条目 id 与保留条目撞车（原 entries.length + 1 有此缺陷）。
+        const maxId = entries.reduce((m, e) => {
+          const n = typeof e.id === 'number' ? e.id : Number(e.id);
+          return Number.isFinite(n) && n > m ? n : m;
+        }, 0);
         entries.push({
-          id: entries.length + 1,
+          id: maxId + 1,
           keys: change.keys || [],
           secondary_keys: [],
           content: change.content || '',

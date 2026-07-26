@@ -290,6 +290,7 @@ export function extractJsonFromPng(
 ): Record<string, unknown> | null {
   const chunks = readPngChunks(pngBuffer);
 
+  let sawCorruptChunk = false;
   // V3 (ccv3) takes precedence over V2 (chara) per SillyTavern spec.
   // First pass: look for ccv3, second pass: fall back to chara.
   for (const keyword of ['ccv3', 'chara']) {
@@ -307,13 +308,18 @@ export function extractJsonFromPng(
             const jsonString = base64ToUtf8(value);
             return JSON.parse(jsonString);
           } catch {
-            throw new Error(`PNG 中的 ${keyword} 数据解析失败（base64/JSON 格式无效）`);
+            // 本块损坏时不立即抛错，继续尝试其它块（如 ccv3 损坏时回退到 V2 的 chara）
+            sawCorruptChunk = true;
           }
         }
       }
     }
   }
 
+  // 全部块都尝试过：若曾遇到损坏块（且没有任何一块解析成功）再抛错，保留错误信号
+  if (sawCorruptChunk) {
+    throw new Error('PNG 中的角色卡数据解析失败（base64/JSON 格式无效）');
+  }
   return null;
 }
 
