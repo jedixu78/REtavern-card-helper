@@ -65,12 +65,22 @@ function buildContinuationMessages(
   ];
 }
 
+/**
+ * 宽松剥离 markdown 代码围栏：开围栏与闭围栏各自独立处理，缺一不可时也能剥离。
+ *
+ * 注意：这里不能改用 ai-json 的 stripMarkdownFences。那个版本要求开闭围栏成对
+ * （`^``` … ```$`），而本文件的职责恰恰是判断「输出是否被截断」——被截断的内容
+ * 通常只有开围栏没有闭围栏。成对匹配会让这类内容的围栏残留下来，把后面的括号
+ * 配平计数算错，反而破坏截断检测。
+ */
+function stripLooseFences(text: string): string {
+  return text
+    .replace(/^```(?:json|JSON)?\s*\n?/, '')
+    .replace(/\n?```\s*$/, '');
+}
+
 function looksLikeJsonStart(text: string): boolean {
-  let trimmed = text.trimStart();
-  const fenceMatch = trimmed.match(/^```(?:json|JSON)?\s*\n?/);
-  if (fenceMatch) {
-    trimmed = trimmed.slice(fenceMatch[0].length).trimStart();
-  }
+  const trimmed = stripLooseFences(text.trimStart()).trimStart();
   return trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.includes('"entries"') || trimmed.includes('"content"') || trimmed.includes('"description"');
 }
 
@@ -83,21 +93,17 @@ function looksTruncated(text: string): boolean {
     // 短内容可能是合法的紧凑 JSON，先尝试解析
     if (text) {
       try {
-        JSON.parse(text.trim().replace(/^```json?\n?/, '').replace(/\n?```$/, ''));
+        // 原先这里用 /^```json?\n?/，"json?" 只让结尾的 n 可选，既漏掉裸 ``` 围栏
+        // 又会匹配 ```jso 这种不存在的写法，统一到 stripLooseFences 顺带修正。
+        JSON.parse(stripLooseFences(text.trim()));
         return false;
       } catch { /* not valid JSON, fall through to truncated */ }
     }
     return true;
   }
 
-  let content = text.trimEnd();
-
   // Strip markdown code fence if present
-  const fenceMatch = content.match(/^```(?:json|JSON)?\s*\n?/);
-  if (fenceMatch) content = content.slice(fenceMatch[0].length);
-  const trailingFence = content.match(/\n?```\s*$/);
-  if (trailingFence) content = content.slice(0, -trailingFence[0].length);
-  content = content.trimEnd();
+  const content = stripLooseFences(text.trimEnd()).trimEnd();
 
   if (!content) return true;
 
