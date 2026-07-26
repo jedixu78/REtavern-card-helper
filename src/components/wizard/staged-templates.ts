@@ -18,6 +18,7 @@ import type {
   MvuConfig,
   MvuSchemaSection,
   MvuUpdateRule,
+  MvuVariable,
 } from '../../constants/defaults';
 import {
   buildSchemaTs,
@@ -559,6 +560,106 @@ export function mergeStagedTemplate(base: MvuConfig, template: BeginnerTemplate)
     ...base,
     enabled: true,
     beginnerTemplateId: template.id,
+    schemaSections: sections,
+    updateRules: rules,
+    ejsPreprocessContent: buildEjsPreprocess(base.ejsConfigs ?? [], sections),
+    schemaTsContent: buildSchemaTs(sections),
+    initvarYamlContent: buildInitvarYaml(sections),
+    updateRulesYamlContent: buildUpdateRulesYaml(rules),
+  };
+}
+
+// ── DIY / AI 自选阶段轴 ─────────────────────────────────────────────────────
+
+/** AI 自选阶段轴的产物形状（useAIGenerate.autoGenerateStagedLorebook 的返回结构） */
+export interface DiyStagedAxis {
+  axisPath: string;
+  axisType: 'enum' | 'number';
+  numericDirection: '>=' | '<=';
+  stages: Array<{ name: string; condition?: string }>;
+}
+
+/** 从阶段条件里提取数字阈值（'>= 70' → 70；无数字返回 null） */
+function parseStageThreshold(condition: string | undefined): number | null {
+  const match = (condition || '').match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : null;
+}
+
+/**
+ * 把 DIY / AI 自选的阶段轴变量合并进 MVU 配置（合并语义对齐 mergeStagedTemplate：
+ * 不覆盖已有变量、按 path 去重、重生成派生产物）。
+ * 没有这一步，导出卡在真实运行时会因轴变量未在 stat_data 中初始化，
+ * 调度条目永远走「变量未定义」分支——DIY 轴必须像模板轴一样自包含。
+ */
+export function mergeDiyStagedAxis(base: MvuConfig, axis: DiyStagedAxis): MvuConfig {
+  const sectionName = axis.axisPath.split('.')[0] || '剧情';
+  const stageNames = axis.stages.map(s => s.name).filter(Boolean);
+  const thresholds = axis.stages
+    .map(s => parseStageThreshold(s.condition))
+    .filter((n): n is number => n !== null);
+
+  let variable: MvuVariable;
+  let rule: MvuUpdateRule;
+  if (axis.axisType === 'number') {
+    const min = thresholds.length ? Math.min(...thresholds) : 0;
+    const max = thresholds.length ? Math.max(...thresholds) : 100;
+    // 初始值 = 最不极端的一端：'>=' 轴从最低阈值起步，'<=' 轴从最高阈值起步
+    const initial = axis.numericDirection === '<=' ? max : min;
+    variable = {
+      path: axis.axisPath,
+      zodType: 'z.coerce.number()',
+      description: `阶段轴变量（AI 自选）：${axis.numericDirection === '<=' ? '阈值以下触发' : '阈值以上触发'}，范围 ${min}~${max}，达到阈值进入对应阶段`,
+      prefix: '',
+      initialValue: initial,
+      range: { min, max },
+      categories: axis.stages
+        .filter(s => (s.condition || '').trim())
+        .map(s => ({ range: (s.condition || '').trim(), label: s.name })),
+    };
+    rule = {
+      path: axis.axisPath,
+      type: 'number',
+      range: `${min}~${max}`,
+      check: [
+        '按剧情推进调整，达到阈值自动进入对应阶段',
+        axis.numericDirection === '<=' ? '朝阈值方向单向递减' : '朝阈值方向单向递增',
+      ],
+    };
+  } else {
+    // enum 轴：AUTO_STAGED_LOREBOOK_PROMPT 的示例输出按「初始 → 最终」排序，首个即初始阶段
+    const initial = stageNames[0] ?? '';
+    variable = {
+      path: axis.axisPath,
+      zodType: `z.enum([${stageNames.map(n => JSON.stringify(n)).join(', ')}])`,
+      description: `阶段轴变量（AI 自选）：离散阶段 ${stageNames.join(' / ')}`,
+      prefix: '',
+      initialValue: initial,
+      enumValues: [...stageNames],
+    };
+    rule = {
+      path: axis.axisPath,
+      type: stageNames.map(n => `'${n}'`).join(' | '),
+      check: ['剧情满足对应阶段条件时切换到该阶段值，不要跳阶段'],
+    };
+  }
+
+  const sections: MvuSchemaSection[] = deepClone(base.schemaSections);
+  let target = sections.find(s => s.name === sectionName);
+  if (!target) {
+    target = { name: sectionName, variables: [] };
+    sections.push(target);
+  }
+  const idx = target.variables.findIndex(v => v.path === variable.path);
+  if (idx >= 0) target.variables[idx] = variable;
+  else target.variables.push(variable);
+
+  const rules: MvuUpdateRule[] = deepClone(base.updateRules);
+  if (!rules.some(r => r.path === rule.path)) rules.push(rule);
+
+  return {
+    ...base,
+    enabled: true,
+    beginnerTemplateId: 'diy',
     schemaSections: sections,
     updateRules: rules,
     ejsPreprocessContent: buildEjsPreprocess(base.ejsConfigs ?? [], sections),

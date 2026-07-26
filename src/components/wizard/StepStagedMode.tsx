@@ -40,6 +40,7 @@ import { createEmptyMvuConfig } from '../../constants/defaults';
 import {
   getStagedTemplateById,
   mergeStagedTemplate,
+  mergeDiyStagedAxis,
   STAGED_TEMPLATE_CATEGORIES,
   getTemplatesByCategory,
 } from './staged-templates';
@@ -55,6 +56,9 @@ interface StepStagedModeProps {
   stagedMode: StagedModeConfig;
   onChange: (config: StagedModeConfig) => void;
   cardName: string;
+  /** 导出书名（resolveBookName 的结果）。调度条目 getWorldInfo 的第一个参数必须
+   *  与导出的 character_book.name 一致，否则 ST 里「阶段不切换」。 */
+  bookName: string;
   mvu?: MvuConfig;
   /** 分阶段步骤内部填充 MVU 变量配置（选中模板时调用，取代独立的 MVU 变量步骤） */
   onMvuChange?: (mvu: MvuConfig) => void;
@@ -67,15 +71,17 @@ interface StepStagedModeProps {
 }
 
 export function StepStagedMode({
-  stagedMode, onChange, cardName, mvu, onMvuChange, lorebookEntries, onApplyEntries, onApplyStageAxes, nsfw = false, onNsfwChange,
+  stagedMode, onChange, cardName, bookName, mvu, onMvuChange, lorebookEntries, onApplyEntries, onApplyStageAxes, nsfw = false, onNsfwChange,
 }: StepStagedModeProps) {
   const { t } = useTranslation();
-  const { analyzeStages, rerollStageAnnotation, generateStageEntries, rerollStage } = useAIGenerate();
+  const { analyzeStages, rerollStageAnnotation, generateStageEntries, rerollStage, autoGenerateStagedLorebook } = useAIGenerate();
   const { addToast } = useToast();
 
   const [userRequirement, setUserRequirement] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeStatus, setAnalyzeStatus] = useState<AIProgressStatus>('idle');
+  const [diyGenerating, setDiyGenerating] = useState(false);
+  const [diyStatus, setDiyStatus] = useState<AIProgressStatus>('idle');
   const [analyzingCharIdx, setAnalyzingCharIdx] = useState<number | null>(null);
   const [generatingEntries, setGeneratingEntries] = useState(false);
   const [genStatus, setGenStatus] = useState<AIProgressStatus>('idle');
@@ -269,6 +275,52 @@ export function StepStagedMode({
     }
   }, [analyzeStages, cardName, stagedMode, existingWorldbookContext, mvuVariablesContext, userRequirement, lorebookEntries, onChange, addToast, t]);
 
+  // ── DIY：AI 自选阶段轴（不套模板，通读世界书自行设计变化轴与阶段内容）──
+  // 这条管线（AUTO_STAGED_LOREBOOK_PROMPT + autoGenerateStagedLorebook）此前
+  // 已完整实现但无任何调用者——阶段轴被 7 个模板硬编码占满。现在接上入口。
+  const handleDiyGenerate = useCallback(async () => {
+    setDiyGenerating(true);
+    setDiyStatus('generating');
+    try {
+      const result = await autoGenerateStagedLorebook(
+        cardName, '', existingWorldbookContext, userRequirement.trim(), nsfw,
+      );
+      if (!result || !result.stages.length) {
+        setDiyStatus('error');
+        addToast('error', t('stagedMode.diyFailed'));
+        return;
+      }
+      // 轴变量并入 MVU（不覆盖已有变量）：没有它，真实运行时轴变量未初始化，
+      // 调度条目永远走「变量未定义」分支
+      if (onMvuChange) {
+        onMvuChange(mergeDiyStagedAxis(mvu ?? createEmptyMvuConfig(), result));
+      }
+      const diyCharacter: StagedModeCharacter = {
+        name: cardName || 'DIY',
+        summary: t('stagedMode.diySummary'),
+        axisPath: result.axisPath,
+        axisType: result.axisType,
+        numericDirection: result.numericDirection,
+        stages: result.stages.map((s) => ({
+          name: s.name,
+          condition: s.condition || '',
+          annotation: '',
+          content: s.content || '',
+        })),
+      };
+      onChange({ ...stagedMode, templateId: 'diy', enabled: true, characters: [diyCharacter] });
+      setCharGuidance({});
+      setDiyStatus('done');
+      addToast('success', t('stagedMode.diyDone', { axis: result.axisPath, count: String(result.stages.length) }));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : t('common.unknownError');
+      setDiyStatus('error');
+      addToast('error', t('stagedMode.diyFailed') + `: ${msg}`);
+    } finally {
+      setDiyGenerating(false);
+    }
+  }, [autoGenerateStagedLorebook, cardName, existingWorldbookContext, userRequirement, nsfw, mvu, onMvuChange, stagedMode, onChange, addToast, t]);
+
   // ── 修改阶段阈值/名称 ─────────────────────────────────────
   const updateStage = (charIdx: number, stageIdx: number, patch: Partial<StagedModeStage>) => {
     const characters = stagedMode.characters.map((c, ci) => {
@@ -395,7 +447,8 @@ export function StepStagedMode({
         axisPath: character.axisPath,
         axisType: character.axisType,
         numericDirection: character.numericDirection,
-        bookName: cardName,
+        // 必须用导出书名而非卡名：ST 的 loadWorldInfo 按 character_book.name 精确匹配
+        bookName,
         dispatcherName,
         stages,
       };
@@ -403,7 +456,7 @@ export function StepStagedMode({
     }
     onApplyEntries(allEntries);
     addToast('success', t('stagedMode.applyDone', { count: String(allEntries.length) }));
-  }, [stagedMode, cardName, onApplyEntries, addToast, t]);
+  }, [stagedMode, bookName, onApplyEntries, addToast, t]);
 
   // ── 渲染：未启用 ──────────────────────────────────────────
   if (!stagedMode.enabled) {
@@ -454,6 +507,16 @@ export function StepStagedMode({
               );
             })}
           </div>
+          {/* DIY：不套模板，AI 自选阶段轴 */}
+          <button
+            type="button"
+            onClick={() => onChange({ ...stagedMode, templateId: 'diy', enabled: true })}
+            className="mt-2 w-full rounded-xl border border-dashed border-[color-mix(in_srgb,var(--color-primary)_50%,transparent)] p-3 text-left transition-all hover:border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-surface-raised)_30%,transparent)]"
+          >
+            <div className="text-2xl mb-1">🎨</div>
+            <div className="text-sm font-medium text-[var(--text-color)]">{t('stagedMode.diyTitle')}</div>
+            <div className="text-[10px] text-[var(--color-text-muted)] mt-0.5">{t('stagedMode.diyEnableHint')}</div>
+          </button>
         </div>
       </div>
     );
@@ -541,11 +604,20 @@ export function StepStagedMode({
           rows={2}
           className="mb-3"
         />
-        <Button onClick={handleAnalyze} disabled={analyzing}>
-          {analyzing ? t('stagedMode.analyzing') : `🔍 ${t('stagedMode.analyzeButton')}`}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={handleAnalyze} disabled={analyzing || diyGenerating}>
+            {analyzing ? t('stagedMode.analyzing') : `🔍 ${t('stagedMode.analyzeButton')}`}
+          </Button>
+          <Button variant="secondary" onClick={handleDiyGenerate} disabled={analyzing || diyGenerating} title={t('stagedMode.diyButtonHint')}>
+            {diyGenerating ? t('stagedMode.diyGenerating') : `🎨 ${t('stagedMode.diyButton')}`}
+          </Button>
+        </div>
+        <p className="text-[10px] text-[var(--color-text-muted)] mt-1.5">{t('stagedMode.diyDescription')}</p>
         {analyzeStatus !== 'idle' && analyzeStatus !== 'done' && (
           <AIProgressPanel status={analyzeStatus} text="" />
+        )}
+        {diyStatus !== 'idle' && diyStatus !== 'done' && (
+          <AIProgressPanel status={diyStatus} text="" />
         )}
       </div>
 

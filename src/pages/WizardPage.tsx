@@ -993,6 +993,7 @@ ${e.content || ''}`)
             stagedMode={draft.stagedMode ?? { enabled: false, templateId: 'pure-love', dispatcherPrefix: '分阶段人设', characters: [] }}
             onChange={(stagedMode) => updateDraft({ stagedMode })}
             cardName={draft.cardName}
+            bookName={resolveBookName(draft)}
             mvu={draft.mvu}
             // 步骤 6 的「自包含模板 → 注入 MVU 变量」链路：选中模板/多角色套模板时
             // 把生成的 MVU 配置写回草稿。此前这两个 prop 从未被传入（评估确认的 A4 断线），
