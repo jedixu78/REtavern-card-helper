@@ -130,6 +130,8 @@ server {
 | PORT | 3001 | 服务端口 |
 | HOST | 0.0.0.0 | 监听地址 |
 | CORS_ORIGINS | (允许全部) | 允许的域名，逗号分隔 |
+| PROXY_ACCESS_TOKEN | (未设置，不启用) | 可选的代理访问令牌。设置后，所有 `/api/ai/*` 请求必须携带请求头 `X-Proxy-Token: <令牌值>`，否则返回 401；未设置时不做任何校验。Cloudflare Workers 部署用 `npx wrangler secret put PROXY_ACCESS_TOKEN` 设置 |
+| PROXY_BLOCK_LOOPBACK | (未设置，回环放行) | 是否连回环地址（localhost / 127.0.0.1 / ::1）也禁止代理。本地自托管保持默认——连接本机模型（Oobabooga/KoboldCPP）是内置用例；**公网部署建议设为 1**。其它内网段与云元数据地址无论如何设置都始终拦截 |
 
 ---
 
@@ -138,3 +140,4 @@ server {
 1. **数据存储在浏览器**：用户数据保存在各自浏览器的 IndexedDB 中，不同设备/浏览器之间数据不互通
 2. **API Key 由用户提供**：服务器只做 CORS 代理转发，不存储任何 API Key
 3. **HTTPS 建议**：Vercel 自带 HTTPS；自建服务器建议配置 SSL
+4. **公网部署安全**：AI 代理内置了 SSRF 防护（拒绝转发到内网/云元数据地址，且对上游 3xx 重定向的每一跳重新校验）和 2MB 请求体上限（流式读取，超限即中止）。回环地址默认放行以支持本机模型，公网部署建议设置 `PROXY_BLOCK_LOOPBACK=1` 一并拦截。代理默认无鉴权，公网部署时任何人都可借用你的服务器中转 AI 请求——建议设置 `PROXY_ACCESS_TOKEN` 启用访问令牌，调用方需在请求头携带 `X-Proxy-Token`。注意：前端界面暂未提供令牌配置入口（支持将另行跟进），当前启用令牌后需由调用方自行携带该头，或通过反向代理（如 Nginx `proxy_set_header X-Proxy-Token`）注入
