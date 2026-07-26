@@ -1,0 +1,53 @@
+# CLAUDE.md
+
+Guidance for working in this repo. Keep it short and accurate; update it when architecture changes.
+
+## What this is
+
+**吟游手册 / REtavern-card-helper** — a visual helper for authoring [SillyTavern](https://github.com/SillyTavern/SillyTavern) character cards. Users fill in a step wizard (character设定, world book, first message, MVU status-bar variables, staged lorebook, live-stream chat) with AI assistance, then export a spec-compliant card as **PNG or JSON**.
+
+All user data lives in the **browser (IndexedDB via Dexie)** — nothing is stored server-side. The server is only a **CORS proxy** for user-supplied AI API keys; it never stores keys.
+
+## Commands
+
+```bash
+npm run dev         # Vite client + Hono proxy (port 3001) via concurrently
+npm run typecheck   # tsc --noEmit  — MUST stay green
+npm run lint        # eslint src   (0 errors expected; ~warnings tolerated)
+npm test            # vitest run   (all tests must pass)
+npm run build       # vite build → dist/
+```
+
+Always run `npm run typecheck` and `npm test` after changes. The test suite is the safety net for the card-export / MVU / lorebook logic.
+
+## Stack & layout
+
+- **React 19 + TypeScript + Vite + Tailwind v4**. Routing: `react-router-dom` (`src/App.tsx`), all routes lazy-loaded.
+- **Hono** proxy: `server/` (Node entry `server/index.js`) locally; Cloudflare Worker in production. Deploy targets in [DEPLOY.md](DEPLOY.md) (Vercel / Docker / Node / Cloudflare).
+- `src/pages/` — route pages. `WizardPage.tsx` orchestrates the wizard; each `StepX` is **lazy-loaded** (keeps the wizard's initial chunk small — do not convert these back to eager imports).
+- `src/components/wizard/` — the step components. `src/components/novel-workshop/` — a self-contained "novel → card" feature module.
+- `src/services/` — the core logic (see below). `src/hooks/` — wizard/AI state. `src/db/database.ts` — Dexie schema (`cards`, `chat_sessions`, `ai_settings`).
+- `src/constants/` — `defaults.ts` (types + shared constants), `prompts.ts` (AI prompt templates + `parseAIJson` JSON parser), `theme.ts`.
+- `src/utils/` — cross-cutting helpers: `deep-clone.ts` (`deepClone`), `html.ts` (`escapeHtml`).
+
+## Core services (high-value, well-tested — change carefully)
+
+- `card-exporter.ts` — assembles a `WizardDraft` into a Tavern V2/V3 card and back (`assembleCard` / `cardToDraft`), PNG export, and status-bar/live-chat regex-script wiring.
+- `mvu-builder.ts` — builds MVU status-bar variable schema/YAML/EJS from config.
+- `staged-lorebook-builder.ts` — staged (阶段) lorebook entries; **exports the canonical EJS escapers** `escapeEjsSingleQuoted` / `escapeEjsDoubleQuoted`.
+- `card-chat-optimizer.ts` — applies AI-proposed patches to a draft / raw card JSON.
+- `png-service.ts` — PNG tEXt chunk read/write for embedding card JSON (`chara` V2, `ccv3` V3).
+- `card-validator.ts`, `quality-checker.ts` — pre-export checks and quality scoring.
+
+## Conventions & gotchas
+
+- **Single sources of truth — do not re-duplicate:**
+  - EJS string escaping → `escapeEjsSingleQuoted` / `escapeEjsDoubleQuoted` from `services/staged-lorebook-builder.ts`.
+  - HTML escaping (app-side rendering) → `escapeHtml(str, { quotes })` from `utils/html.ts`. (The `lcEsc` inside `live-chat-templates.ts` is *generated runtime code that ships inside the card* — leave it.)
+  - Deep clone → `deepClone` from `utils/deep-clone.ts`.
+  - Regex-script names → `REGEX_SCRIPT_NAMES` in `constants/defaults.ts` (`状态栏界面` / `直播间界面`). These strings are matched by name on import/validate/patch — never hard-code the literals.
+- **EJS escaping is a security boundary**: user/AI text is embedded into generated EJS/JS templates. Any new embedding must go through the escapers above (neutralizes `%>`, quotes, line separators).
+- **Card spec versions**: fields live under `data.*` for V2/V3 and at the top level for V1 — mapping code must handle both.
+- **Service worker** `public/sw.js` uses a manual `CACHE_NAME` version (`...-vNN`). Bump it when shipping changes that must invalidate cached assets.
+- **TS strict mode is currently OFF** (`tsconfig.json`). `noUnusedLocals`/`noUnusedParameters` are on. Prefer null-safe code; a future task may enable `strict`.
+- Language: UI and most comments are Chinese; match the surrounding language when editing.
