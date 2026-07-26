@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getAISettings, saveAISettings, maskApiKey, type AISettings } from '../db/database';
 import { fetchModels } from '../services/ai-service';
+import { downloadBackup, restoreBackup, validateBackup, type BackupFile } from '../services/backup-service';
 import { useToast } from '../components/shared/Toast';
 import { Button } from '../components/shared/Button';
 import { useTranslation } from '../i18n/I18nContext';
@@ -26,6 +27,50 @@ export function SettingsPage() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [editingKey, setEditingKey] = useState(false);
   const [tempKey, setTempKey] = useState('');
+  const [backingUp, setBackingUp] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
+
+  // ── 全库备份 / 恢复 ────────────────────────────────────────────────────────
+  const handleBackup = useCallback(async () => {
+    setBackingUp(true);
+    try {
+      await downloadBackup();
+      addToast('success', t('settings.backupSuccess'));
+    } catch (err) {
+      addToast('error', `${t('settings.backupError')}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBackingUp(false);
+    }
+  }, [addToast, t]);
+
+  const handleRestoreFile = useCallback(async (file: File) => {
+    setRestoring(true);
+    try {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        addToast('error', t('settings.restoreInvalidJson'));
+        return;
+      }
+      const invalid = validateBackup(parsed);
+      if (invalid) {
+        addToast('error', invalid);
+        return;
+      }
+      if (!confirm(t('settings.restoreConfirm'))) return;
+      await restoreBackup(parsed as BackupFile);
+      addToast('success', t('settings.restoreSuccess'));
+      // 内存中的所有状态（settings、工坊、主题…）都已过期，刷新以重新加载
+      setTimeout(() => window.location.reload(), 800);
+    } catch (err) {
+      addToast('error', `${t('settings.restoreError')}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRestoring(false);
+    }
+  }, [addToast, t]);
 
   useEffect(() => {
     getAISettings().then((s) => {
@@ -300,6 +345,44 @@ export function SettingsPage() {
             💾 {t('settings.saveButton')}
           </Button>
         </div>
+      </div>
+
+      {/* Backup & restore section */}
+      <div className="mt-6 rounded-xl border p-5" style={{ borderColor, backgroundColor: 'rgba(var(--card-bg-r), var(--card-bg-g), var(--card-bg-b), 0.3)' }}>
+        <h3 className="text-sm font-medium mb-2" style={{ color: 'color-mix(in srgb, var(--text-color) 80%, transparent)' }}>
+          🗄️ {t('settings.backupTitle')}
+        </h3>
+        <p className="text-xs mb-3" style={{ color: mutedText }}>
+          {t('settings.backupDesc')}
+        </p>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={handleBackup} disabled={backingUp || restoring}>
+            {backingUp ? `⏳ ${t('settings.backingUp')}` : `📦 ${t('settings.backupButton')}`}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => restoreInputRef.current?.click()}
+            disabled={backingUp || restoring}
+          >
+            {restoring ? `⏳ ${t('settings.restoring')}` : `📥 ${t('settings.restoreButton')}`}
+          </Button>
+          <input
+            ref={restoreInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              // 允许重复选择同一文件
+              e.target.value = '';
+              if (file) handleRestoreFile(file);
+            }}
+          />
+        </div>
+        <p className="text-[11px] mt-2" style={{ color: faintText }}>
+          ⚠️ {t('settings.backupKeyWarning')}
+        </p>
       </div>
 
       {/* Help section */}

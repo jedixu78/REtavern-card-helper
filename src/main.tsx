@@ -4,6 +4,11 @@ import './index.css';
 import App from './App';
 import { I18nProvider } from './i18n/I18nContext';
 import { logger } from './services/logger';
+import { requestPersistentStorage } from './services/backup-service';
+
+// 请求持久化存储：降低浏览器在磁盘压力下整体回收 IndexedDB（用户全部创作数据）的概率。
+// 被拒绝无副作用；每次启动检查一次，已授予则跳过。
+requestPersistentStorage();
 
 // ── One-shot Service Worker cache cleanup ────────────────────────────────
 // Fixes "Failed to fetch dynamically imported module" caused by stale SW
