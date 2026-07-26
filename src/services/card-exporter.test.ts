@@ -438,6 +438,140 @@ describe('mes_example 全链路 (S2-3)', () => {
   });
 });
 
+// ── S3: description / personality 归一化丢失修复 ────────────────────────────
+describe('description/personality 保真 (S3)', () => {
+  it('createEmptyDraft 提供 personality 默认值', () => {
+    expect(createEmptyDraft().personality).toBe('');
+  });
+
+  it('第三方卡（有描述、无匹配条目）导入→导出：description 逐字保真', () => {
+    const desc = '来自北境的旅人，沉默寡言。';
+    const card = {
+      spec: 'chara_card_v2',
+      spec_version: '2.0',
+      data: {
+        name: '旅人',
+        description: desc,
+        personality: '冷淡',
+        first_mes: '……你好。',
+        extensions: {},
+      },
+    };
+    const restored = cardToDraft(card as unknown as Record<string, unknown>);
+    expect(restored.personality).toBe('冷淡');
+    const exported = assembleCard(restored);
+    expect(exported.data.description).toBe(desc);
+    expect(exported.data.personality).toBe('冷淡');
+  });
+
+  it('向导卡（角色已同步为世界书条目，entryIds 命中）导出 description 仍为 空', () => {
+    const entry = { ...createEmptyLorebookEntry(), id: 'e1', name: '阿绫 - 角色设定', comment: '阿绫 - 角色设定', content: '阿绫的完整设定', constant: true };
+    const draft = makeDraft({
+      cardName: '阿绫',
+      characters: [{ id: 'c1', name: '阿绫', description: '阿绫的完整设定', entryIds: ['e1'] }],
+      lorebookEntries: [entry],
+    });
+    expect(assembleCard(draft).data.description).toBe('');
+  });
+
+  it('entryIds 失效（保存→再编辑往返）但条目内容包含描述时，description 仍为空（内容启发式兜底）', () => {
+    // cardToDraft 重建的条目 id 与 _meta.entryIds 对不上——靠 contentMatchesDescription 兜底
+    const entry = { ...createEmptyLorebookEntry(), id: 'new-id', name: '阿绫 - 角色设定', comment: '阿绫 - 角色设定', content: '阿绫的完整设定（分块一）', constant: true };
+    const draft = makeDraft({
+      cardName: '阿绫',
+      characters: [{ id: 'c1', name: '阿绫', description: '阿绫的完整设定（分块一）\n\n阿绫的完整设定（分块二）', entryIds: ['stale-id'] }],
+      lorebookEntries: [entry],
+    });
+    expect(assembleCard(draft).data.description).toBe('');
+  });
+
+  it('多个未同步角色的描述按顺序 join', () => {
+    const draft = makeDraft({
+      cardName: '双子',
+      characters: [
+        { id: 'c1', name: '姐姐', description: '姐姐的描述' },
+        { id: 'c2', name: '妹妹', description: '妹妹的描述' },
+      ],
+    });
+    expect(assembleCard(draft).data.description).toBe('姐姐的描述\n\n妹妹的描述');
+  });
+
+  it('personality 往返一致：assembleCard → cardToDraft 二次往返稳定', () => {
+    const card = assembleCard(makeDraft({ cardName: 'P', personality: '外冷内热' }));
+    const restored = cardToDraft(card as unknown as Record<string, unknown>);
+    expect(restored.personality).toBe('外冷内热');
+    expect(assembleCard(restored).data.personality).toBe('外冷内热');
+  });
+});
+
+// ── S3: 世界书名/描述保真 + 调度条目书名对齐 ────────────────────────────────
+describe('世界书元数据保真 (S3)', () => {
+  it('默认书名按卡名派生，extensions.world 与 character_book.name 恒相等', () => {
+    const card = assembleCard(makeDraft({ cardName: '阿绫' }));
+    expect(card.data.character_book.name).toBe('阿绫的世界书');
+    expect((card.data.extensions as unknown as Record<string, unknown>).world).toBe('阿绫的世界书');
+  });
+
+  it('自定义书名/描述往返保真，world 跟随书名', () => {
+    const card = assembleCard(makeDraft({ cardName: '阿绫', bookName: '铁与雾编年史', bookDescription: '北境世界观' }));
+    expect(card.data.character_book.name).toBe('铁与雾编年史');
+    expect(card.data.character_book.description).toBe('北境世界观');
+    expect((card.data.extensions as unknown as Record<string, unknown>).world).toBe('铁与雾编年史');
+
+    const restored = cardToDraft(card as unknown as Record<string, unknown>);
+    expect(restored.bookName).toBe('铁与雾编年史');
+    expect(restored.bookDescription).toBe('北境世界观');
+    const again = assembleCard(restored);
+    expect(again.data.character_book.name).toBe('铁与雾编年史');
+    expect(again.data.character_book.description).toBe('北境世界观');
+  });
+
+  it('派生默认形态的书名往返后仍跟随卡名（改卡名书名不卡旧值）', () => {
+    const restored = cardToDraft(assembleCard(makeDraft({ cardName: '阿绫' })) as unknown as Record<string, unknown>);
+    expect(restored.bookName).toBe('');
+    restored.cardName = '新名字';
+    expect(assembleCard(restored).data.character_book.name).toBe('新名字的世界书');
+  });
+
+  it('第三方自定义书名导入→导出逐字保真', () => {
+    const card = makeThirdPartyCard() as { data: Record<string, unknown> };
+    (card.data.character_book as Record<string, unknown>).name = '铁与雾编年史';
+    (card.data.character_book as Record<string, unknown>).description = '第三方书描述';
+    (card.data.extensions as Record<string, unknown>).world = '铁与雾编年史';
+    const exported = assembleCard(cardToDraft(card as unknown as Record<string, unknown>));
+    expect(exported.data.character_book.name).toBe('铁与雾编年史');
+    expect(exported.data.character_book.description).toBe('第三方书描述');
+    expect((exported.data.extensions as unknown as Record<string, unknown>).world).toBe('铁与雾编年史');
+  });
+
+  it('导出时分阶段调度条目的 getWorldInfo 书名对齐导出书名（阶段不切换根因）', () => {
+    // 旧版调度条目：书名烤死为卡名（与导出书名「卡名的世界书」不一致 → ST 里查无此书）
+    const dispatcherContent = `<%_ const __stagedRaw_测试 = getvar('stat_data.关系.阶段'); _%>
+<%_ const __stagedVal_测试 = Array.isArray(__stagedRaw_测试) ? __stagedRaw_测试[0] : __stagedRaw_测试; _%>
+<%_ if (__stagedVal_测试 === '朋友') { _%>
+<%= await getWorldInfo("阿绫", "测试：朋友") _%>
+<%_ } _%>`;
+    const draft = makeDraft({
+      cardName: '阿绫',
+      mvu: {
+        enabled: true, mode: 'expert', schemaSections: [], updateRules: [], ejsConfigs: [],
+        ejsPreprocessContent: '', schemaTsContent: '...', initvarYamlContent: '', updateRulesYamlContent: '',
+        statusBarHtml: '', statusBarStyle: 'compact-panel',
+      },
+      lorebookEntries: [
+        { ...createEmptyLorebookEntry(), name: '测试-调度', comment: '测试-调度', content: dispatcherContent, constant: true },
+        { ...createEmptyLorebookEntry(), name: '普通', comment: '普通', content: '<%= await getWorldInfo("公共设定书", "共享") %>', keys: ['k'] },
+      ],
+    });
+    const entries = assembleCard(draft).data.character_book.entries;
+    const dispatcher = entries.find((e) => e.name === '测试-调度');
+    const plain = entries.find((e) => e.name === '普通');
+    expect(dispatcher?.content).toContain('getWorldInfo("阿绫的世界书", "测试：朋友")');
+    // 无调度签名的第三方 EJS 不动
+    expect(plain?.content).toContain('getWorldInfo("公共设定书", "共享")');
+  });
+});
+
 // ── S2-3: at_depth 位置保真 ──────────────────────────────────────────────────
 describe('at_depth 位置保真 (S2-3)', () => {
   function cardWithEntryPosition(entryPosition: unknown, extPosition: unknown) {
@@ -518,9 +652,10 @@ describe('at_depth 位置保真 (S2-3)', () => {
 //
 // 第三方卡「导入 → 无修改 → 导出」应逐字段等价。fixture 里本工具「拥有」的字段
 // 已按本工具的规范形态书写（否则失败原因与直通层无关），本工具会强制归一化的字段：
-//   - data.description / data.personality 恒为 ''（worldbook-first 架构，非直通层职责）
-//   - character_book.name / extensions.world 恒为 `${cardName}的世界书`
-//   - character_book.description 恒为 ''
+//   - data.description：仅当角色描述已同步进世界书条目时归一化为 ''；
+//     未同步的导入描述会写回（S3 保真修复），personality 走往返直通
+//   - character_book.name / description：S3 起保真——自定义书名/描述原样保留，
+//     仅「派生默认形态」（卡名的世界书）跟随卡名；extensions.world 恒等于书名
 //   - 条目 id 重排为 1..N、extensions.display_index 重排为数组下标
 function makeThirdPartyCard() {
   return {
@@ -528,8 +663,8 @@ function makeThirdPartyCard() {
     spec_version: '3.0',
     data: {
       name: '第三方角色',
-      description: '',
-      personality: '',
+      description: '第三方角色的原始描述：一位来自北境的旅人。',
+      personality: '傲娇但心软，嘴上不饶人。',
       scenario: '一个第三方场景',
       first_mes: '你好，我是第三方卡。',
       mes_example: '<START>\n{{user}}: 你好\n{{char}}: 你好呀',
@@ -797,6 +932,26 @@ describe('导入字段直通层 passthrough (S2-3)', () => {
     const restored = cardToDraft(assembleCard(draft) as unknown as Record<string, unknown>);
     expect(restored._passthrough).toBeUndefined();
     expect(restored.lorebookEntries[0]._passthrough).toBeUndefined();
+  });
+
+  it('无 UI 入口的 ST 运行时字段（match_* / triggers / outlet_name / use_group_scoring）非默认值往返保真', () => {
+    const card = makeThirdPartyCard() as { data: { character_book: { entries: Array<{ extensions: Record<string, unknown> }> } } };
+    Object.assign(card.data.character_book.entries[0].extensions, {
+      match_scenario: true,
+      match_character_description: true,
+      triggers: ['normal', 'continue'],
+      outlet_name: '自定义出口',
+      use_group_scoring: true,
+    });
+    const exported = assembleCard(cardToDraft(card as unknown as Record<string, unknown>));
+    const ext = exported.data.character_book.entries[0].extensions as Record<string, unknown>;
+    expect(ext.match_scenario).toBe(true);
+    expect(ext.match_character_description).toBe(true);
+    expect(ext.triggers).toEqual(['normal', 'continue']);
+    expect(ext.outlet_name).toBe('自定义出口');
+    expect(ext.use_group_scoring).toBe(true);
+    // 默认值字段仍是本工具常量（不进直通层）
+    expect(ext.match_persona_description).toBe(false);
   });
 
   it('本工具 MVU + 直播间卡往返也不产生直通层数据', () => {

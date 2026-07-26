@@ -142,6 +142,24 @@ export function migrateStagedDispatcherContent(content: string): string {
 }
 
 /**
+ * 导出前把分阶段调度条目里 `getWorldInfo("书名", ...)` 的书名统一改写为当前
+ * 导出书名。三个必要性：
+ *   1. 旧版卡的调度条目用卡名做书名，而导出书名是「卡名的世界书」——ST 里
+ *      loadWorldInfo 精确匹配，不一致时子条目永远拉不到（「阶段不切换」根因）；
+ *   2. 用户改卡名后，已生成的调度条目里烤死的旧书名会失效；
+ *   3. 书名可自定义（draft.bookName）后，调度条目必须跟随同一来源。
+ * 只改写带本工具调度签名（__stagedRaw 变量声明，staged-lorebook-builder 与
+ * novel-analysis-service 两个生成器都有）的条目——第三方 EJS 里的 getWorldInfo
+ * 可能合法地引用别的书，不能碰。
+ */
+export function alignStagedDispatcherBookName(content: string, bookName: string): string {
+  if (!content || !/__stagedRaw/.test(content) || !content.includes('getWorldInfo(')) return content;
+  const escaped = escapeEjsDoubleQuoted(bookName);
+  // 替换用回调返回，避免书名里的 $ 被 String.replace 当特殊模式解释
+  return content.replace(/getWorldInfo\(\s*"(?:[^"\\]|\\.)*"\s*,/g, () => `getWorldInfo("${escaped}",`);
+}
+
+/**
  * 为阶段自动生成条件表达式。
  * - enum: `=== 'value'`
  * - number + '>=': `>= threshold`

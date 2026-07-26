@@ -7,6 +7,7 @@ import {
   buildDispatcherContent,
   buildStagedLorebookEntries,
   migrateStagedDispatcherContent,
+  alignStagedDispatcherBookName,
   parseDispatcherContent,
   sortStagesByDirection,
   type StagedLorebookConfig,
@@ -274,6 +275,45 @@ describe('Staged Lorebook Builder - 调度条目兼容性', () => {
   it('migrateStagedDispatcherContent 对普通世界书条目不做改动', () => {
     const plain = '# 普通条目\n这是普通内容';
     expect(migrateStagedDispatcherContent(plain)).toBe(plain);
+  });
+});
+
+// ── S3: 调度条目书名对齐（「阶段不切换」根因防复活） ─────────────────────────
+
+describe('alignStagedDispatcherBookName (S3)', () => {
+  const dispatcher = `<%_ const __stagedRaw_测试 = getvar('stat_data.关系.阶段'); _%>
+<%_ const __stagedVal_测试 = Array.isArray(__stagedRaw_测试) ? __stagedRaw_测试[0] : __stagedRaw_测试; _%>
+<%_ if (__stagedVal_测试 === '朋友') { _%>
+<%= await getWorldInfo("旧书名", "测试：朋友") _%>
+<%_ } else if (__stagedVal_测试 === '恋人') { _%>
+<%= await getWorldInfo("旧书名", "测试：恋人") _%>
+<%_ } _%>`;
+
+  it('把调度条目里所有 getWorldInfo 书名改写为导出书名', () => {
+    const aligned = alignStagedDispatcherBookName(dispatcher, '阿绫的世界书');
+    expect(aligned).toContain('getWorldInfo("阿绫的世界书", "测试：朋友")');
+    expect(aligned).toContain('getWorldInfo("阿绫的世界书", "测试：恋人")');
+    expect(aligned).not.toContain('旧书名');
+  });
+
+  it('书名做 EJS 双引号转义（引号/反斜杠/％>不逃逸）', () => {
+    const aligned = alignStagedDispatcherBookName(dispatcher, '书"名\\');
+    expect(aligned).toContain('getWorldInfo("书\\"名\\\\", "测试：朋友")');
+  });
+
+  it('书名含 $ 不被 String.replace 特殊模式吞掉', () => {
+    const aligned = alignStagedDispatcherBookName(dispatcher, '$&书$1');
+    expect(aligned).toContain('getWorldInfo("$&书$1", "测试：朋友")');
+  });
+
+  it('不带调度签名（__stagedRaw）的第三方 EJS 不改写——可能合法引用别的书', () => {
+    const thirdParty = '<%= await getWorldInfo("公共设定书", "共享条目") %>';
+    expect(alignStagedDispatcherBookName(thirdParty, '阿绫的世界书')).toBe(thirdParty);
+  });
+
+  it('普通文本原样返回', () => {
+    expect(alignStagedDispatcherBookName('普通内容', '书')).toBe('普通内容');
+    expect(alignStagedDispatcherBookName('', '书')).toBe('');
   });
 });
 

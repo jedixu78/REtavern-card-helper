@@ -414,6 +414,16 @@ export interface WizardDraft {
    *  可选是为了兼容不带该字段的历史草稿与既有 WizardDraft 字面量；
    *  createEmptyDraft 会给出 '' 默认值，消费侧一律按 `draft.mes_example || ''` 读取。 */
   mes_example?: string;
+  /** 性格摘要（V2/V3 `personality`）。本工具的向导不产出它（worldbook-first），
+   *  但第三方导入卡会带——往返直通防止丢失。可选性与默认值约定同 mes_example。
+   *  暂无 UI 入口（后续可挂在步骤 7 高级区）。 */
+  personality?: string;
+  /** 世界书名（`character_book.name`）。空串 = 按卡名派生默认值（resolveBookName）。
+   *  第三方导入卡的自定义书名靠它保真；cardToDraft 读到「派生默认形态」的书名时
+   *  会存空串，让书名继续跟随卡名。 */
+  bookName?: string;
+  /** 世界书描述（`character_book.description`）——第三方卡往返直通，无 UI 入口 */
+  bookDescription?: string;
   // V2 advanced fields
   scenario: string;
   system_prompt: string;
@@ -555,6 +565,17 @@ export const LOREBOOK_ROLE_OPTIONS = [
 export const WIZARD_DRAFT_VERSION = 6;
 
 /**
+ * 世界书名的唯一推导来源。导出的 `character_book.name`、`extensions.world` 与
+ * 分阶段调度条目里 `getWorldInfo("书名", ...)` 的第一个参数**必须**都经由这里，
+ * 三者不一致时 ST 里 `loadWorldInfo(书名)` 精确匹配失败、调度条目拉不到子条目，
+ * 表现为「阶段不切换」。draft.bookName 非空 = 用户/导入卡的自定义书名；
+ * 空串 = 按卡名派生默认值。
+ */
+export function resolveBookName(draft: Pick<WizardDraft, 'cardName' | 'bookName'>): string {
+  return draft.bookName?.trim() || `${draft.cardName}的世界书`;
+}
+
+/**
  * Empty wizard draft state.
  * Includes all SillyTavern V2 spec fields.
  */
@@ -611,6 +632,11 @@ export function createEmptyDraft(): WizardDraft {
     // ── V2 Advanced Fields ──────────────────────────────────────────────────
     /** 对话示例（V2/V3 mes_example）——导入的 ST 卡会带回来，导出时原样写入 data.mes_example */
     mes_example: '',
+    /** 性格摘要（V2/V3 personality）——同 mes_example 的往返直通，无 UI 入口 */
+    personality: '',
+    /** 世界书名/描述——空串 = 按卡名派生（见 resolveBookName） */
+    bookName: '',
+    bookDescription: '',
     scenario: '',
     system_prompt: '',
     post_history_instructions: '',

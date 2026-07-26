@@ -24,7 +24,7 @@ const StepMvuVariables = lazy(() => import('../components/wizard/StepMvuVariable
 const StepStagedMode = lazy(() => import('../components/wizard/StepStagedMode').then((m) => ({ default: m.StepStagedMode })));
 const StepLiveStreamChat = lazy(() => import('../components/wizard/StepLiveStreamChat').then((m) => ({ default: m.StepLiveStreamChat })));
 const StepPolishExport = lazy(() => import('../components/wizard/StepPolishExport').then((m) => ({ default: m.StepPolishExport })));
-import { generateId, createEmptyDraft, createEmptyLorebookEntry, createEmptyMvuConfig, MVU_LOREBOOK_ENTRY_NAMES } from '../constants/defaults';
+import { generateId, createEmptyDraft, createEmptyLorebookEntry, createEmptyMvuConfig, MVU_LOREBOOK_ENTRY_NAMES, resolveBookName } from '../constants/defaults';
 import type { LorebookEntry, WizardCharacter, WizardDraft } from '../constants/defaults';
 import { consumeAnalysisLorebookImport } from '../services/novel-analysis-service';
 import { cancelActiveAIRequests, AIGenerationCancelledError } from '../services/ai-service';
@@ -299,10 +299,14 @@ export function WizardPage() {
     // Resolve a stable card name first — used both for the draft and as the
     // bookName argument in the staged-lorebook dispatcher (which we generated
     // with a __NOVEL_ANALYSIS__ placeholder in novel-analysis-service).
+    // 书名走 resolveBookName（与导出的 character_book.name 同一来源）——ST 里
+    // loadWorldInfo 精确匹配，调度条目书名与导出书名不一致时「阶段不切换」。
     // Escape per EJS double-quoted JS string rules so a `"` or `\` in the card
     // name can't break out of getWorldInfo("bookName", ...) in the dispatcher.
     const resolvedCardName = draft.cardName || payload.title || t('wizard.cardNameFallback');
-    const sanitizedBookName = escapeEjsDoubleQuoted(resolvedCardName || t('wizard.cardNameFallback'));
+    const sanitizedBookName = escapeEjsDoubleQuoted(
+      resolveBookName({ cardName: resolvedCardName || t('wizard.cardNameFallback'), bookName: draft.bookName }),
+    );
     const finalEntries = payload.entries.map((entry) => ({
       ...entry,
       content: entry.content?.replaceAll('__NOVEL_ANALYSIS__', sanitizedBookName) ?? entry.content,
@@ -326,7 +330,7 @@ export function WizardPage() {
     // catches, causing WizardPage to unmount and remount fresh (losing the draft
     // update, since debounced auto-save hasn't flushed to IndexedDB yet).
     window.history.replaceState({}, '', '/wizard');
-  }, [loading, editId, location.search, draft.cardName, draft.lorebookEntries, draft.mvu, updateDraft, setCurrentStep, addToast, t]);
+  }, [loading, editId, location.search, draft.cardName, draft.bookName, draft.lorebookEntries, draft.mvu, updateDraft, setCurrentStep, addToast, t]);
 
   // ── Consume Workshop lorebook import on mount ──
   useEffect(() => {

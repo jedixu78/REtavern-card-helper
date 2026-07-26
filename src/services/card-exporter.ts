@@ -21,7 +21,7 @@
  *     2. 对AI隐藏状态栏：把占位符从 prompt 中删除（promptOnly）
  *   first_mes 末尾自动追加占位符，保证开场消息也会渲染状态栏。
  */
-import { generateId, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt, REGEX_SCRIPT_NAMES } from '../constants/defaults';
+import { generateId, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt, REGEX_SCRIPT_NAMES, resolveBookName } from '../constants/defaults';
 import type {
   WizardDraft,
   LorebookEntry,
@@ -33,7 +33,7 @@ import type {
   LorebookEntryPassthrough,
 } from '../constants/defaults';
 import { buildMvuScriptBundle } from './mvu-builder';
-import { migrateStagedDispatcherContent, escapeEjsSingleQuoted } from './staged-lorebook-builder';
+import { migrateStagedDispatcherContent, alignStagedDispatcherBookName, escapeEjsSingleQuoted } from './staged-lorebook-builder';
 import { findStagedLorebookEntryIndices } from './lorebook-predicates';
 import { fixLorebookBlueGreenLights } from './card-fixers';
 
@@ -186,14 +186,13 @@ const OWN_ENTRY_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /** buildSTExtensions 会从 draft 字段重新生成的 entry.extensions 键 —— 导出时本工具值优先。
- *  注意 automation_id / vectorized / delay_until_recursion 刻意不在此列，见下方常量。 */
+ *  注意 automation_id / vectorized / delay_until_recursion 与一批 match_* 等
+ *  无 UI 入口的字段刻意不在此列，见下方常量。 */
 const OWN_ENTRY_EXT_KEYS: ReadonlySet<string> = new Set([
   'position', 'probability', 'group', 'group_override', 'group_weight',
   'selectiveLogic', 'role', 'depth', 'exclude_recursion', 'prevent_recursion',
-  'match_whole_words', 'use_group_scoring', 'case_sensitive', 'sticky', 'cooldown', 'delay',
-  'match_persona_description', 'match_character_description', 'match_character_personality',
-  'match_character_depth_prompt', 'match_scenario', 'match_creator_notes', 'triggers',
-  'ignore_budget', 'outlet_name', 'display_index',
+  'match_whole_words', 'case_sensitive', 'sticky', 'cooldown', 'delay',
+  'ignore_budget', 'display_index',
 ]);
 
 /**
@@ -210,7 +209,25 @@ const ENTRY_EXT_IMPORT_WINS_DEFAULTS: Record<string, unknown> = {
   useProbability: true,
   // 见 buildSTExtensions 里的说明：本工具写 null（继承书级），导入值优先。
   scan_depth: null,
+  // S3：以下与 useProbability/scan_depth 完全同型——buildSTExtensions 写死常量、
+  // 无任何 UI/草稿入口，此前在 OWN_ENTRY_EXT_KEYS 里会覆盖导入卡的非默认值。
+  match_persona_description: false,
+  match_character_description: false,
+  match_character_personality: false,
+  match_character_depth_prompt: false,
+  match_scenario: false,
+  match_creator_notes: false,
+  triggers: [] as unknown[],
+  outlet_name: '',
+  use_group_scoring: false,
 };
+
+/** 导入值是否等于 IMPORT_WINS 默认值（相等则不进直通层）。triggers 是数组，须按内容比较。 */
+function equalsImportWinsDefault(key: string, value: unknown): boolean {
+  const def = ENTRY_EXT_IMPORT_WINS_DEFAULTS[key];
+  if (Array.isArray(def)) return Array.isArray(value) && value.length === 0 && def.length === 0;
+  return value === def;
+}
 
 /** 只接受普通对象；数组 / 字符串 / null 等畸形值一律当作空对象，避免被 Object.entries 拆成下标键。 */
 function asRecord(value: unknown): Record<string, unknown> {
@@ -736,26 +753,50 @@ function buildSTExtensions(overrides: {
 
 export function assembleCard(draft: WizardDraft, existingId?: number) {
   // ── Export mode: worldbook-first ───────────────────────────────
-  // description = "", personality = ""
   // Character content is injected through draft.lorebookEntries, which is
   // synchronized by the wizard before preview/save.
-
-  // ── Build `description` (always empty — content lives in world book) ──
-  const description = '';
-  const personality = '';
 
   // MVU 未启用时，普通世界书条目中的 MVU 资产也应被过滤掉，避免污染未启用 MVU 的卡片。
   const mvuEnabled = Boolean(draft.mvu?.enabled && (draft.mvu.schemaTsContent || draft.mvu.schemaSections.length > 0));
   // 过滤掉已不存在于当前世界书中的 entryIds，避免下次编辑时生成重复条目。
   const validEntryIds = new Set(draft.lorebookEntries.map((e) => e.id));
+  // 世界书名唯一来源：character_book.name、extensions.world 与分阶段调度条目的
+  // getWorldInfo 书名参数必须三处一致，否则 ST 里「阶段不切换」（见 resolveBookName）。
+  const bookName = resolveBookName(draft);
+
+  // ── Build `description` ─────────────────────────────────────────────────
+  // worldbook-first：向导正常流程里角色描述总会被 syncCharacterEntries 转成世界书
+  // 条目（跨步骤 3 时注入），description 保持 ''。
+  // 例外：第三方导入卡走「cardToDraft → assembleCard」直接归一化路径时没人做同步，
+  // 原 data.description 会被彻底丢掉。对「有描述但没有任何已同步条目」的角色
+  // （判定 = entryIds 无一命中现存条目 且 无任一条目内容等于/包含其描述——与
+  // token-budget.ts 的 contentMatchesDescription 同一启发式，两处需保持一致），
+  // 把描述写回 data.description 保住保真。
+  const contentMatchesDescription = (desc: string): boolean => {
+    const trimmed = desc.trim();
+    if (!trimmed) return false;
+    return draft.lorebookEntries.some((e) => {
+      const c = (e.content || '').trim();
+      return c.length > 0 && (c === trimmed || trimmed.includes(c));
+    });
+  };
+  const description = (draft.characters || [])
+    .filter((c) => (c.description || '').trim())
+    .filter((c) => !(c.entryIds || []).some((id) => validEntryIds.has(id)))
+    .filter((c) => !contentMatchesDescription(c.description || ''))
+    .map((c) => c.description.trim())
+    .join('\n\n');
+  // personality 本工具不产出（无 UI 入口），仅为第三方导入卡做往返直通
+  const personality = draft.personality || '';
 
   // ── Build character_book entries (V2 CharacterBook format) ─────────────
   // V2 spec fields go directly on the entry.
   // SillyTavern runtime fields go in `extensions` (preserved by ST on import).
-  // 兼容旧版分阶段调度条目：无后缀变量名在多角色卡中会重复声明，导出前统一迁移。
+  // 兼容旧版分阶段调度条目：无后缀变量名在多角色卡中会重复声明，导出前统一迁移；
+  // 调度条目里的 getWorldInfo 书名同步对齐当前导出书名（旧卡烤死的书名会失效）。
   const migratedLorebookEntries = draft.lorebookEntries.map((entry) => ({
     ...entry,
-    content: migrateStagedDispatcherContent(entry.content || ''),
+    content: alignStagedDispatcherBookName(migrateStagedDispatcherContent(entry.content || ''), bookName),
   }));
   // 导出前自动修复蓝绿灯问题（绿灯无 keys、selective 无 secondary_keys 等）
   const fixedLorebookEntries = fixLorebookBlueGreenLights(migratedLorebookEntries);
@@ -1073,8 +1114,8 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
       alternate_greetings: (draft.alternate_greetings || []).map((g) => appendPlaceholders(draft, g)),
       character_book: {
         ...passCharBook,
-        name: `${draft.cardName}的世界书`,
-        description: '',
+        name: bookName,
+        description: draft.bookDescription || '',
         scan_depth: draft.bookScanDepth ?? 200,
         token_budget: draft.bookTokenBudget ?? 1500,
         recursive_scanning: draft.bookRecursiveScanning ?? false,
@@ -1097,7 +1138,8 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
         // SillyTavern uses extensions.world to link the character to its
         // world info file. Without it, ST doesn't auto-load the world book
         // on character selection, forcing a manual reload each time.
-        world: `${draft.cardName}的世界书`,
+        // 必须与 character_book.name 保持相等（有测试锁这个不变式）
+        world: bookName,
       },
     },
 
@@ -1430,7 +1472,7 @@ function collectEntryPassthrough(
   const extensions = collectUnknownKeys(
     entryExt,
     OWN_ENTRY_EXT_KEYS,
-    (key, value) => key in ENTRY_EXT_IMPORT_WINS_DEFAULTS && value === ENTRY_EXT_IMPORT_WINS_DEFAULTS[key],
+    (key, value) => key in ENTRY_EXT_IMPORT_WINS_DEFAULTS && equalsImportWinsDefault(key, value),
   );
   if (extensions) result.extensions = extensions;
   return Object.keys(result).length > 0 ? result : undefined;
@@ -1583,6 +1625,8 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
     firstMessage: (data.first_mes as string) || '',
     // 对话示例（V2/V3 规范字段）——旧版导入会静默丢弃它
     mes_example: (data.mes_example as string) || '',
+    // 性格摘要（V2/V3 规范字段）——往返直通，导出时写回 data.personality
+    personality: (data.personality as string) || '',
 
     // V2 advanced fields
     scenario: (data.scenario as string) || '',
@@ -1596,6 +1640,14 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
     bookScanDepth: (charBook?.scan_depth as number) ?? 200,
     bookTokenBudget: (charBook?.token_budget as number) ?? 1500,
     bookRecursiveScanning: (charBook?.recursive_scanning as boolean) ?? false,
+    // 书名保真：自定义书名原样保留；「派生默认形态」（卡名的世界书）存空串，
+    // 让书名继续跟随卡名——否则改卡名后书名会卡在旧值
+    bookName: (() => {
+      const importedBookName = ((charBook?.name as string) || '').trim();
+      const derivedDefault = `${(data.name as string) || (card.name as string) || ''}的世界书`;
+      return importedBookName && importedBookName !== derivedDefault ? importedBookName : '';
+    })(),
+    bookDescription: (charBook?.description as string) || '',
 
     // Reconstruct MVU config from extensions + lorebook entries
     mvu: reconstructMvuConfig(data, rawEntries),
