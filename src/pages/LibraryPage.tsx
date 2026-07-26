@@ -85,6 +85,11 @@ export function LibraryPage() {
     }
   };
 
+  /** 就地编辑原卡：直达 /wizard/:id 编辑模式，保存会更新库中原卡片，不触碰创建流程的自动草稿。 */
+  const handleEditInPlace = (cardId: number) => {
+    navigate(`/wizard/${cardId}`);
+  };
+
   const handleEditAsNewDraft = async (card: Record<string, unknown>) => {
     if (!confirm(t('library.editAsDraftConfirm'))) return;
 
@@ -447,6 +452,16 @@ export function LibraryPage() {
                     <button
                       className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
                       style={{ color: 'var(--text-color)' }}
+                      onClick={() => {
+                        setExportMenuCard(null);
+                        handleEditAsNewDraft(card as unknown as Record<string, unknown>);
+                      }}
+                    >
+                      📝 {t('library.forkAsDraft')}
+                    </button>
+                    <button
+                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                      style={{ color: 'var(--text-color)' }}
                       onClick={() => handleExportJson(card as unknown as Record<string, unknown>)}
                     >
                       📄 {t('library.exportJson')}
@@ -509,7 +524,7 @@ export function LibraryPage() {
                   variant="secondary"
                   size="sm"
                   className="mt-auto pt-2 text-xs w-full"
-                  onClick={() => handleEditAsNewDraft(card as unknown as Record<string, unknown>)}
+                  onClick={() => handleEditInPlace(cardId)}
                 >
                   <Edit2 size={12} className="mr-1" />
                   {t('common.edit')}
@@ -609,7 +624,7 @@ export function LibraryPage() {
                     variant="secondary"
                     size="sm"
                     className="text-xs"
-                    onClick={() => handleEditAsNewDraft(card as unknown as Record<string, unknown>)}
+                    onClick={() => handleEditInPlace(cardId)}
                   >
                     <Edit2 size={12} className="mr-1" />
                     {t('common.edit')}
@@ -632,6 +647,16 @@ export function LibraryPage() {
                   style={{ borderColor, backgroundColor: 'var(--color-surface-raised)' }}
                   onClick={(e) => e.stopPropagation()}
                 >
+                  <button
+                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                    style={{ color: 'var(--text-color)' }}
+                    onClick={() => {
+                      setExportMenuCard(null);
+                      handleEditAsNewDraft(card as unknown as Record<string, unknown>);
+                    }}
+                  >
+                    📝 {t('library.forkAsDraft')}
+                  </button>
                   <button
                     className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
                     style={{ color: 'var(--text-color)' }}
