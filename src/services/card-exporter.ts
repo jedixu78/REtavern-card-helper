@@ -22,7 +22,16 @@
  *   first_mes 末尾自动追加占位符，保证开场消息也会渲染状态栏。
  */
 import { generateId, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt, REGEX_SCRIPT_NAMES } from '../constants/defaults';
-import type { WizardDraft, LorebookEntry, LorebookPosition, MvuConfig, EjsEntryConfig, LiveStreamChatConfig } from '../constants/defaults';
+import type {
+  WizardDraft,
+  LorebookEntry,
+  LorebookPosition,
+  MvuConfig,
+  EjsEntryConfig,
+  LiveStreamChatConfig,
+  DraftPassthrough,
+  LorebookEntryPassthrough,
+} from '../constants/defaults';
 import { buildMvuScriptBundle } from './mvu-builder';
 import { migrateStagedDispatcherContent, escapeEjsSingleQuoted } from './staged-lorebook-builder';
 import { findStagedLorebookEntryIndices } from './lorebook-predicates';
@@ -45,6 +54,38 @@ const POSITION_INDEX: Record<string, number> = {
   before_example: 5,        // before_example_messages
   after_example: 6,         // after_example_messages
 };
+
+/** 反向映射：SillyTavern 数值 position → 本工具的字符串 position。与 POSITION_INDEX 一一对应。 */
+const POSITION_FROM_INDEX: Record<number, LorebookPosition> = {
+  0: 'before_char',
+  1: 'after_char',
+  2: 'before_author',
+  3: 'after_author',
+  4: 'at_depth',
+  5: 'before_example',
+  6: 'after_example',
+};
+
+/**
+ * 还原条目的插入位置。
+ *
+ * SillyTavern 里 `extensions.position`（数值）才是权威值：V2 规范的 entry.position
+ * 只有 before_char / after_char 两种取值，表达不了 at_depth 等位置，所以第三方卡的
+ * at_depth 条目往往在 entry.position 上写着 after_char、真正的位置藏在 extensions.position=4。
+ * 只读字符串会把 at_depth 静默降级成 after_char，这里按 ST 的优先级还原：
+ *   extensions.position(数值/字符串) > entry.position(数值/字符串) > after_char
+ */
+function resolveEntryPosition(rawPosition: unknown, rawExtPosition: unknown): LorebookPosition {
+  for (const candidate of [rawExtPosition, rawPosition]) {
+    if (typeof candidate === 'number' && POSITION_FROM_INDEX[candidate]) {
+      return POSITION_FROM_INDEX[candidate];
+    }
+    if (typeof candidate === 'string' && candidate in POSITION_INDEX) {
+      return candidate as LorebookPosition;
+    }
+  }
+  return 'after_char';
+}
 
 /**
  * SelectiveLogic string → numeric mapping.
@@ -84,6 +125,186 @@ const LIVE_CHAT_PROMPT_RULE = `---
 
 /** Default creator notes used when draft.creator_notes is empty */
 const DEFAULT_CREATOR_NOTES = '本卡由「吟游手册」制作。\n请尊重创作者的劳动成果，本卡仅供个人娱乐与学习交流使用，严禁任何形式的商业用途、倒卖、转载售卖或未经授权的二次分发。';
+
+/** extensions.depth_prompt 的空占位（本工具不提供深度提示词编辑，仅保持结构与 V3 参考卡一致） */
+const DEFAULT_DEPTH_PROMPT = { prompt: '', depth: 4, role: 'system' };
+
+// ── 导入字段直通层（passthrough）────────────────────────────────────────────
+//
+// 目标：第三方 ST 卡「导入 → 不修改 → 导出」应逐字段等价，而不是被本工具的
+// 规范化流程静默抹平。做法是在 cardToDraft 里把「本工具不认识的字段」原样收进
+// draft._passthrough / entry._passthrough，在 assembleCard 里先铺底再让本工具
+// 生成的字段覆盖上去。
+//
+// 铁律：**已知字段永远以本工具的值为准**。直通层只填补空缺，不参与竞争。
+// 唯一例外见 ENTRY_EXT_IMPORT_WINS_DEFAULTS —— 那几个字段本工具只会写死常量、
+// 且没有任何 UI/草稿入口，用导入值更忠实且不影响本工具行为。
+
+/** 本工具生成的正则脚本名。导出时写入、导入时按名剔除，避免直通层重复注入。 */
+const OWN_REGEX_SCRIPT_NAMES = {
+  hideVarUpdate: '对AI隐藏变量更新',
+  varUpdatePending: '变量更新中美化',
+  varUpdateDone: '变量更新美化',
+  statusBar: REGEX_SCRIPT_NAMES.statusBar,
+  hideStatusBar: '对AI隐藏状态栏',
+  liveChat: REGEX_SCRIPT_NAMES.liveChat,
+  hideLiveChat: '对AI隐藏直播间',
+} as const;
+
+/** assembleCard 自行生成的 data 层字段 —— 不进直通层，导出时以本工具的值为准 */
+const OWN_DATA_KEYS: ReadonlySet<string> = new Set([
+  'name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example',
+  'creator_notes', 'system_prompt', 'post_history_instructions', 'alternate_greetings',
+  'character_book', 'tags', 'creator', 'character_version', 'extensions',
+]);
+
+/** 卡片信封层 / 应用层字段 —— 纯 V1 卡时 data 就是卡本身，这些绝不能被写进 data */
+const CARD_ENVELOPE_KEYS: ReadonlySet<string> = new Set([
+  'spec', 'spec_version', 'data', '_meta', '_passthrough',
+  'id', 'createdAt', 'updatedAt', 'deletedAt', 'coverImageBlob',
+  'chat', 'create_date', 'json_data',
+]);
+
+/** buildCardExtensions / assembleCard 自行生成的 data.extensions 键 */
+const OWN_CARD_EXT_KEYS: ReadonlySet<string> = new Set([
+  'mvu_enabled', 'mvu_dependencies', 'mvu_schema_sections', 'mvu_has_status_bar',
+  'mvu_has_ejs_preprocess', 'mvu_status_bar_style', 'mvu_status_bar_show_icons',
+  'mvu_status_bar_options', 'live_stream_chat', 'regex_scripts', 'world',
+]);
+
+/** assembleCard 自行生成的 character_book 字段（extensions 不在其中：本工具只写 {}，
+ *  第三方卡里的真实内容更有价值，交给直通层保留） */
+const OWN_CHARACTER_BOOK_KEYS: ReadonlySet<string> = new Set([
+  'name', 'description', 'scan_depth', 'token_budget', 'recursive_scanning', 'entries',
+]);
+
+/** assembleCard 自行生成的世界书条目根层级字段 */
+const OWN_ENTRY_KEYS: ReadonlySet<string> = new Set([
+  'id', 'keys', 'secondary_keys', 'content', 'name', 'enabled', 'insertion_order',
+  'case_sensitive', 'selective', 'constant', 'position', 'priority', 'comment',
+  'use_regex', 'extensions',
+]);
+
+/** buildSTExtensions 会从 draft 字段重新生成的 entry.extensions 键 —— 导出时本工具值优先。
+ *  注意 automation_id / vectorized / delay_until_recursion 刻意不在此列，见下方常量。 */
+const OWN_ENTRY_EXT_KEYS: ReadonlySet<string> = new Set([
+  'position', 'probability', 'group', 'group_override', 'group_weight',
+  'selectiveLogic', 'role', 'depth', 'exclude_recursion', 'prevent_recursion',
+  'match_whole_words', 'use_group_scoring', 'case_sensitive', 'sticky', 'cooldown', 'delay',
+  'match_persona_description', 'match_character_description', 'match_character_personality',
+  'match_character_depth_prompt', 'match_scenario', 'match_creator_notes', 'triggers',
+  'ignore_budget', 'outlet_name', 'display_index',
+]);
+
+/**
+ * 本工具在 buildSTExtensions 里写死常量、且没有任何 UI/草稿入口的 ST 运行时字段。
+ * 第三方卡带了非默认值时以卡里的为准；值等于这里的默认值时不必进直通层（保持草稿干净）。
+ */
+const ENTRY_EXT_IMPORT_WINS_DEFAULTS: Record<string, unknown> = {
+  automation_id: '',
+  vectorized: false,
+  delay_until_recursion: false,
+  // ST 真正的概率开关叫 useProbability（不是 use_probability）。本工具恒写 true
+  // 且无 UI 入口，因此第三方卡的「关闭概率判定」必须以卡里的值为准，
+  // 否则往返后会被翻转成按概率触发。
+  useProbability: true,
+  // 见 buildSTExtensions 里的说明：本工具写 null（继承书级），导入值优先。
+  scan_depth: null,
+};
+
+/** 只接受普通对象；数组 / 字符串 / null 等畸形值一律当作空对象，避免被 Object.entries 拆成下标键。 */
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+/**
+ * 取出 src 中不属于 ownKeys 的键；全部命中已知键时返回 undefined（避免往草稿里塞空对象）。
+ * isDefault 用于跳过「值就是本工具默认值」的键。
+ */
+function collectUnknownKeys(
+  src: unknown,
+  ownKeys: ReadonlySet<string>,
+  isDefault?: (key: string, value: unknown) => boolean,
+): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  let found = false;
+  for (const [key, value] of Object.entries(asRecord(src))) {
+    if (ownKeys.has(key) || value === undefined) continue;
+    if (isDefault?.(key, value)) continue;
+    out[key] = value;
+    found = true;
+  }
+  return found ? out : undefined;
+}
+
+/**
+ * 导出前把直通层里属于本工具的键剔除掉。
+ *
+ * cardToDraft 收集时已经过滤过一遍，这里是纵深防御：本工具并非每次都会写出全部
+ * 已知键（例如 MVU 关闭时 buildCardExtensions 返回 {}），仅靠展开顺序无法保证
+ * 「已知字段以本工具的值为准」——一个陈旧的 mvu_enabled 就足以让 ST 误判。
+ */
+function stripOwnKeys(
+  rawSrc: unknown,
+  ownKeys: ReadonlySet<string>,
+): Record<string, unknown> {
+  const src = asRecord(rawSrc);
+  let needsFilter = false;
+  for (const key of Object.keys(src)) {
+    if (ownKeys.has(key)) { needsFilter = true; break; }
+  }
+  if (!needsFilter) return src;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(src)) {
+    if (!ownKeys.has(key)) out[key] = value;
+  }
+  return out;
+}
+
+/** depth_prompt 只有空占位内容时不值得进直通层（本工具导出时会自己写同样的占位） */
+function isPlaceholderDepthPrompt(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const prompt = (value as Record<string, unknown>).prompt;
+  return prompt === undefined || prompt === '';
+}
+
+/**
+ * 合并条目级 extensions：直通层铺底 → 本工具生成的字段覆盖 →
+ * ENTRY_EXT_IMPORT_WINS_DEFAULTS 里的字段回到导入值。
+ */
+function mergeEntryExtensions(
+  own: Record<string, unknown>,
+  passthrough: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!passthrough) return own;
+  const merged: Record<string, unknown> = { ...stripOwnKeys(passthrough, OWN_ENTRY_EXT_KEYS), ...own };
+  // ENTRY_EXT_IMPORT_WINS_DEFAULTS 里的键不在 OWN_ENTRY_EXT_KEYS 中，故 stripOwnKeys 不会剔除它们
+  for (const key of Object.keys(ENTRY_EXT_IMPORT_WINS_DEFAULTS)) {
+    if (passthrough[key] !== undefined) merged[key] = passthrough[key];
+  }
+  return merged;
+}
+
+/** 导出后的世界书条目形状。索引签名用于承载条目根层级的直通字段。 */
+type ExportedLorebookEntry = {
+  id: number;
+  keys: string[];
+  secondary_keys: string[];
+  content: string;
+  name: string;
+  enabled: boolean;
+  insertion_order: number;
+  case_sensitive: boolean;
+  selective: boolean;
+  constant: boolean;
+  position: string;
+  priority: number;
+  comment: string;
+  use_regex: boolean;
+  extensions: Record<string, unknown>;
+  [key: string]: unknown;
+};
 
 function buildFirstMessage(draft: WizardDraft): string {
   const base = draft.firstMessage || '';
@@ -254,7 +475,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
     // 1. 对AI隐藏变量更新 — 移除 <update>...</update> 标签（AI 回复中的变量更新指令）
     regexScripts.push({
       id: 'aa12731a-97c4-4450-ac2f-0bfe1d6a4f64',
-      scriptName: '对AI隐藏变量更新',
+      scriptName: OWN_REGEX_SCRIPT_NAMES.hideVarUpdate,
       findRegex: '/<(update(?:variable)?)>(?:(?!.*<\\/\\1>)(?:(?!<\\1>).)*$|(?:(?!<\\1>).)*<\\/\\1?>)/gsi',
       replaceString: '',
       trimStrings: [],
@@ -270,7 +491,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
     // 2. 变量更新中美化 — 未闭合的 <update> 标签美化
     regexScripts.push({
       id: 'b9d5f25b-a9d0-41bf-8a69-602d64bbde22',
-      scriptName: '变量更新中美化',
+      scriptName: OWN_REGEX_SCRIPT_NAMES.varUpdatePending,
       findRegex: '/<(update(?:variable)?)>(?!.*<\\/\\1>)\\s*((?:(?!<\\1>).)*)\\s*$/gsi',
       replaceString: '',
       trimStrings: [],
@@ -286,7 +507,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
     // 3. 变量更新美化 — 闭合的 <update>...</update> 标签美化
     regexScripts.push({
       id: '92d49340-fe5e-4929-871f-43d110e5ec76',
-      scriptName: '变量更新美化',
+      scriptName: OWN_REGEX_SCRIPT_NAMES.varUpdateDone,
       findRegex: '/<(update(?:variable)?)>\\s*((?:(?!<\\1>).)*)\\s*<\\/\\1>/gsi',
       replaceString: '',
       trimStrings: [],
@@ -320,8 +541,12 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
       const cleanHtml = /^```html/i.test(cleanedBase.trim())
         ? cleanedBase
         : '```html\n' + cleanedBase + '\n```';
-      // 注意：状态栏的 findRegex 必须用纯字符串（非 /.../gi 正则），
-      // 与参考卡「银帷骑士团」一致。SillyTavern 对纯字符串做字面替换。
+      // 注意：状态栏的 findRegex 写成不带斜杠的裸串（非 /.../gi 形式），
+      // 与参考卡「银帷骑士团」一致。
+      // 更正一处旧注释的说法：ST 并不是「对纯字符串做字面替换」——它的
+      // regexFromString 里斜杠是可选的，裸串同样会被编译成正则。之所以一直没出问题，
+      // 是因为 <StatusPlaceHolderImpl/> 里没有正则元字符，两种解释恰好等价。
+      // （试聊侧的 chat-render.parseFindRegex 按同样规则处理裸串。）
       regexScripts.push({
         id: 'c5e7a8d9-1234-4a5b-9c6d-7e8f9a0b1c2d',
         scriptName: REGEX_SCRIPT_NAMES.statusBar,
@@ -341,7 +566,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
       // 5. 对AI隐藏状态栏 — 把占位符从 AI prompt 中删除
       regexScripts.push({
         id: 'd6f8b9e0-2345-4b6c-ad7e-8f9a0b1c2d3e',
-        scriptName: '对AI隐藏状态栏',
+        scriptName: OWN_REGEX_SCRIPT_NAMES.hideStatusBar,
         findRegex: STATUS_BAR_PLACEHOLDER,
         replaceString: '',
         trimStrings: [],
@@ -387,7 +612,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
     // 对AI隐藏直播间 — 把占位符从 AI prompt 中删除
     regexScripts.push({
       id: 'f2b3c4d5-6789-abcd-ef01-2345678901bc',
-      scriptName: '对AI隐藏直播间',
+      scriptName: OWN_REGEX_SCRIPT_NAMES.hideLiveChat,
       findRegex: LIVE_CHAT_PLACEHOLDER,
       replaceString: '',
       trimStrings: [],
@@ -478,7 +703,12 @@ function buildSTExtensions(overrides: {
     selectiveLogic: SELECTIVE_LOGIC_INDEX[overrides.selectiveLogic ?? 0] ?? 0,
     role: overrides.role ?? 0,
     depth: overrides.depth ?? 4,
-    scan_depth: (overrides.depth ?? 4) > 0 ? (overrides.depth ?? 4) : null,
+    // scan_depth 与 depth 在 ST 里是两回事：depth 是 position=at_depth 的插入楼层，
+    // scan_depth 才是该条目的关键词扫描深度。此前用 depth 派生 scan_depth 是把两个
+    // 语义混成一个，会静默改写导入卡的扫描窗口。草稿模型里没有独立的 per-entry
+    // 扫描深度字段，因此写 null = 继承 character_book.scan_depth（本工具在书级设置它）。
+    // 第三方卡自带的 scan_depth 由 ENTRY_EXT_IMPORT_WINS_DEFAULTS 保留。
+    scan_depth: null,
     exclude_recursion: overrides.excludeRecursion ?? false,
     prevent_recursion: overrides.preventRecursion ?? true,
     delay_until_recursion: false,
@@ -530,7 +760,7 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
   // 导出前自动修复蓝绿灯问题（绿灯无 keys、selective 无 secondary_keys 等）
   const fixedLorebookEntries = fixLorebookBlueGreenLights(migratedLorebookEntries);
   const stagedIndices = findStagedLorebookEntryIndices(fixedLorebookEntries);
-  const entries = fixedLorebookEntries
+  const entries: ExportedLorebookEntry[] = fixedLorebookEntries
     .filter((entry, idx) => {
       if (mvuEnabled) return true;
       if (MVU_LOREBOOK_ENTRY_NAMES.includes(entry.name)) return false;
@@ -539,6 +769,8 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
     })
     .sort((a, b) => (a.insertion_order ?? 0) - (b.insertion_order ?? 0))
     .map((entry, i) => ({
+    // 直通层铺底：导入卡里本工具不认识的条目级字段。下面的已知字段一律覆盖它。
+    ...stripOwnKeys(entry._passthrough?.root ?? {}, OWN_ENTRY_KEYS),
     id: i + 1,
     keys: entry.keys,
     secondary_keys: entry.secondary_keys || [],
@@ -553,7 +785,7 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
     priority: entry.priority ?? 0,
     comment: entry.comment || entry.name || '',
     use_regex: entry.use_regex ?? false,
-    extensions: buildSTExtensions({
+    extensions: mergeEntryExtensions(buildSTExtensions({
       position: entry.position ?? 'after_char',
       displayIndex: i,
       probability: entry.probability ?? 100,
@@ -570,7 +802,7 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
       delay: entry.delay,
       ignoreBudget: entry.ignore_budget ?? false,
       matchWholeWords: entry.match_whole_words,
-    }),
+    }), entry._passthrough?.extensions),
   }));
 
   // ── World Anchor entry (constant, highest priority, before_char) ──────────
@@ -798,6 +1030,22 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
 
   const now = new Date();
 
+  // ── 导入字段直通层 ──────────────────────────────────────────────────────
+  // 铺底顺序：直通层 → 本工具生成的字段（覆盖）。已知字段永远以本工具的值为准。
+  const passthrough: DraftPassthrough = draft._passthrough ?? {};
+  const passData = stripOwnKeys(
+    stripOwnKeys(passthrough.data ?? {}, OWN_DATA_KEYS),
+    CARD_ENVELOPE_KEYS,
+  );
+  const passCardExt = stripOwnKeys(passthrough.extensions ?? {}, OWN_CARD_EXT_KEYS);
+  const passCharBook = stripOwnKeys(passthrough.characterBook ?? {}, OWN_CHARACTER_BOOK_KEYS);
+  const ownCardExt = buildCardExtensions(draft, mvuBundle?.zodTxt);
+  // 正则脚本：本工具生成的在前，第三方脚本按原顺序追加在后（导入时已按名去重）
+  const mergedRegexScripts = [
+    ...((ownCardExt.regex_scripts as unknown[] | undefined) ?? []),
+    ...(passthrough.regexScripts ?? []),
+  ];
+
   return {
     // Preserve existing id for edits
     ...(existingId ? { id: existingId } : {}),
@@ -806,12 +1054,17 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
     spec: 'chara_card_v3',
     spec_version: '3.0',
     data: {
+      // 第三方卡的未知 data 字段铺底（V3 assets / nickname / group_only_greetings 等）
+      ...passData,
+
       // V1 fields (nested inside data for V2/V3)
       name: draft.cardName,
       description,
       personality,
       scenario: draft.scenario || '',
       first_mes: buildFirstMessage(draft),
+      // 对话示例（V2/V3 规范字段）——试聊与 ST 都会读它，必须完整导出
+      mes_example: draft.mes_example || '',
 
       // V2 new fields
       creator_notes: draft.creator_notes?.trim() || DEFAULT_CREATOR_NOTES,
@@ -819,25 +1072,32 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
       post_history_instructions: draft.post_history_instructions || '',
       alternate_greetings: (draft.alternate_greetings || []).map((g) => appendPlaceholders(draft, g)),
       character_book: {
+        ...passCharBook,
         name: `${draft.cardName}的世界书`,
         description: '',
         scan_depth: draft.bookScanDepth ?? 200,
         token_budget: draft.bookTokenBudget ?? 1500,
         recursive_scanning: draft.bookRecursiveScanning ?? false,
-        extensions: {},
+        extensions: asRecord(passCharBook.extensions),
         entries,
       },
       tags: draft.tags || [],
       creator: draft.creator || '',
       character_version: draft.character_version || '1.0',
       extensions: {
-        ...buildCardExtensions(draft, mvuBundle?.zodTxt),
+        // depth_prompt: 空内容占位，保持与 SillyTavern V3 规范一致（参考卡「二十一人会」含此字段）。
+        // 放在直通层之前，第三方卡里真正写了内容的 depth_prompt 会覆盖这个占位。
+        depth_prompt: DEFAULT_DEPTH_PROMPT,
+        // 第三方 / 非本工具生成的扩展铺底（自定义正则以外的扩展键）
+        ...passCardExt,
+        // 本工具生成的扩展始终优先
+        ...ownCardExt,
+        // 正则脚本需要合并而非覆盖：本工具的 + 第三方保留的
+        ...(mergedRegexScripts.length > 0 ? { regex_scripts: mergedRegexScripts } : {}),
         // SillyTavern uses extensions.world to link the character to its
         // world info file. Without it, ST doesn't auto-load the world book
         // on character selection, forcing a manual reload each time.
         world: `${draft.cardName}的世界书`,
-        // depth_prompt: 空内容占位，保持与 SillyTavern V3 规范一致（参考卡「二十一人会」含此字段）
-        depth_prompt: { prompt: '', depth: 4, role: 'system' },
       },
     },
 
@@ -873,6 +1133,7 @@ export function exportAsJson(card: ReturnType<typeof assembleCard>) {
     personality: d.personality,
     scenario: d.scenario,
     first_mes: d.first_mes,
+    mes_example: d.mes_example,
     creatorcomment: d.creator_notes,
     avatar: 'none',
     talkativeness: '0.5',
@@ -918,6 +1179,7 @@ export async function exportAsPng(
     personality: d.personality,
     scenario: d.scenario,
     first_mes: d.first_mes,
+    mes_example: d.mes_example ?? '',
     creatorcomment: d.creator_notes ?? '',
     avatar: 'none',
     talkativeness: '0.5',
@@ -1084,6 +1346,97 @@ function reconstructLiveStreamChat(
 }
 
 /**
+ * 收集卡片级的「导入字段直通层」——本工具不认识 / 不会自己生成的字段。
+ * 注意 data 与 card 在纯 V1 卡里是同一个对象，所以 data 层还要额外排除信封字段。
+ */
+/** MVU 相关的自有脚本名——仅当 MVU 启用时本工具才会重新生成它们。 */
+const MVU_OWNED_SCRIPT_NAMES: ReadonlySet<string> = new Set([
+  OWN_REGEX_SCRIPT_NAMES.hideVarUpdate,
+  OWN_REGEX_SCRIPT_NAMES.varUpdatePending,
+  OWN_REGEX_SCRIPT_NAMES.varUpdateDone,
+  OWN_REGEX_SCRIPT_NAMES.statusBar,
+  OWN_REGEX_SCRIPT_NAMES.hideStatusBar,
+]);
+
+/** 直播间相关的自有脚本名——仅当直播间启用时本工具才会重新生成。 */
+const LIVE_CHAT_OWNED_SCRIPT_NAMES: ReadonlySet<string> = new Set([
+  OWN_REGEX_SCRIPT_NAMES.liveChat,
+  OWN_REGEX_SCRIPT_NAMES.hideLiveChat,
+]);
+
+function collectCardPassthrough(
+  data: Record<string, unknown>,
+  dataExt: Record<string, unknown>,
+  charBook: Record<string, unknown> | undefined,
+  mvuEnabled: boolean,
+  liveChatEnabled: boolean,
+): DraftPassthrough | undefined {
+  const passthrough: DraftPassthrough = {};
+
+  const foreignData = collectUnknownKeys(
+    data,
+    OWN_DATA_KEYS,
+    (key) => CARD_ENVELOPE_KEYS.has(key),
+  );
+  if (foreignData) passthrough.data = foreignData;
+
+  // tavern_helper 仅在 MVU 启用时由本工具生成；未启用时它属于第三方内容，应保留。
+  const foreignExt = collectUnknownKeys(
+    dataExt,
+    OWN_CARD_EXT_KEYS,
+    (key, value) =>
+      (key === 'tavern_helper' && mvuEnabled)
+      || (key === 'depth_prompt' && isPlaceholderDepthPrompt(value)),
+  );
+  if (foreignExt) passthrough.extensions = foreignExt;
+
+  // 非本工具生成的正则脚本（第三方美化脚本等）原样保留；本工具的会在导出时重新生成。
+  //
+  // 关键：剔除必须与「本工具是否真的会重新生成它」一一对应，不能无条件按名剔。
+  // 第三方卡可能带一个名为「状态栏界面」的脚本却没有本工具的 MVU 结构（mvu_enabled 缺失），
+  // 此时既不进直通层、又不会被重新生成，整个状态栏 UI 会在往返后静默消失。
+  const rawRegexScripts = Array.isArray(dataExt.regex_scripts) ? (dataExt.regex_scripts as unknown[]) : [];
+  const willRegenerate = (name: string): boolean => {
+    if (MVU_OWNED_SCRIPT_NAMES.has(name)) return mvuEnabled;
+    if (LIVE_CHAT_OWNED_SCRIPT_NAMES.has(name)) return liveChatEnabled;
+    return false;
+  };
+  const foreignRegexScripts = rawRegexScripts.filter((s) => {
+    const name = (s as { scriptName?: unknown } | null)?.scriptName;
+    return typeof name !== 'string' || !willRegenerate(name);
+  });
+  if (foreignRegexScripts.length > 0) passthrough.regexScripts = foreignRegexScripts;
+
+  if (charBook) {
+    const foreignCharBook = collectUnknownKeys(
+      charBook,
+      OWN_CHARACTER_BOOK_KEYS,
+      (key, value) => key === 'extensions' && (!value || Object.keys(value as object).length === 0),
+    );
+    if (foreignCharBook) passthrough.characterBook = foreignCharBook;
+  }
+
+  return Object.keys(passthrough).length > 0 ? passthrough : undefined;
+}
+
+/** 收集单个世界书条目的直通字段；无可保留内容时返回 undefined。 */
+function collectEntryPassthrough(
+  entry: Record<string, unknown>,
+  entryExt: Record<string, unknown>,
+): LorebookEntryPassthrough | undefined {
+  const result: LorebookEntryPassthrough = {};
+  const root = collectUnknownKeys(entry, OWN_ENTRY_KEYS);
+  if (root) result.root = root;
+  const extensions = collectUnknownKeys(
+    entryExt,
+    OWN_ENTRY_EXT_KEYS,
+    (key, value) => key in ENTRY_EXT_IMPORT_WINS_DEFAULTS && value === ENTRY_EXT_IMPORT_WINS_DEFAULTS[key],
+  );
+  if (extensions) result.extensions = extensions;
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/**
  * Convert an existing card's stored data back to wizard draft format (for editing).
  * Handles both V1 and V2 cards.
  */
@@ -1185,6 +1538,7 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
       .filter((e) => !reconstructedEntryIds.has(String(e.id ?? '')))
       .map((e, i) => {
         const ext = (e.extensions || {}) as Record<string, unknown>;
+        const entryPassthrough = collectEntryPassthrough(e, ext);
         return {
           id: String(e.id ?? '') || generateId(),
           keys: (e.keys as string[]) || [],
@@ -1195,7 +1549,9 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
           constant: (e.constant as boolean) ?? false,
           selective: (e.selective as boolean) ?? false,
           insertion_order: (e.insertion_order as number) ?? i,
-          position: ((e.position as string) || 'after_char') as LorebookPosition,
+          // extensions.position（数值）才是 ST 的权威位置；只读 entry.position 会把
+          // at_depth 等扩展位置静默降级成 after_char。
+          position: resolveEntryPosition(e.position, ext.position),
           priority: (e.priority as number) ?? 0,
           case_sensitive: (e.case_sensitive as boolean) ?? false,
           comment: (e.comment as string) || (e.name as string) || '',
@@ -1206,7 +1562,10 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
           group_weight: (ext.group_weight as number) ?? 100,
           selectiveLogic: SELECTIVE_LOGIC_REVERSE[(ext.selectiveLogic as number) ?? 0] ?? 0,
           role: (ext.role as number) ?? 0,
-          depth: (ext.depth as number) ?? (ext.scan_depth as number) ?? 4,
+          // 只读 depth（at_depth 插入楼层）。不再回落到 scan_depth——那是关键词扫描深度，
+          // 两者语义不同，塌缩成一个字段会同时算错插入位置与扫描窗口。
+          // 导入卡的 scan_depth 由条目直通层原样保留。
+          depth: (ext.depth as number) ?? 4,
           exclude_recursion: (ext.exclude_recursion as boolean) ?? false,
           prevent_recursion: (ext.prevent_recursion as boolean) ?? false,
           // 显式 null 表示「继承 ST 全局设置」，须原样保留避免往返时被翻成 true；
@@ -1216,10 +1575,14 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
           cooldown: (ext.cooldown as number) ?? 0,
           delay: (ext.delay as number) ?? 0,
           ignore_budget: (ext.ignore_budget as boolean) ?? false,
+          // 导入字段直通层：条目级未知字段 + 本工具无配置入口的 ST 运行时字段
+          ...(entryPassthrough ? { _passthrough: entryPassthrough } : {}),
         };
       })
       .sort((a, b) => (a.insertion_order ?? 0) - (b.insertion_order ?? 0)),
     firstMessage: (data.first_mes as string) || '',
+    // 对话示例（V2/V3 规范字段）——旧版导入会静默丢弃它
+    mes_example: (data.mes_example as string) || '',
 
     // V2 advanced fields
     scenario: (data.scenario as string) || '',
@@ -1238,6 +1601,8 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
     mvu: reconstructMvuConfig(data, rawEntries),
     // Reconstruct live stream chat config from regex scripts (independent of MVU)
     liveStreamChat: reconstructLiveStreamChat(data),
+    // 导入字段直通层：卡片级未知字段（data / extensions / regex_scripts / character_book）
+    _passthrough: collectCardPassthrough(data, dataExt, charBook, mvuEnabled, Boolean(reconstructLiveStreamChat(data)?.enabled)),
     worldRules: '',
     // Shared UI state between Step 2 & Step 4 — start with defaults when loading a card.
     // (These are draft-only UI state, not persisted in the card itself.)

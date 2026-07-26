@@ -1019,6 +1019,8 @@ ${e.content || ''}`)
             onChange={(msg) => updateDraft({ firstMessage: msg })}
             onAlternateGreetingsChange={(greetings) => updateDraft({ alternate_greetings: greetings })}
             mvu={draft.mvu}
+            mesExample={draft.mes_example}
+            onMesExampleChange={(mes_example) => updateDraft({ mes_example })}
           />
         );
       case 8:

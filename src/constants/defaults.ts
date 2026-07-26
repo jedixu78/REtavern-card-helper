@@ -59,6 +59,38 @@ export interface LorebookEntry {
   ignore_budget: boolean;
   /** Optional SillyTavern runtime extensions (display_index, depth, etc.) */
   extensions?: Record<string, unknown>;
+  /** 导入第三方卡时暂存的、本工具不认识的条目级字段（见 DraftPassthrough） */
+  _passthrough?: LorebookEntryPassthrough;
+}
+
+/**
+ * 单个世界书条目的「导入字段直通层」。
+ * 由 card-exporter 的 cardToDraft 填充、assembleCard 消费；UI 不编辑它。
+ */
+export interface LorebookEntryPassthrough {
+  /** 条目根层级的未知字段（V2/V3 规范之外的第三方扩展字段） */
+  root?: Record<string, unknown>;
+  /** entry.extensions 中本工具不生成、或本工具写死常量且无配置入口的 ST 运行时字段
+   *  （automation_id / vectorized / use_probability / delay_until_recursion 等） */
+  extensions?: Record<string, unknown>;
+}
+
+/**
+ * 「导入字段直通层」——导入第三方 SillyTavern 卡时，把本工具不认识的字段原样存下来，
+ * 导出时先铺底再由本工具生成的字段覆盖，从而避免「导入即破坏」。
+ *
+ * 关键约束：**已知字段永远以本工具的值为准**。直通层只填补空缺，
+ * 绝不改变本工具对自家字段的正常导出行为。
+ */
+export interface DraftPassthrough {
+  /** data 层未知字段（如 V3 的 assets / nickname / group_only_greetings / source 等） */
+  data?: Record<string, unknown>;
+  /** data.extensions 中非本工具生成的键（第三方扩展、depth_prompt 实际内容等） */
+  extensions?: Record<string, unknown>;
+  /** data.extensions.regex_scripts 中非本工具生成的正则脚本（第三方美化脚本等） */
+  regexScripts?: unknown[];
+  /** character_book 层未知字段（含其自身的 extensions） */
+  characterBook?: Record<string, unknown>;
 }
 
 /** Wizard character (Step 3) — simplified: name + description + optional alignment */
@@ -378,6 +410,10 @@ export interface WizardDraft {
   characters: WizardCharacter[];
   lorebookEntries: LorebookEntry[];
   firstMessage: string;
+  /** 对话示例（V2/V3 `mes_example`，`<START>` 分隔的示例对话）。
+   *  可选是为了兼容不带该字段的历史草稿与既有 WizardDraft 字面量；
+   *  createEmptyDraft 会给出 '' 默认值，消费侧一律按 `draft.mes_example || ''` 读取。 */
+  mes_example?: string;
   // V2 advanced fields
   scenario: string;
   system_prompt: string;
@@ -410,6 +446,9 @@ export interface WizardDraft {
   stagedMode?: StagedModeConfig;
   /** 直播间评论面板配置（步骤8，独立于 MVU，纯正则驱动） */
   liveStreamChat?: LiveStreamChatConfig;
+  /** 导入字段直通层（内部字段，非 UI 编辑项）：保存导入卡中本工具不认识的字段，
+   *  导出时原样回写。详见 DraftPassthrough。 */
+  _passthrough?: DraftPassthrough;
 }
 
 /** Empty character template for Step 3 of the wizard */
@@ -570,6 +609,8 @@ export function createEmptyDraft(): WizardDraft {
     firstMessage: '',
 
     // ── V2 Advanced Fields ──────────────────────────────────────────────────
+    /** 对话示例（V2/V3 mes_example）——导入的 ST 卡会带回来，导出时原样写入 data.mes_example */
+    mes_example: '',
     scenario: '',
     system_prompt: '',
     post_history_instructions: '',

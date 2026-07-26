@@ -21,6 +21,9 @@ interface StepFirstMessageProps {
   onAlternateGreetingsChange: (greetings: string[]) => void;
   /** MVU config — used to show initvar context for consistency */
   mvu?: MvuConfig;
+  /** V2/V3 规范的对话示例字段（mes_example）；试聊与导出都会用到 */
+  mesExample?: string;
+  onMesExampleChange?: (value: string) => void;
 }
 
 const WORD_COUNT_PRESETS = (t: (key: string, vars?: Record<string, string>) => string) => [
@@ -44,6 +47,8 @@ export function StepFirstMessage({
   worldbookContext,
   onChange,
   onAlternateGreetingsChange,
+  mesExample,
+  onMesExampleChange,
   mvu,
 }: StepFirstMessageProps) {
   const { t } = useTranslation();
@@ -364,6 +369,30 @@ export function StepFirstMessage({
         <p className="text-xs text-[var(--color-text-muted)] mt-2">
           💡 {t('firstMessage.alternateTip')}
         </p>
+      )}
+
+      {/* 对话示例（mes_example）：V2/V3 规范字段，此前全链路缺失，现补上编辑入口 */}
+      {onMesExampleChange && (
+        <details className="mt-4 rounded-lg border border-[var(--color-border-default)] p-3">
+          <summary className="cursor-pointer text-sm font-medium" style={{ color: 'var(--text-color)' }}>
+            {t('firstMessage.mesExample')}
+            {mesExample?.trim() && (
+              <span className="ml-2 text-xs text-[var(--color-text-muted)]">
+                ({t('firstMessage.currentLength', { count: String(mesExample.length) })})
+              </span>
+            )}
+          </summary>
+          <p className="text-xs text-[var(--color-text-muted)] mt-2 mb-2">
+            {t('firstMessage.mesExampleHint')}
+          </p>
+          <TextArea
+            value={mesExample ?? ''}
+            onChange={(e) => onMesExampleChange(e.target.value)}
+            placeholder={t('firstMessage.mesExamplePlaceholder')}
+            rows={6}
+            className="font-mono"
+          />
+        </details>
       )}
     </div>
   );

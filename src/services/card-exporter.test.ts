@@ -389,6 +389,494 @@ describe('cardToDraft', () => {
   });
 });
 
+// ── S2-3: mes_example 全链路 ────────────────────────────────────────────────
+describe('mes_example 全链路 (S2-3)', () => {
+  it('createEmptyDraft 提供 mes_example 默认值', () => {
+    expect(createEmptyDraft().mes_example).toBe('');
+  });
+
+  it('assembleCard 导出 data.mes_example', () => {
+    const example = '<START>\n{{user}}: 你好\n{{char}}: 你好呀，旅行者。';
+    const card = assembleCard(makeDraft({ cardName: '测试', mes_example: example }));
+    expect(card.data.mes_example).toBe(example);
+  });
+
+  it('mes_example 为空时导出空字符串而非 undefined（V2/V3 规范字段必须存在）', () => {
+    const card = assembleCard(makeDraft({ cardName: '测试' }));
+    expect(card.data.mes_example).toBe('');
+  });
+
+  it('cardToDraft 读回 ST 卡的 mes_example，不再静默丢弃', () => {
+    const stCard = {
+      spec: 'chara_card_v2',
+      spec_version: '2.0',
+      data: {
+        name: 'ST 卡',
+        first_mes: '你好。',
+        mes_example: '<START>\n{{user}}: hi\n{{char}}: hello',
+        extensions: {},
+      },
+    };
+    const restored = cardToDraft(stCard as unknown as Record<string, unknown>);
+    expect(restored.mes_example).toBe('<START>\n{{user}}: hi\n{{char}}: hello');
+  });
+
+  it('cardToDraft 读回 V1 卡（顶层 mes_example）', () => {
+    const v1Card = { name: 'V1 卡', first_mes: '你好。', mes_example: '<START>\nA: x' };
+    const restored = cardToDraft(v1Card as unknown as Record<string, unknown>);
+    expect(restored.mes_example).toBe('<START>\nA: x');
+  });
+
+  it('往返一致：assembleCard → cardToDraft 保留 mes_example', () => {
+    const example = '<START>\n{{user}}: 往返\n{{char}}: 测试';
+    const card = assembleCard(makeDraft({ cardName: '往返', mes_example: example }));
+    const restored = cardToDraft(card as unknown as Record<string, unknown>);
+    expect(restored.mes_example).toBe(example);
+    // 二次往返仍稳定
+    const card2 = assembleCard(makeDraft({ ...restored }));
+    expect(card2.data.mes_example).toBe(example);
+  });
+});
+
+// ── S2-3: at_depth 位置保真 ──────────────────────────────────────────────────
+describe('at_depth 位置保真 (S2-3)', () => {
+  function cardWithEntryPosition(entryPosition: unknown, extPosition: unknown) {
+    return {
+      spec: 'chara_card_v2',
+      spec_version: '2.0',
+      data: {
+        name: '位置测试',
+        extensions: {},
+        character_book: {
+          name: '书',
+          entries: [{
+            id: 1,
+            name: '深度条目',
+            content: '内容',
+            keys: ['k'],
+            enabled: true,
+            constant: false,
+            position: entryPosition,
+            extensions: { position: extPosition, depth: 3 },
+          }],
+        },
+      },
+    } as unknown as Record<string, unknown>;
+  }
+
+  it('extensions.position=4 时不降级为 after_char', () => {
+    const restored = cardToDraft(cardWithEntryPosition('after_char', 4));
+    expect(restored.lorebookEntries[0].position).toBe('at_depth');
+  });
+
+  it('extensions.position 为字符串 at_depth 时同样识别', () => {
+    const restored = cardToDraft(cardWithEntryPosition('after_char', 'at_depth'));
+    expect(restored.lorebookEntries[0].position).toBe('at_depth');
+  });
+
+  it('entry.position 直接是 at_depth 字符串时保留', () => {
+    const restored = cardToDraft(cardWithEntryPosition('at_depth', undefined));
+    expect(restored.lorebookEntries[0].position).toBe('at_depth');
+  });
+
+  it('entry.position 是数值时也能还原', () => {
+    const restored = cardToDraft(cardWithEntryPosition(4, undefined));
+    expect(restored.lorebookEntries[0].position).toBe('at_depth');
+  });
+
+  it('其它数值位置按 POSITION_INDEX 反向还原', () => {
+    expect(cardToDraft(cardWithEntryPosition('after_char', 0)).lorebookEntries[0].position).toBe('before_char');
+    expect(cardToDraft(cardWithEntryPosition('after_char', 2)).lorebookEntries[0].position).toBe('before_author');
+    expect(cardToDraft(cardWithEntryPosition('after_char', 5)).lorebookEntries[0].position).toBe('before_example');
+    expect(cardToDraft(cardWithEntryPosition('after_char', 6)).lorebookEntries[0].position).toBe('after_example');
+  });
+
+  it('位置信息缺失或非法时回退 after_char', () => {
+    expect(cardToDraft(cardWithEntryPosition(undefined, undefined)).lorebookEntries[0].position).toBe('after_char');
+    expect(cardToDraft(cardWithEntryPosition('unknown_pos', 99)).lorebookEntries[0].position).toBe('after_char');
+  });
+
+  it('导出时 at_depth 按原值写回 extensions.position=4', () => {
+    const restored = cardToDraft(cardWithEntryPosition('after_char', 4));
+    const card = assembleCard(restored);
+    const entry = card.data.character_book.entries[0];
+    expect(entry.position).toBe('at_depth');
+    expect((entry.extensions as Record<string, unknown>).position).toBe(4);
+  });
+
+  it('往返不改变普通 after_char 条目的位置', () => {
+    const draft = makeDraft({
+      cardName: '测试',
+      lorebookEntries: [{ ...createEmptyLorebookEntry(), name: 'E', comment: 'E', content: 'c', keys: ['k'] }],
+    });
+    const restored = cardToDraft(assembleCard(draft) as unknown as Record<string, unknown>);
+    expect(restored.lorebookEntries[0].position).toBe('after_char');
+  });
+});
+
+// ── S2-3: 导入字段直通层 (passthrough) ───────────────────────────────────────
+//
+// 第三方卡「导入 → 无修改 → 导出」应逐字段等价。fixture 里本工具「拥有」的字段
+// 已按本工具的规范形态书写（否则失败原因与直通层无关），本工具会强制归一化的字段：
+//   - data.description / data.personality 恒为 ''（worldbook-first 架构，非直通层职责）
+//   - character_book.name / extensions.world 恒为 `${cardName}的世界书`
+//   - character_book.description 恒为 ''
+//   - 条目 id 重排为 1..N、extensions.display_index 重排为数组下标
+function makeThirdPartyCard() {
+  return {
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: {
+      name: '第三方角色',
+      description: '',
+      personality: '',
+      scenario: '一个第三方场景',
+      first_mes: '你好，我是第三方卡。',
+      mes_example: '<START>\n{{user}}: 你好\n{{char}}: 你好呀',
+      creator_notes: '第三方作者备注',
+      system_prompt: '第三方系统提示',
+      post_history_instructions: '第三方历史后指令',
+      alternate_greetings: ['另一个开场白'],
+      tags: ['第三方', '测试'],
+      creator: '第三方作者',
+      character_version: '2.1',
+
+      // ── V3 规范 / 第三方工具的字段：本工具不认识，必须原样保留 ──
+      nickname: '小三',
+      group_only_greetings: ['组队开场白'],
+      creation_date: 1700000000,
+      assets: [{ type: 'icon', uri: 'ccdefault:', name: 'main', ext: 'png' }],
+
+      character_book: {
+        name: '第三方角色的世界书',
+        description: '',
+        scan_depth: 100,
+        token_budget: 800,
+        recursive_scanning: true,
+        extensions: { book_level_custom: 'keep-me' },
+        custom_book_field: '书级未知字段',
+        entries: [{
+          id: 1,
+          keys: ['关键词'],
+          secondary_keys: ['次要词'],
+          content: '第三方条目内容',
+          name: '第三方条目',
+          enabled: true,
+          insertion_order: 10,
+          case_sensitive: false,
+          selective: true,
+          constant: false,
+          position: 'after_char',
+          priority: 30,
+          comment: '第三方条目',
+          use_regex: false,
+          // 条目根层级未知字段
+          third_party_flag: true,
+          extensions: {
+            position: 1,
+            probability: 80,
+            // 第三方卡显式关闭了概率判定；本工具恒写 true 且无 UI 入口，
+            // 必须以卡里的值为准，否则往返后条目会被翻转成按概率触发
+            useProbability: false,
+            group: '组A',
+            group_override: false,
+            group_weight: 70,
+            selectiveLogic: 0,
+            role: 0,
+            depth: 4,
+            scan_depth: 4,
+            exclude_recursion: false,
+            prevent_recursion: false,
+            // 本工具写死常量、无 UI 入口 → 以导入值为准
+            delay_until_recursion: 3,
+            automation_id: 'my-automation',
+            vectorized: true,
+            use_probability: false,
+            match_whole_words: null,
+            use_group_scoring: false,
+            case_sensitive: null,
+            sticky: 2,
+            cooldown: 1,
+            delay: 5,
+            match_persona_description: false,
+            match_character_description: false,
+            match_character_personality: false,
+            match_character_depth_prompt: false,
+            match_scenario: false,
+            match_creator_notes: false,
+            triggers: [],
+            ignore_budget: false,
+            outlet_name: '',
+            display_index: 0,
+            // 条目 extensions 里的未知字段
+            third_party_ext: 'keep',
+          },
+        }],
+      },
+
+      extensions: {
+        // 真实内容的 depth_prompt（本工具只会写空占位，导入值必须胜出）
+        depth_prompt: { prompt: '你要牢记设定', depth: 2, role: 'system' },
+        talkativeness: '0.7',
+        fav: true,
+        third_party_tool: { version: 3, note: '自定义扩展' },
+        regex_scripts: [{
+          id: 'tp-1',
+          scriptName: '第三方美化脚本',
+          findRegex: '/foo/g',
+          replaceString: '<b>foo</b>',
+          placement: [2],
+          disabled: false,
+          markdownOnly: true,
+          promptOnly: false,
+        }],
+        world: '第三方角色的世界书',
+      },
+    },
+  } as unknown as Record<string, unknown>;
+}
+
+describe('导入字段直通层 passthrough (S2-3)', () => {
+  it('核心验收：第三方卡「导入 → 无修改 → 导出」data 逐字段等价', () => {
+    const original = makeThirdPartyCard();
+    const exported = assembleCard(cardToDraft(original));
+    expect(exported.data).toEqual((original as { data: unknown }).data);
+  });
+
+  it('保留 data 层未知字段（V3 assets / nickname / group_only_greetings 等）', () => {
+    const draft = cardToDraft(makeThirdPartyCard());
+    expect(draft._passthrough?.data).toMatchObject({
+      nickname: '小三',
+      group_only_greetings: ['组队开场白'],
+      creation_date: 1700000000,
+    });
+    const data = assembleCard(draft).data as unknown as Record<string, unknown>;
+    expect(data.nickname).toBe('小三');
+    expect(data.assets).toEqual([{ type: 'icon', uri: 'ccdefault:', name: 'main', ext: 'png' }]);
+  });
+
+  it('保留 data.extensions 中非本工具生成的键', () => {
+    const ext = assembleCard(cardToDraft(makeThirdPartyCard())).data.extensions as unknown as Record<string, unknown>;
+    expect(ext.third_party_tool).toEqual({ version: 3, note: '自定义扩展' });
+    expect(ext.talkativeness).toBe('0.7');
+    // 有实际内容的 depth_prompt 不被本工具的空占位覆盖
+    expect(ext.depth_prompt).toEqual({ prompt: '你要牢记设定', depth: 2, role: 'system' });
+  });
+
+  it('保留第三方 regex_scripts（自定义正则美化脚本）', () => {
+    const ext = assembleCard(cardToDraft(makeThirdPartyCard())).data.extensions as unknown as Record<string, unknown>;
+    const scripts = ext.regex_scripts as Array<Record<string, unknown>>;
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0].scriptName).toBe('第三方美化脚本');
+  });
+
+  it('MVU 启用时第三方脚本与本工具脚本共存且本工具脚本不重复', () => {
+    const draft = cardToDraft(makeThirdPartyCard());
+    draft.mvu = {
+      enabled: true,
+      mode: 'expert',
+      schemaSections: [{ name: '测试', variables: [{ path: '测试.值', zodType: 'z.coerce.number()', description: '', prefix: '', initialValue: 0 }] }],
+      updateRules: [],
+      ejsConfigs: [],
+      ejsPreprocessContent: '',
+      schemaTsContent: '...',
+      initvarYamlContent: '',
+      updateRulesYamlContent: '',
+      statusBarHtml: '<div>状态栏</div>',
+      statusBarStyle: 'compact-panel',
+    };
+    const ext = assembleCard(draft).data.extensions as unknown as Record<string, unknown>;
+    const names = (ext.regex_scripts as Array<Record<string, unknown>>).map((s) => s.scriptName);
+    expect(names).toContain('第三方美化脚本');
+    expect(names).toContain('状态栏界面');
+    // 每个本工具脚本只出现一次
+    expect(new Set(names).size).toBe(names.length);
+
+    // 再往返一次：本工具生成的脚本不会被当成第三方脚本堆积
+    const roundTripped = assembleCard(cardToDraft(assembleCard(draft) as unknown as Record<string, unknown>));
+    const names2 = ((roundTripped.data.extensions as unknown as Record<string, unknown>).regex_scripts as Array<Record<string, unknown>>).map((s) => s.scriptName);
+    expect(names2.filter((n) => n === '第三方美化脚本')).toHaveLength(1);
+    expect(new Set(names2).size).toBe(names2.length);
+  });
+
+  it('保留条目级未知字段与 automation_id / vectorized / useProbability / scan_depth / delay_until_recursion', () => {
+    const draft = cardToDraft(makeThirdPartyCard());
+    expect(draft.lorebookEntries[0]._passthrough).toEqual({
+      root: { third_party_flag: true },
+      extensions: {
+        delay_until_recursion: 3,
+        automation_id: 'my-automation',
+        vectorized: true,
+        // ST 真正的概率开关；非默认值必须留存
+        useProbability: false,
+        // 条目级扫描深度：本工具写 null（继承书级），导入值优先
+        scan_depth: 4,
+        // 名字写错的字段（ST 里没有 use_probability）当作未知字段原样保留
+        use_probability: false,
+        third_party_ext: 'keep',
+      },
+    });
+
+    const entry = assembleCard(draft).data.character_book.entries[0];
+    expect(entry.third_party_flag).toBe(true);
+    const ext = entry.extensions as Record<string, unknown>;
+    expect(ext.automation_id).toBe('my-automation');
+    expect(ext.vectorized).toBe(true);
+    expect(ext.useProbability).toBe(false);
+    expect(ext.scan_depth).toBe(4);
+    expect(ext.delay_until_recursion).toBe(3);
+    expect(ext.third_party_ext).toBe('keep');
+  });
+
+  it('scan_depth 与 depth 不再互相污染：本工具导出写 null 继承书级', () => {
+    // 自家草稿（无导入直通层）：depth=4 是 at_depth 插入楼层，
+    // 不应被派生成条目级扫描深度 scan_depth=4（那会覆盖书级 scan_depth）
+    const draft = makeDraft({
+      cardName: 'T',
+      lorebookEntries: [{ ...createEmptyLorebookEntry(), comment: 'E', name: 'E', depth: 4 }],
+    });
+    const ext = assembleCard(draft).data.character_book.entries[0].extensions as Record<string, unknown>;
+    expect(ext.depth).toBe(4);
+    expect(ext.scan_depth).toBeNull();
+  });
+
+  it('保留 character_book 层的未知字段与其 extensions', () => {
+    const book = assembleCard(cardToDraft(makeThirdPartyCard())).data.character_book as unknown as Record<string, unknown>;
+    expect(book.custom_book_field).toBe('书级未知字段');
+    expect(book.extensions).toEqual({ book_level_custom: 'keep-me' });
+  });
+
+  it('已知字段永远以本工具的值为准，直通层只填补空缺', () => {
+    const draft = makeDraft({
+      cardName: '本工具卡名',
+      firstMessage: '本工具开场白',
+      lorebookEntries: [{
+        ...createEmptyLorebookEntry(),
+        name: 'E', comment: 'E', content: '本工具内容', keys: ['k'], probability: 42,
+        _passthrough: {
+          root: { content: '直通层试图覆盖', id: 999, name: '直通层名字' },
+          extensions: { probability: 1, position: 6, display_index: 77, keep_me: true },
+        },
+      }],
+      // 伪造一个「试图覆盖已知字段」的直通层（cardToDraft 不会产出这种数据，此处防御性验证合并顺序）
+      _passthrough: {
+        data: { name: 'HACKED', first_mes: 'HACKED', tags: ['HACKED'], keep_me: 'ok' },
+        extensions: { world: 'HACKED', mvu_enabled: true, keep_me: 'ok' },
+      },
+    });
+    const card = assembleCard(draft);
+    const data = card.data as unknown as Record<string, unknown>;
+
+    expect(data.name).toBe('本工具卡名');
+    expect(data.first_mes).toBe('本工具开场白');
+    expect(data.tags).toEqual([]);
+    expect(data.keep_me).toBe('ok');
+
+    const ext = card.data.extensions as unknown as Record<string, unknown>;
+    expect(ext.world).toBe('本工具卡名的世界书');
+    expect(ext.mvu_enabled).toBeUndefined();
+    expect(ext.keep_me).toBe('ok');
+
+    const entry = card.data.character_book.entries[0];
+    expect(entry.content).toBe('本工具内容');
+    expect(entry.id).toBe(1);
+    expect(entry.name).toBe('E');
+    const entryExt = entry.extensions as Record<string, unknown>;
+    expect(entryExt.probability).toBe(42);
+    expect(entryExt.position).toBe(1);
+    expect(entryExt.display_index).toBe(0);
+    expect(entryExt.keep_me).toBe(true);
+  });
+
+  it('本工具自家卡往返不产生直通层数据（草稿保持干净）', () => {
+    const draft = makeDraft({
+      cardName: '自家卡',
+      firstMessage: '开场白',
+      lorebookEntries: [{ ...createEmptyLorebookEntry(), name: 'E', comment: 'E', content: 'c', keys: ['k'] }],
+    });
+    const restored = cardToDraft(assembleCard(draft) as unknown as Record<string, unknown>);
+    expect(restored._passthrough).toBeUndefined();
+    expect(restored.lorebookEntries[0]._passthrough).toBeUndefined();
+  });
+
+  it('本工具 MVU + 直播间卡往返也不产生直通层数据', () => {
+    const html = generateLiveChatHtml({ themeId: 'terminal', initialComments: ['测试评论'] });
+    const draft = makeDraft({
+      cardName: 'MVU 卡',
+      firstMessage: '开播。',
+      mvu: {
+        enabled: true,
+        mode: 'expert',
+        schemaSections: [{ name: '测试', variables: [{ path: '测试.值', zodType: 'z.coerce.number()', description: '', prefix: '', initialValue: 0 }] }],
+        updateRules: [],
+        ejsConfigs: [],
+        ejsPreprocessContent: '',
+        schemaTsContent: '...',
+        initvarYamlContent: '',
+        updateRulesYamlContent: '',
+        statusBarHtml: '<div>状态栏</div>',
+        statusBarStyle: 'compact-panel',
+      },
+      liveStreamChat: {
+        enabled: true, html, themeId: 'terminal', title: '直播间', maxVisible: 10, initialComments: ['测试评论'],
+      },
+    });
+    const restored = cardToDraft(assembleCard(draft) as unknown as Record<string, unknown>);
+    expect(restored._passthrough).toBeUndefined();
+  });
+
+  it('extensions 为畸形值（字符串/数组）时不会被拆成下标键污染导出', () => {
+    const brokenCard = {
+      spec: 'chara_card_v2',
+      spec_version: '2.0',
+      data: {
+        name: '畸形卡',
+        first_mes: '你好。',
+        extensions: 'not-an-object',
+        character_book: {
+          name: '书',
+          extensions: ['also', 'wrong'],
+          entries: [{
+            id: 1, name: 'E', content: 'c', keys: ['k'], enabled: true, constant: false,
+            extensions: 'broken',
+          }],
+        },
+      },
+    } as unknown as Record<string, unknown>;
+    const draft = cardToDraft(brokenCard);
+    expect(draft._passthrough?.extensions).toBeUndefined();
+    expect(draft.lorebookEntries[0]._passthrough).toBeUndefined();
+    const card = assembleCard(draft);
+    const ext = card.data.extensions as unknown as Record<string, unknown>;
+    expect(ext['0']).toBeUndefined();
+    expect(card.data.character_book.entries[0].extensions['0']).toBeUndefined();
+  });
+
+  it('纯 V1 卡导入时不把 spec/_meta 等信封字段塞进直通层', () => {
+    const v1Card = {
+      name: 'V1 卡',
+      description: '',
+      first_mes: '你好。',
+      spec: 'chara_card_v2',
+      spec_version: '2.0',
+      _meta: { characters: [] },
+      id: 7,
+      createdAt: new Date(),
+      custom_v1_field: '保留我',
+    };
+    const draft = cardToDraft(v1Card as unknown as Record<string, unknown>);
+    const passData = draft._passthrough?.data ?? {};
+    expect(passData.custom_v1_field).toBe('保留我');
+    for (const banned of ['spec', 'spec_version', '_meta', 'id', 'createdAt', 'data']) {
+      expect(passData[banned]).toBeUndefined();
+    }
+    const data = assembleCard(draft).data as unknown as Record<string, unknown>;
+    expect(data.spec).toBeUndefined();
+    expect(data._meta).toBeUndefined();
+    expect(data.custom_v1_field).toBe('保留我');
+  });
+});
+
 describe('findStagedLorebookEntryIndices', () => {
   it('无分阶段条目时返回空集合', () => {
     const entries: LorebookEntry[] = [
