@@ -10,6 +10,9 @@ import {
   clearSavedPreset,
   togglePresetPrompt,
   resetToBuiltInPreset,
+  selectBuiltinPreset,
+  getSelectedBuiltinKey,
+  BUILTIN_PRESET_KEYS,
   type LoadedPreset,
 } from '../services/preset-service';
 import { useTranslation } from '../i18n/I18nContext';
@@ -64,10 +67,17 @@ export function PresetPage() {
     setPreset(loaded);
   }, []);
 
+  const handleSelectBuiltin = useCallback((key: string) => {
+    const loaded = selectBuiltinPreset(key);
+    if (loaded) setPreset(loaded);
+  }, []);
+
   const handleToggle = useCallback((index: number) => {
     const updated = togglePresetPrompt(index);
     setPreset(updated);
   }, []);
+
+  const currentBuiltinKey = preset?.isBuiltIn ? (preset.builtinKey ?? getSelectedBuiltinKey()) : null;
 
   const enabledCount = preset?.prompts.filter(p => p.enabled).length ?? 0;
 
@@ -124,13 +134,13 @@ export function PresetPage() {
             {t('preset.clearPreset')}
           </Button>
         ) : (
-          <Button 
-            variant="secondary" 
+          <Button
+            variant="secondary"
             onClick={handleResetBuiltIn}
             className="group hover:scale-105 transition-transform"
           >
             <span className="mr-1">✨</span>
-            恢复默认写卡模式
+            恢复内置预设
           </Button>
         )}
         {preset && (
@@ -144,12 +154,59 @@ export function PresetPage() {
             {preset.isBuiltIn && (
               <span className="text-sm animate-badge-pop" style={{ color: 'var(--color-status-success)' }}>
                 <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full" style={{ backgroundColor: themeAlpha('success', 50), color: 'var(--color-status-success)' }}>
-                  ⭐ 默认写卡模式
+                  ⭐ {preset.fileName}
                 </span>
               </span>
             )}
           </>
         )}
+      </div>
+
+      {/* Built-in preset selector */}
+      <div className="mb-4 p-4 rounded-lg animate-slide-up animation-delay-100" style={{ background: `linear-gradient(135deg, ${cardBgSemiTransparent(0.5)} 0%, ${cardBgSemiTransparent(0.45)} 100%)`, border: `1px solid ${borderColor}` }}>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-lg">⚡</span>
+          <h3 className="text-sm font-medium" style={textPrimaryStyle}>模型专用破限预设</h3>
+        </div>
+        <p className="text-xs mb-3" style={textMutedStyle}>
+          根据所使用的 AI 模型选择对应预设，可显著降低拒绝率与道德化倾向。选择后立即生效，覆盖当前预设。
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          {BUILTIN_PRESET_KEYS.map(({ key, label, description }) => {
+            const isActive = currentBuiltinKey === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => handleSelectBuiltin(key)}
+                title={description}
+                className={`text-left p-3 rounded-lg border transition-all duration-300 hover:scale-[1.02] ${
+                  isActive ? 'border-primary shadow-lg shadow-primary-glow' : ''
+                }`}
+                style={{
+                  backgroundColor: isActive
+                    ? 'rgba(var(--primary-r), var(--primary-g), var(--primary-b), 0.15)'
+                    : cardBgSemiTransparent(0.3),
+                  borderColor: isActive ? 'var(--color-primary)' : borderColor,
+                }}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-medium" style={isActive ? { color: 'var(--color-primary)' } : textPrimaryStyle}>
+                    {label}
+                  </span>
+                  {isActive && (
+                    <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ backgroundColor: 'var(--color-primary)', color: 'white' }}>
+                      ✓
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs line-clamp-2" style={textMutedStyle}>
+                  {description}
+                </p>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Error */}
