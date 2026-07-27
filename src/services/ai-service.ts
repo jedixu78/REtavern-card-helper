@@ -94,15 +94,113 @@ const CONTINUE_USER_MSG_JSON = `你的回答因为长度限制在上一条被截
 
 const CONTINUE_TAIL_SIZE = 800;
 
+/**
+ * 道歉前缀检测正则：匹配开头的道歉词或"作为AI"式元评论。
+ * 只检测开头（trimStart 后），避免误删正文里 legitimately 出现的道歉词。
+ */
+const APOLOGY_START_REGEX = /^(?:抱歉|对不起|不好意思|我很抱歉|很抱歉|非常抱歉|十分抱歉|歉意|歉疚|遗憾|作为AI|作为人工智能|作为模型|作为一个AI|I'm sorry|Sorry|Apologies|My apologies|I apologize)[，,。.！!?\s]/i;
+
+/**
+ * 检测并剥离开头道歉段落。
+ *
+ * 模型有时无视预设规则，在正文前加一段"抱歉，我无法..."。
+ * 这个函数后处理剥离道歉，让用户看到干净内容，并避免续写时模型看到自己的道歉
+ * 而延续姿态（道歉惯性）。
+ *
+ * 剥离策略（按优先级）：
+ * 1. 找到双换行（段落分隔），剥离道歉段落
+ * 2. 找到 JSON 起始符 { 或 [
+ * 3. 找到 Markdown 标题 ##
+ * 4. 找到代码块起始 ```
+ * 5. 找到第一个句号（单句道歉）
+ *
+ * 只有剥离后剩余内容 >50 字符才剥离，避免把整条都是道歉的回复删空。
+ * 如果整条都是道歉（无正文），返回原文——有内容比空内容好，由调用方处理。
+ */
+function stripApologyPrefix(content: string): string {
+  const trimmed = content.trimStart();
+  if (!APOLOGY_START_REGEX.test(trimmed)) return content;
+
+  // 在前 500 字符内寻找正文起始边界
+  const searchRegion = trimmed.slice(0, 500);
+
+  // 1. 双换行（段落分隔）
+  const doubleNl = searchRegion.indexOf('\n\n');
+  if (doubleNl !== -1) {
+    const after = trimmed.slice(doubleNl + 2).trimStart();
+    if (after.length > 50) {
+      logger.info(`[AI] 检测到开头道歉，已剥离 ${doubleNl + 2} 字符`);
+      return after;
+    }
+  }
+
+  // 2. JSON 起始符
+  const jsonIdx = searchRegion.search(/[{[]/);
+  if (jsonIdx > 0) {
+    const after = trimmed.slice(jsonIdx);
+    if (after.length > 50) {
+      logger.info(`[AI] 检测到开头道歉，已剥离 ${jsonIdx} 字符（JSON 边界）`);
+      return after;
+    }
+  }
+
+  // 3. Markdown 标题
+  const headerIdx = searchRegion.search(/^##\s/m);
+  if (headerIdx > 0) {
+    const after = trimmed.slice(headerIdx);
+    if (after.length > 50) {
+      logger.info(`[AI] 检测到开头道歉，已剥离 ${headerIdx} 字符（标题边界）`);
+      return after;
+    }
+  }
+
+  // 4. 代码块起始
+  const codeIdx = searchRegion.search(/^```/m);
+  if (codeIdx > 0) {
+    const after = trimmed.slice(codeIdx);
+    if (after.length > 50) {
+      logger.info(`[AI] 检测到开头道歉，已剥离 ${codeIdx} 字符（代码块边界）`);
+      return after;
+    }
+  }
+
+  // 5. 单换行（有些道歉只占一行）
+  const singleNl = searchRegion.indexOf('\n');
+  if (singleNl > 0 && singleNl < 300) {
+    const after = trimmed.slice(singleNl + 1).trimStart();
+    if (after.length > 50) {
+      logger.info(`[AI] 检测到开头道歉，已剥离 ${singleNl + 1} 字符（单行）`);
+      return after;
+    }
+  }
+
+  // 6. 第一个句号（单句道歉）
+  const sentenceEnd = searchRegion.search(/[。.！!]/);
+  if (sentenceEnd > 0 && sentenceEnd < 300) {
+    const after = trimmed.slice(sentenceEnd + 1).trimStart();
+    if (after.length > 50) {
+      logger.info(`[AI] 检测到开头道歉，已剥离 ${sentenceEnd + 1} 字符（句号边界）`);
+      return after;
+    }
+  }
+
+  // 无法安全剥离（可能整条都是道歉），返回原文
+  logger.warn(`[AI] 检测到开头道歉但无法安全剥离（剩余内容不足 50 字符），保留原文`);
+  return content;
+}
+
 function buildContinuationMessages(
   originalSystemPrompt: string,
   _fullContent: string,
   lastSegment: string,
   isJson: boolean,
 ): AIMessage[] {
-  const tail = lastSegment.length > CONTINUE_TAIL_SIZE
-    ? lastSegment.slice(-CONTINUE_TAIL_SIZE)
-    : lastSegment;
+  // 剥离 tail 开头的道歉：如果上一段以道歉开头，续写时模型会看到自己的道歉先例
+  // 而延续姿态（道歉惯性）。剥离后模型只看到正文 tail，不会"接力"道歉。
+  const cleanSegment = stripApologyPrefix(lastSegment);
+  const tail = cleanSegment.length > CONTINUE_TAIL_SIZE
+    ? cleanSegment.slice(-CONTINUE_TAIL_SIZE)
+    : cleanSegment;
 
   const contextHint = isJson
     ? `以下是之前已经生成的JSON内容（末尾可能不完整），请从中断处直接继续输出：\n\n${tail}`
@@ -531,8 +629,10 @@ export async function callAI(options: AIRequestOptions): Promise<string> {
 
   // First call: use full original messages
   const firstResult = await callAIOnce(initialPayload, maxRetries);
-  fullContent = firstResult.content;
-  lastSegment = firstResult.content;
+  // 剥离开头道歉：模型可能无视预设规则在正文前加"抱歉，我无法..."
+  const cleanFirstContent = stripApologyPrefix(firstResult.content);
+  fullContent = cleanFirstContent;
+  lastSegment = cleanFirstContent;
   let lastFinishReason = firstResult.finishReason;
 
   while (shouldContinue(lastFinishReason, fullContent) && continuationRounds < MAX_CONTINUATION_ROUNDS) {
@@ -548,8 +648,10 @@ export async function callAI(options: AIRequestOptions): Promise<string> {
     try {
       logger.info(`[AI] 输出可能被截断（finish_reason=${lastFinishReason || 'unknown'}），自动续写第 ${continuationRounds} 轮...`);
       const result = await callAIOnce(continuePayload, maxRetries);
-      fullContent += result.content;
-      lastSegment = result.content;
+      // 续写段也可能以道歉开头（模型看到 tail 后试图"缓和"），剥离
+      const cleanCont = stripApologyPrefix(result.content);
+      fullContent += cleanCont;
+      lastSegment = cleanCont;
       lastFinishReason = result.finishReason;
     } catch (err) {
       // 用户主动停止不能吞：半截 JSON 会被调用方 parseAIJson 失败后当纯文本
@@ -742,8 +844,11 @@ export async function callAIStreaming(
 
   // First call: use full original messages
   const firstResult = await streamAIOnce(initialPayload, maxRetries, onChunk, fullContent);
-  fullContent = firstResult.fullText;
-  lastSegment = firstResult.fullText;
+  // 流式首段也可能以道歉开头，剥离后再存入 fullContent/lastSegment
+  // 注意：流式过程中道歉已经投递给 UI，这里剥离的是用于续写判断和 tail 的内容
+  const cleanFirstText = stripApologyPrefix(firstResult.fullText);
+  fullContent = cleanFirstText;
+  lastSegment = cleanFirstText;
   let lastFinishReason = firstResult.finishReason;
 
   while (shouldContinue(lastFinishReason, fullContent) && continuationRounds < MAX_CONTINUATION_ROUNDS) {
@@ -759,8 +864,9 @@ export async function callAIStreaming(
     try {
       logger.info(`[AI] 流式输出可能被截断（finish_reason=${lastFinishReason || 'unknown'}），自动续写第 ${continuationRounds} 轮...`);
       const result = await streamAIOnce(continuePayload, maxRetries, onChunk, fullContent);
-      fullContent += result.fullText;
-      lastSegment = result.fullText;
+      const cleanCont = stripApologyPrefix(result.fullText);
+      fullContent += cleanCont;
+      lastSegment = cleanCont;
       lastFinishReason = result.finishReason;
     } catch (err) {
       // 同 callAI：用户主动停止必须一路抛出，不能把半截内容当完整结果返回
@@ -772,6 +878,14 @@ export async function callAIStreaming(
 
   if (shouldContinue(lastFinishReason, fullContent)) {
     logger.warn(`[AI] 已达到最大续写轮数（${MAX_CONTINUATION_ROUNDS}轮），输出可能仍然不完整。建议调大最大Token数或检查网络/超时设置。`);
+  }
+
+  // 最终剥离：如果开头有道歉（可能在流式过程中投递给了 UI），用剥离后的干净版本
+  // 覆盖 UI 显示。onChunk 的第二个参数是 fullText，调用方据此更新状态。
+  const finalClean = stripApologyPrefix(fullContent);
+  if (finalClean !== fullContent) {
+    onChunk('', finalClean);
+    return finalClean;
   }
 
   return fullContent;
