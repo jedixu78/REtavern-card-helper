@@ -96,7 +96,7 @@ export function useAIGenerate() {
     nsfw?: boolean,
   ): Promise<string> => {
     const prompts = CHARACTER_GENERATE_PROMPT(characterName, hint, otherCharactersContext, alignment, nsfw, lang);
-    return callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.85, presetMode: 'force' });
+    return callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.85, presetMode: 'force', max_tokens: 12000 });
   }, [lang]);
 
   /**
@@ -113,7 +113,7 @@ export function useAIGenerate() {
     nsfw?: boolean,
   ): Promise<string> => {
     const prompts = CHARACTER_GENERATE_PROMPT(characterName, hint, otherCharactersContext, alignment, nsfw, lang);
-    return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.85, presetMode: 'force' });
+    return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.85, presetMode: 'force', max_tokens: 12000 });
   }, [lang]);
 
   /**
@@ -130,7 +130,21 @@ export function useAIGenerate() {
     const text = await generateCharacter(characterName, hint, otherCharactersContext, alignment, nsfw);
     const parsed = parseAIJson(text) as AIGeneratedCharacter | null;
 
-    if (!parsed) return { description: text };
+    if (!parsed) {
+      const descMatch = text.match(/"description"\s*:\s*"([\s\S]*?)(?:"|$)/);
+      if (descMatch?.[1]) {
+        const extracted = descMatch[1]
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\')
+          .trim();
+        if (extracted.length > 20) {
+          return sanitizeCharacterResult(characterName, { description: extracted });
+        }
+      }
+      return { description: text };
+    }
 
     return sanitizeCharacterResult(characterName, {
       name: parsed.name,
@@ -153,7 +167,23 @@ export function useAIGenerate() {
     const text = await generateCharacterStreaming(characterName, hint, onChunk, otherCharactersContext, alignment, nsfw);
     const parsed = parseAIJson(text) as AIGeneratedCharacter | null;
 
-    if (!parsed) return { description: text };
+    if (!parsed) {
+      // JSON 被截断且续写后仍不完整时，尝试从截断文本中提取 description 字段值
+      const descMatch = text.match(/"description"\s*:\s*"([\s\S]*?)(?:"|$)/);
+      if (descMatch?.[1]) {
+        // 反转义 JSON 字符串中的常见转义序列
+        const extracted = descMatch[1]
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\')
+          .trim();
+        if (extracted.length > 20) {
+          return sanitizeCharacterResult(characterName, { description: extracted });
+        }
+      }
+      return { description: text };
+    }
 
     return sanitizeCharacterResult(characterName, {
       name: parsed.name,
@@ -276,7 +306,7 @@ export function useAIGenerate() {
     writingRequirements?: string,
   ): Promise<string> => {
     const prompts = FIRST_MESSAGE_PROMPT(cardName, characterDescriptions, sceneHint, targetWordCount, worldbookContext, writingRequirements, lang);
-    return callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.9, presetMode: 'force' });
+    return callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.9, presetMode: 'force', max_tokens: 12000 });
   }, [lang]);
 
   /** Generate first message with streaming */
@@ -290,7 +320,7 @@ export function useAIGenerate() {
     writingRequirements?: string,
   ): Promise<string> => {
     const prompts = FIRST_MESSAGE_PROMPT(cardName, characterDescriptions, sceneHint, targetWordCount, worldbookContext, writingRequirements, lang);
-    return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.9, presetMode: 'force' });
+    return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.9, presetMode: 'force', max_tokens: 12000 });
   }, [lang]);
 
   /** Generate worldview constraints / operation rules */
