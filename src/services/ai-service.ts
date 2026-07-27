@@ -7,7 +7,7 @@
  * The system automatically appends /chat/completions or /models as needed.
  */
 import { getAISettings } from '../db/database';
-import { getActivePresetsText } from './preset-service';
+import { getActivePresetMessages, isPrefillEnabled } from './preset-service';
 import { logger } from './logger';
 
 export interface AIMessage {
@@ -248,31 +248,80 @@ function deriveModelsUrl(baseUrl: string): string {
 }
 
 /**
- * Inject active preset rules into the first system message.
- * All AI calls go through this so every request carries writing preset context.
+ * Inject active preset rules into the messages array.
+ * - system-role prompts → appended to the first system message
+ * - assistant-role prompts → inserted as a prefill message after the last user
+ *   message (so the model "continues" from the committed stance).
+ *
+ * Prefill only injected when isPrefillEnabled() returns true, because some
+ * providers (notably OpenAI native) don't support true assistant prefill
+ * continuation and may echo the prefill text or behave unexpectedly.
+ *
+ * All AI calls go through this so every request carries preset context.
  */
 function injectPreset(messages: AIMessage[], presetMode: AIRequestOptions['presetMode'] = 'force'): AIMessage[] {
   if (presetMode === 'none') return messages;
 
-  const presetText = getActivePresetsText();
-  if (!presetText) return messages;
+  const { systemText, prefillText } = getActivePresetMessages();
+  if (!systemText && !prefillText) return messages;
 
-  const presetSection = `${PRESET_HEADER}\n\n${presetText}`;
-  const firstSystemIndex = messages.findIndex(msg => msg.role === 'system');
+  let result = messages;
 
-  if (firstSystemIndex === -1) {
-    return [{ role: 'system', content: presetSection }, ...messages];
+  // 1. Inject system text into the first system message (or prepend a new one)
+  if (systemText) {
+    const presetSection = `${PRESET_HEADER}\n\n${systemText}`;
+    const firstSystemIndex = result.findIndex(msg => msg.role === 'system');
+
+    if (firstSystemIndex === -1) {
+      result = [{ role: 'system', content: presetSection }, ...result];
+    } else {
+      result = result.map((m, i) => {
+        if (i === firstSystemIndex) {
+          return { ...m, content: `${m.content}\n\n${presetSection}` };
+        }
+        return m;
+      });
+    }
   }
 
-  return messages.map((m, i) => {
-    if (i === firstSystemIndex) {
-      return {
-        ...m,
-        content: `${m.content}\n\n${presetSection}`,
-      };
+  // 2. Inject assistant prefill after the last user message.
+  //    Pattern: [system, ...history, user] → [system, ...history, user, assistant:prefill]
+  //    The model treats the trailing assistant message as its own prior commitment
+  //    and continues from there, significantly reducing refusal rates on models
+  //    that support prefill (Claude / Gemini / GLM via OpenAI-compat proxies).
+  if (prefillText && isPrefillEnabled()) {
+    // Find the last user message index
+    let lastUserIndex = -1;
+    for (let i = result.length - 1; i >= 0; i--) {
+      if (result[i].role === 'user') {
+        lastUserIndex = i;
+        break;
+      }
     }
-    return m;
-  });
+
+    if (lastUserIndex !== -1) {
+      // Avoid stacking multiple prefills: if the message right after the last user
+      // is already an assistant prefill (e.g., from a previous inject on retry),
+      // replace it instead of adding another.
+      const nextIndex = lastUserIndex + 1;
+      const next = result[nextIndex];
+      if (next && next.role === 'assistant') {
+        result = [
+          ...result.slice(0, nextIndex),
+          { role: 'assistant', content: prefillText },
+          ...result.slice(nextIndex + 1),
+        ];
+      } else {
+        result = [
+          ...result.slice(0, lastUserIndex + 1),
+          { role: 'assistant', content: prefillText },
+          ...result.slice(lastUserIndex + 1),
+        ];
+      }
+    }
+  }
+
+  return result;
 }
 
 function clampRetryCount(value: number | undefined): number {

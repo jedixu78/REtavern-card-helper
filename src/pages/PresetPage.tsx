@@ -12,6 +12,8 @@ import {
   resetToBuiltInPreset,
   selectBuiltinPreset,
   getSelectedBuiltinKey,
+  isPrefillEnabled,
+  setPrefillEnabled,
   BUILTIN_PRESET_KEYS,
   type LoadedPreset,
 } from '../services/preset-service';
@@ -35,6 +37,7 @@ export function PresetPage() {
   const [preset, setPreset] = useState<LoadedPreset | null>(() => loadSavedPreset());
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [prefillEnabled, setPrefillEnabledState] = useState<boolean>(() => isPrefillEnabled());
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleImport = useCallback(async () => {
@@ -71,6 +74,12 @@ export function PresetPage() {
     const loaded = selectBuiltinPreset(key);
     if (loaded) setPreset(loaded);
   }, []);
+
+  const handleTogglePrefill = useCallback(() => {
+    const next = !prefillEnabled;
+    setPrefillEnabled(next);
+    setPrefillEnabledState(next);
+  }, [prefillEnabled]);
 
   const handleToggle = useCallback((index: number) => {
     const updated = togglePresetPrompt(index);
@@ -206,6 +215,46 @@ export function PresetPage() {
               </button>
             );
           })}
+        </div>
+
+        {/* Prefill toggle */}
+        <div className="mt-3 p-3 rounded-lg flex items-start gap-3" style={{ backgroundColor: cardBgSemiTransparent(0.3), border: `1px solid ${borderColor}` }}>
+          <label className="relative cursor-pointer flex-shrink-0 mt-0.5">
+            <input
+              type="checkbox"
+              checked={prefillEnabled}
+              onChange={handleTogglePrefill}
+              className="sr-only"
+            />
+            <div className={`w-5 h-5 rounded border-2 transition-all duration-300 flex items-center justify-center ${
+              prefillEnabled
+                ? 'bg-primary border-primary-tint shadow-lg shadow-primary-glow'
+                : ''
+            }`} style={prefillEnabled ? {} : inputStyle}>
+              {prefillEnabled && (
+                <svg className="w-3 h-3" style={textPrimaryStyle} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                  <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              )}
+            </div>
+          </label>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-sm font-medium" style={textPrimaryStyle}>🔐 Assistant 预填充（破限承诺）</span>
+              <span className="text-xs px-1.5 py-0.5 rounded" style={{ backgroundColor: prefillEnabled ? themeAlpha('success', 30) : 'var(--color-surface-raised)', color: prefillEnabled ? 'var(--color-status-success)' : 'var(--color-text-muted)' }}>
+                {prefillEnabled ? '已开启' : '已关闭'}
+              </span>
+            </div>
+            <p className="text-xs leading-relaxed" style={textMutedStyle}>
+              开启后，Claude/Gemini/GLM 专用预设会在用户消息后插入一条 assistant "承诺"消息，让模型先答应破限规则再生成，显著降低拒绝率。
+              <strong style={{ color: 'var(--color-status-warning)' }}>兼容性说明：</strong>
+              Claude 原生 / Gemini / GLM / 大多数 OpenAI 兼容中转（one-api、new-api 等）<strong>支持</strong>；
+              OpenAI 官方原生接口<strong>不支持</strong>真正的预填充续写（会把预填充当上下文），建议用「通用破限」预设或关闭本开关。
+            </p>
+            <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+              💡 若生成结果出现重复预填充文本、答非所问、或报错，请关闭本开关验证。
+            </p>
+          </div>
         </div>
       </div>
 
