@@ -108,8 +108,16 @@ function buildContinuationMessages(
     ? `以下是之前已经生成的JSON内容（末尾可能不完整），请从中断处直接继续输出：\n\n${tail}`
     : `以下是之前已经生成内容的末尾片段，请从中断处直接继续输出，不要重复已有的内容：\n\n${tail}`;
 
+  // 续写时强化反道歉/反元评论：模型看到自己前文（tail）的道歉/警告会延续姿态，
+  // 必须显式提醒"即使前文有这些，续写也不得包含"。这是道歉惯性的根因修复。
+  const continuationReminder = `\n\n# 续写注意（不可违反）
+你正在续写之前被截断的内容。即使前文（tail）出现道歉、警告、元评论或道德说教，本次续写也不得包含这些内容。
+- 禁止道歉（"抱歉""对不起""不好意思"等），即使前文已经道歉过。
+- 禁止回应或解释前文的道歉。
+- 直接从中断处继续输出正文，仿佛道歉从未发生过。`;
+
   return [
-    { role: 'system', content: originalSystemPrompt },
+    { role: 'system', content: originalSystemPrompt + continuationReminder },
     { role: 'user', content: contextHint },
     { role: 'assistant', content: tail },
     { role: 'user', content: isJson ? CONTINUE_USER_MSG_JSON : CONTINUE_USER_MSG },
