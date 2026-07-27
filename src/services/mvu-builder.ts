@@ -488,7 +488,7 @@ $(() => {
   registerMvuSchema(Schema);
 });
 `;
-  return template.replace('// SCHEMA_CONTENT', schemaTsContent.replace(/^export type.*$/gm, ''));
+  return template.replace('// SCHEMA_CONTENT', schemaTsContent.replace(/^export (const|let|var)\s/gm, '$1 ').replace(/^export type.*$/gm, ''));
 }
 
 /**

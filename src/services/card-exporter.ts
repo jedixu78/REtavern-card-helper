@@ -986,7 +986,7 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
     // 它们的内容直接内联在 extensions.tavern_helper.scripts 里（酒馆助手脚本区）
     // 状态栏 HTML 通过 regex_scripts 替换 <StatusPlaceHolderImpl/> 占位符，见 buildCardExtensions
 
-    // MVU 变量列表 — Variable list (after_char/4 for AI visibility, not for MVU parser)
+    // MVU 变量列表 — Variable list (at_depth/0, 与参考卡「二十一人会」一致)
     if (bundle.variableList) {
       mvuEntryOffset++;
       entries.push({
@@ -1005,16 +1005,16 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
         comment: 'MVU 变量列表',
         use_regex: false,
         extensions: buildSTExtensions({
-          position: 'after_char',
+          position: 'at_depth',
           displayIndex: mvuEntryOffset,
-          depth: 4,
+          depth: 0,
           preventRecursion: true,
           excludeRecursion: false,
         }),
       });
     }
 
-    // MVU 变量输出格式 — Full output format with XML tags (after_char/4 for AI visibility)
+    // MVU 变量输出格式 — Full output format with XML tags (at_depth/0, 与参考卡一致)
     // Contains <update_variable_rules>, <status_bar_rule>, <status_current_variable>
     if (bundle.variableOutputFormat) {
       mvuEntryOffset++;
@@ -1034,9 +1034,9 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
         comment: 'MVU 变量输出格式',
         use_regex: false,
         extensions: buildSTExtensions({
-          position: 'after_char',
+          position: 'at_depth',
           displayIndex: mvuEntryOffset,
-          depth: 4,
+          depth: 0,
           preventRecursion: true,
           excludeRecursion: false,
         }),
