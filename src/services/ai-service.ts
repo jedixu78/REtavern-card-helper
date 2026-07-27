@@ -117,7 +117,8 @@ const APOLOGY_START_REGEX = /^(?:抱歉|对不起|不好意思|我很抱歉|很�
  * 只有剥离后剩余内容 >50 字符才剥离，避免把整条都是道歉的回复删空。
  * 如果整条都是道歉（无正文），返回原文——有内容比空内容好，由调用方处理。
  */
-function stripApologyPrefix(content: string): string {
+/** 检测并剥离 AI 回复开头的道歉段落（导出供卡片清理工具复用） */
+export function stripApologyPrefix(content: string): string {
   const trimmed = content.trimStart();
   if (!APOLOGY_START_REGEX.test(trimmed)) return content;
 

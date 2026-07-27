@@ -17,6 +17,8 @@ import {
   BUILTIN_PRESET_KEYS,
   type LoadedPreset,
 } from '../services/preset-service';
+import { cleanAllApologies, type CleanupResult } from '../services/apology-cleanup';
+import { useToast } from '../components/shared/Toast';
 import { useTranslation } from '../i18n/I18nContext';
 import { themeAlpha } from '../constants/theme';
 
@@ -38,7 +40,10 @@ export function PresetPage() {
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [prefillEnabled, setPrefillEnabledState] = useState<boolean>(() => isPrefillEnabled());
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const { addToast } = useToast();
 
   const handleImport = useCallback(async () => {
     fileRef.current?.click();
@@ -85,6 +90,24 @@ export function PresetPage() {
     const updated = togglePresetPrompt(index);
     setPreset(updated);
   }, []);
+
+  const handleCleanApologies = useCallback(async () => {
+    setCleaning(true);
+    setCleanupResult(null);
+    try {
+      const result = await cleanAllApologies();
+      setCleanupResult(result);
+      if (result.fieldsCleaned > 0) {
+        addToast('success', `已清理 ${result.cardsCleaned} 张卡片 + ${result.draftsCleaned} 个草稿中的 ${result.fieldsCleaned} 处道歉残留`);
+      } else {
+        addToast('info', `扫描完成：${result.cardsScanned} 张卡片 + ${result.draftsScanned} 个草稿，未发现道歉残留`);
+      }
+    } catch (err) {
+      addToast('error', '清理失败：' + (err instanceof Error ? err.message : '未知错误'));
+    } finally {
+      setCleaning(false);
+    }
+  }, [addToast]);
 
   const currentBuiltinKey = preset?.isBuiltIn ? (preset.builtinKey ?? getSelectedBuiltinKey()) : null;
 
@@ -267,6 +290,62 @@ export function PresetPage() {
           </div>
         </div>
       )}
+
+      {/* 道歉残留清理工具 */}
+      <div className="mb-4 p-4 rounded-lg border backdrop-blur-sm animate-fade-in-up" style={{ borderColor: borderColor, backgroundColor: cardBgSemiTransparent(0.2) }}>
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-lg" style={{ backgroundColor: themeAlpha('warning', 20) }}>
+            <span className="text-lg">🧹</span>
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-semibold mb-1" style={textPrimaryStyle}>清理已有卡片的道歉残留</h3>
+            <p className="text-xs mb-3" style={textMutedStyle}>
+              之前用道歉的 AI 生成的卡片可能残留"抱歉，我无法..."开头的道歉段落。
+              点击下方按钮批量扫描所有卡片和草稿，自动剥离道歉内容。
+            </p>
+            <Button
+              variant="secondary"
+              onClick={handleCleanApologies}
+              disabled={cleaning}
+              className="group hover:scale-105 transition-transform"
+            >
+              <span className={`mr-1 ${cleaning ? 'animate-spin' : 'group-hover:animate-bounce'}`}>{cleaning ? '⏳' : '🧹'}</span>
+              {cleaning ? '正在扫描...' : '开始扫描清理'}
+            </Button>
+
+            {/* 清理结果 */}
+            {cleanupResult && (
+              <div className="mt-3 p-3 rounded-lg text-xs animate-fade-in-up" style={{ backgroundColor: cardBgSemiTransparent(0.4) }}>
+                {cleanupResult.fieldsCleaned > 0 ? (
+                  <>
+                    <p className="font-medium mb-2" style={{ color: 'var(--color-status-success)' }}>
+                      ✅ 已清理 {cleanupResult.cardsCleaned}/{cleanupResult.cardsScanned} 张卡片 + {cleanupResult.draftsCleaned}/{cleanupResult.draftsScanned} 个草稿，共 {cleanupResult.fieldsCleaned} 处道歉残留
+                    </p>
+                    <div className="space-y-1 max-h-40 overflow-y-auto" style={textMutedStyle}>
+                      {cleanupResult.details.slice(0, 20).map((d, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span style={{ color: 'var(--color-status-warning)' }}>•</span>
+                          <span className="truncate">{d.card}</span>
+                          <span>→</span>
+                          <span className="truncate flex-1">{d.field}</span>
+                          <span className="shrink-0" style={{ color: 'var(--color-status-warning)' }}>-{d.strippedChars}字</span>
+                        </div>
+                      ))}
+                      {cleanupResult.details.length > 20 && (
+                        <p className="text-center" style={textMutedStyle}>...还有 {cleanupResult.details.length - 20} 处</p>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p style={{ color: 'var(--color-status-info)' }}>
+                    ℹ️ 扫描了 {cleanupResult.cardsScanned} 张卡片 + {cleanupResult.draftsScanned} 个草稿，未发现道歉残留。
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Empty state */}
       {!preset && !error && (
