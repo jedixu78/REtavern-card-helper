@@ -11,6 +11,7 @@ import { parseAIJson } from './ai-json';
 import { editableLorebookEntries } from './lorebook-predicates';
 import { deepClone } from '../utils/deep-clone';
 
+
 // ════════════════════════════════════════════════════════════════════════════
 // 原始 JSON 补丁系统
 // ────────────────────────────────────────────────────────────────────────────
@@ -496,30 +497,18 @@ export function applyCardChatPatch(draft: WizardDraft, proposals: CardChatPropos
  *
  * 与 applyCardChatPatch（作用于 WizardDraft）不同，此函数直接操作原始 JSON 结构，
  * 完整保留所有未涉及字段（包括 MVU 脚本、正则、extensions、ST 运行时字段等）。
- *
- * 支持的字段映射：
- *   - cardName → data.name + 顶层 name（V1 兼容）
- *   - firstMessage → data.first_mes
- *   - scenario / system_prompt / post_history_instructions / creator_notes → data.*
- *   - tags → data.tags
- *   - mvu.statusBarHtml → data.extensions.regex_scripts 中 scriptName==='状态栏界面' 的 replaceString
- *   - liveStreamChat.html → data.extensions.regex_scripts 中 scriptName==='直播间界面' 的 replaceString
- *   - characters → _meta.characters（replace/add/delete）
- *   - lorebookEntries → data.character_book.entries（replace/add/delete，按 comment 匹配）
  */
 export function applyPatchToCardData(
   cardData: Record<string, unknown>,
   change: ProposedChange,
 ): Record<string, unknown> {
   const next = deepClone(cardData);
-  // data 可能嵌套在 card.data 下（V2/V3），也可能是顶层（V1）
   const hasNestedData = next.data && typeof next.data === 'object';
   const data = (hasNestedData ? (next.data as Record<string, unknown>) : next) as Record<string, unknown>;
 
-  // 标量字段：直接赋值到 data 对应路径
   if (change.field === 'cardName' && typeof change.value === 'string') {
     data.name = change.value;
-    if (hasNestedData) next.name = change.value; // V1 顶层
+    if (hasNestedData) next.name = change.value;
   } else if (change.field === 'tags' && Array.isArray(change.value)) {
     data.tags = change.value;
   } else if (change.field === 'firstMessage' && typeof change.value === 'string') {
@@ -533,42 +522,23 @@ export function applyPatchToCardData(
   } else if (change.field === 'creator_notes' && typeof change.value === 'string') {
     data.creator_notes = change.value;
   } else if (change.field === 'mvu.statusBarHtml' && typeof change.value === 'string') {
-    // 直接修改 regex_scripts 中对应脚本的 replaceString
     const ext = (data.extensions || {}) as Record<string, unknown>;
     const scripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Array<Record<string, unknown>>) : [];
     const target = scripts.find((s) => s.scriptName === REGEX_SCRIPT_NAMES.statusBar);
-    if (target) {
-      target.replaceString = change.value;
-    }
-    // 如果不存在对应脚本，按用户强约束方案"不新增未涉及的依赖"，跳过
+    if (target) target.replaceString = change.value;
   } else if (change.field === 'liveStreamChat.html' && typeof change.value === 'string') {
     const ext = (data.extensions || {}) as Record<string, unknown>;
     const scripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Array<Record<string, unknown>>) : [];
     const target = scripts.find((s) => s.scriptName === REGEX_SCRIPT_NAMES.liveChat);
-    if (target) {
-      target.replaceString = change.value;
-    }
+    if (target) target.replaceString = change.value;
   } else if (change.field === 'characters') {
-    // 修改 _meta.characters（应用元数据，非 SillyTavern spec 字段）
     const meta = (next._meta || {}) as Record<string, unknown>;
     const characters = Array.isArray(meta.characters) ? (meta.characters as Array<Record<string, unknown>>) : [];
-
     if (change.action === 'replace' && change.id) {
       const idx = characters.findIndex((c) => String(c.id) === String(change.id));
-      if (idx >= 0) {
-        characters[idx] = {
-          ...characters[idx],
-          ...(typeof change.name === 'string' ? { name: change.name } : {}),
-          ...(typeof change.description === 'string' ? { description: change.description } : {}),
-        };
-      }
+      if (idx >= 0) characters[idx] = { ...characters[idx], ...(typeof change.name === 'string' ? { name: change.name } : {}), ...(typeof change.description === 'string' ? { description: change.description } : {}) };
     } else if (change.action === 'add' && typeof change.description === 'string') {
-      characters.push({
-        id: generateId(),
-        name: change.name || '',
-        description: change.description,
-        entryIds: [],
-      });
+      characters.push({ id: generateId(), name: change.name || '', description: change.description, entryIds: [] });
     } else if (change.action === 'delete' && change.id) {
       const idx = characters.findIndex((c) => String(c.id) === String(change.id));
       if (idx >= 0) characters.splice(idx, 1);
@@ -576,58 +546,20 @@ export function applyPatchToCardData(
     meta.characters = characters;
     next._meta = meta;
   } else if (change.field === 'lorebookEntries') {
-    // 仅在原卡确实存在 character_book 时才操作；否则跳过，避免向原本没有
-    // character_book 的卡片注入空对象（违反"不新增未涉及依赖"原则）。
     const charBook = (data.character_book || undefined) as Record<string, unknown> | undefined;
-    if (!charBook) {
-      return next;
-    }
+    if (!charBook) return next;
     const entries = Array.isArray(charBook.entries) ? (charBook.entries as Array<Record<string, unknown>>) : [];
-
     if (change.action === 'replace' && change.comment) {
       const idx = entries.findIndex((e) => (e.comment || e.name) === change.comment);
-      if (idx >= 0) {
-        entries[idx] = {
-          ...entries[idx],
-          ...(typeof change.newComment === 'string' ? { comment: change.newComment, name: change.newComment } : {}),
-          ...(typeof change.content === 'string' ? { content: change.content } : {}),
-          ...(Array.isArray(change.keys) ? { keys: change.keys } : {}),
-        };
-      }
+      if (idx >= 0) entries[idx] = { ...entries[idx], ...(typeof change.newComment === 'string' ? { comment: change.newComment, name: change.newComment } : {}), ...(typeof change.content === 'string' ? { content: change.content } : {}), ...(Array.isArray(change.keys) ? { keys: change.keys } : {}) };
     } else if (change.action === 'add') {
       const targetComment = change.comment || '';
       const idx = entries.findIndex((e) => (e.comment || e.name) === targetComment);
       if (idx >= 0) {
-        // 已存在同 comment 的条目，覆盖更新
-        entries[idx] = {
-          ...entries[idx],
-          ...(typeof change.content === 'string' ? { content: change.content } : {}),
-          ...(Array.isArray(change.keys) ? { keys: change.keys } : {}),
-        };
+        entries[idx] = { ...entries[idx], ...(typeof change.content === 'string' ? { content: change.content } : {}), ...(Array.isArray(change.keys) ? { keys: change.keys } : {}) };
       } else {
-        // 新增条目：使用最小字段集，不预设未涉及的依赖。
-        // id 取现有条目最大数值 id + 1，避免同批次先 delete 再 add 时 length 缩水
-        // 导致新条目 id 与保留条目撞车（原 entries.length + 1 有此缺陷）。
-        const maxId = entries.reduce((m, e) => {
-          const n = typeof e.id === 'number' ? e.id : Number(e.id);
-          return Number.isFinite(n) && n > m ? n : m;
-        }, 0);
-        entries.push({
-          id: maxId + 1,
-          keys: change.keys || [],
-          secondary_keys: [],
-          content: change.content || '',
-          name: targetComment,
-          comment: targetComment,
-          enabled: true,
-          insertion_order: entries.length,
-          case_sensitive: false,
-          selective: false,
-          constant: false,
-          position: 'after_char',
-          priority: 0,
-          use_regex: false,
-        });
+        const maxId = entries.reduce((m, e) => { const n = typeof e.id === 'number' ? e.id : Number(e.id); return Number.isFinite(n) && n > m ? n : m; }, 0);
+        entries.push({ id: maxId + 1, keys: change.keys || [], secondary_keys: [], content: change.content || '', name: targetComment, comment: targetComment, enabled: true, insertion_order: entries.length, case_sensitive: false, selective: false, constant: false, position: 'after_char', priority: 0, use_regex: false });
       }
       charBook.entries = entries;
       data.character_book = charBook;
@@ -637,21 +569,13 @@ export function applyPatchToCardData(
       charBook.entries = entries;
       data.character_book = charBook;
     }
-
-    // replace 也需要确保 charBook.entries 被回写（仅当确有修改时）
-    if (change.action === 'replace') {
-      charBook.entries = entries;
-      data.character_book = charBook;
-    }
+    if (change.action === 'replace') { charBook.entries = entries; data.character_book = charBook; }
   }
 
   return next;
 }
 
-/**
- * 批量应用补丁到原始卡片 JSON。
- * 按顺序依次应用每个 change，返回累积修改后的新 cardData。
- */
+/** 批量应用补丁到原始卡片 JSON。按顺序依次应用每个 change。 */
 export function applyPatchesToCardData(
   cardData: Record<string, unknown>,
   changes: ProposedChange[],

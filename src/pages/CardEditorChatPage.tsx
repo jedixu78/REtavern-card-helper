@@ -230,6 +230,8 @@ export function CardEditorChatPage() {
   const [inputValue, setInputValue] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState('');
+  const streamingTextRef = useRef('');
+  const lastRenderUpdateRef = useRef(0);
   const [pendingProposals, setPendingProposals] = useState<CardChatProposals | null>(null);
   const [changeDiffs, setChangeDiffs] = useState<ChangeDiff[]>([]);
   const [diffStatuses, setDiffStatuses] = useState<Array<'pending' | 'applied' | 'discarded'>>([]);
@@ -618,6 +620,8 @@ export function CardEditorChatPage() {
     setInputValue('');
     setIsStreaming(true);
     setStreamingText('');
+    streamingTextRef.current = '';
+    lastRenderUpdateRef.current = 0;
 
     try {
       const prompt = buildCardChatPrompt(draft, userMsg.content, updatedMessages);
@@ -630,8 +634,15 @@ export function CardEditorChatPage() {
       let fullText = '';
       await callAIStreaming({ messages: apiMessages }, (chunk) => {
         fullText += chunk;
-        setStreamingText(fullText);
+        streamingTextRef.current = fullText;
+        const now = Date.now();
+        if (now - lastRenderUpdateRef.current >= 120) {
+          lastRenderUpdateRef.current = now;
+          setStreamingText(fullText);
+        }
       });
+      // 流结束：flush 最终文本确保完整显示
+      setStreamingText(fullText);
 
       const assistantMsg: ChatMessage = { role: 'assistant', content: fullText };
       const finalMessages = [...updatedMessages, assistantMsg];

@@ -156,7 +156,15 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
       }
     }, DRAFT_SAVE_DELAY);
 
-    return () => clearTimeout(saveTimerRef.current);
+    return () => {
+      // timer 仍在运行说明 debounce 尚未触发，即最近一次编辑未保存
+      const pending = saveTimerRef.current !== undefined;
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = undefined;
+      if (pending) {
+        saveAutoDraft(draft, currentStep).catch(() => {});
+      }
+    };
   }, [draft, currentStep, loading, editId]);
 
   /** Update draft with partial changes or an updater function. */

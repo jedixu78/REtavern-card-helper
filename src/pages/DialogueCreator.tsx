@@ -78,21 +78,24 @@ export function DialogueCreator() {
   // ── Restore last viewed chat on mount ──────────────────────────────────────
   useEffect(() => {
     if (restored) return;
+    let cancelled = false;
     const lastId = localStorage.getItem(LAST_CHAT_KEY);
     if (lastId) {
       const id = parseInt(lastId, 10);
       if (!isNaN(id)) {
         db.creator_chats.get(id).then((chat) => {
+          if (cancelled) return;
           if (chat) {
             setCurrentChatId(id);
             setMessages(chat.messages);
           }
           setRestored(true);
         }).catch((err) => {
+          if (cancelled) return;
           console.error('Failed to restore chat:', err);
           setRestored(true);
         });
-        return;
+        return () => { cancelled = true; };
       }
     }
     setRestored(true);

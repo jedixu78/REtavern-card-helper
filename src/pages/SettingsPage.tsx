@@ -87,11 +87,11 @@ export function SettingsPage() {
       setModelList([]);
       // URL 切换后，旧 Key 可能不适用于新渠道，重置验证状态并解锁输入框
       if (settings?.keyVerified) {
-        const updated = { ...settings, keyVerified: false };
-        setSettings(updated);
+        setSettings(prev => prev ? { ...prev, keyVerified: false } : prev);
         setEditingKey(true);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.apiUrl]);
 
   const handleFetchModels = useCallback(async () => {
