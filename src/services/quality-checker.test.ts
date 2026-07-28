@@ -168,7 +168,7 @@ describe('runQualityCheck — token 预算维度', () => {
   it('常驻（蓝灯）条目总量超阈值时 tokenBudget 检查失败，并点名最占空间的条目', () => {
     const draft = makeDraft({
       lorebookEntries: [
-        { ...createEmptyLorebookEntry(), name: '巨型常驻设定', comment: '巨型常驻设定', content: '设'.repeat(3000), constant: true },
+        { ...createEmptyLorebookEntry(), name: '巨型常驻设定', comment: '巨型常驻设定', content: '设'.repeat(8000), constant: true },
         { ...createEmptyLorebookEntry(), name: '小常驻设定', comment: '小常驻设定', content: '设'.repeat(20), constant: true },
       ],
     });
@@ -186,7 +186,7 @@ describe('runQualityCheck — token 预算维度', () => {
           ...createEmptyLorebookEntry(),
           name: '巨型触发设定',
           comment: '巨型触发设定',
-          content: '设'.repeat(3000),
+          content: '设'.repeat(8000),
           constant: false,
           keys: ['关键词'],
         },
@@ -212,7 +212,7 @@ describe('runQualityCheck — token 预算维度', () => {
       firstMessage: '这是一段足够长的开场白，用于通过质量检查。'.repeat(10),
       characters: [{ id: '1', name: '角色', description: '描述' }],
       lorebookEntries: [
-        { ...createEmptyLorebookEntry(), name: '巨型常驻', comment: '巨型常驻', content: '设'.repeat(3000), constant: true },
+        { ...createEmptyLorebookEntry(), name: '巨型常驻', comment: '巨型常驻', content: '设'.repeat(8000), constant: true },
       ],
     });
     const check = runQualityCheck(draft).results.find((r) => r.id === 'tokenBudget');

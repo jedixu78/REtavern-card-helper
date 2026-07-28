@@ -648,7 +648,7 @@ export function createEmptyDraft(): WizardDraft {
     character_version: '',
     tags: [] as string[],
     bookScanDepth: 200,
-    bookTokenBudget: 3000,
+    bookTokenBudget: 10000,
     bookRecursiveScanning: false,
     worldbookNsfw: false,
     worldRules: '',
