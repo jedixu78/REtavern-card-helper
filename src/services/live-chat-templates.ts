@@ -1,11 +1,16 @@
 /**
  * live-chat-templates — 直播间评论面板 HTML 模板生成器
  *
- * 架构（纯正则驱动，不依赖 MVU）：
+ * 架构（正则驱动 + 可选 MVU 增强）：
  *   - 注入层：占位符 `<LiveStreamChatImpl/>`（card-exporter 负责）
  *   - 渲染层：运行时 JS 立即渲染内置初始评论（无需任何外部依赖）
  *   - 增强层（可选）：若 MVU 运行时可用，订阅 VARIABLE_UPDATE_ENDED 事件
  *             读取 `stat_data.直播间.评论` 实现动态更新
+ *
+ * 防御性渲染策略：
+ *   - AI 发送空数组 [] 时不清空面板，保留上一轮显示（观众永远不沉默）
+ *   - AI 发送全无效内容时保留上一轮显示
+ *   - 初始化时即使无初始评论也进入"等待直播开始"状态，不留空白
  *
  * 生成物是完整 HTML 文档（```html 代码块），含 <style> + <script type="module"> + <body>。
  */
@@ -91,6 +96,8 @@ function buildRuntimeScript(initialComments: string[]): string {
   return `<script type="module">
 // ── 内置初始评论（无需 MVU，立即渲染） ──
 var LC_INITIAL = ${commentsJson};
+// ── 当前显示的评论（用于防御性渲染：AI 发空数组不清空面板） ──
+var LC_CURRENT = [];
 
 // ── 自包含路径读取 ──
 function lcGet(obj, path, def) {
@@ -152,9 +159,14 @@ function lcRender(comments) {
   var countEl = document.getElementById('lc-count');
   if (!body) return;
   if (!Array.isArray(comments) || comments.length === 0) {
-    body.innerHTML = '<div class="lc-empty">等待直播开始…</div>';
-    if (countEl) countEl.textContent = '0 人在线';
-    return;
+    // 空数组：保留当前显示，不清空面板（避免 AI 发空数组清屏）
+    if (LC_CURRENT.length > 0) {
+      comments = LC_CURRENT;
+    } else {
+      body.innerHTML = '<div class="lc-empty">等待直播开始…</div>';
+      if (countEl) countEl.textContent = '0 人在线';
+      return;
+    }
   }
   // 重置每轮的名称/色相分配，让同一轮评论用户名多样
   LC_USED_NAMES = [];
@@ -162,11 +174,13 @@ function lcRender(comments) {
   LC_BASE_TS = null;
   var total = comments.length;
   var html = '';
+  var valid = 0;
   for (var i = 0; i < total; i++) {
     var text = comments[i];
     if (text == null) continue;
     text = String(text).trim();
     if (!text) continue;
+    valid++;
     var info = lcPickName(i);
     var color = 'hsl(' + info.hue + ',65%,55%)';
     var initial = info.name.charAt(0);
@@ -178,9 +192,19 @@ function lcRender(comments) {
       + '<div class="lc-text">' + lcEsc(text) + '</div>'
       + '</div></div>';
   }
-  body.innerHTML = html || '<div class="lc-empty">等待直播开始…</div>';
+  if (valid === 0) {
+    // 所有评论都无效：保留当前显示
+    if (LC_CURRENT.length > 0) {
+      return;
+    }
+    body.innerHTML = '<div class="lc-empty">等待直播开始…</div>';
+    if (countEl) countEl.textContent = '0 人在线';
+    return;
+  }
+  LC_CURRENT = comments;
+  body.innerHTML = html;
   if (countEl) {
-    var online = Math.min(total, 99) + Math.floor(Math.random() * 200) + 1;
+    var online = Math.min(valid, 99) + Math.floor(Math.random() * 200) + 1;
     countEl.textContent = online + ' 人在线';
   }
   // 自动滚动到底部
@@ -189,17 +213,21 @@ function lcRender(comments) {
 
 // ── 从 MVU 变量读取评论并渲染（可选增强） ──
 function lcPopulate() {
-  var all = (typeof getAllVariables === 'function') ? getAllVariables() : {};
-  var comments = lcGet(all, 'stat_data.直播间.评论', []);
-  // 兼容标量：非数组包一层
-  if (!Array.isArray(comments)) comments = comments == null ? [] : [String(comments)];
-  if (comments.length > 0) lcRender(comments);
+  try {
+    var all = (typeof getAllVariables === 'function') ? getAllVariables() : {};
+    var comments = lcGet(all, 'stat_data.直播间.评论', []);
+    // 兼容标量：非数组包一层
+    if (!Array.isArray(comments)) comments = comments == null ? [] : [String(comments)];
+    // 防御性：空数组不清空面板（AI 可能本轮不发弹幕，保留上一轮显示）
+    lcRender(comments);
+  } catch (e) { /* MVU 读取失败不影响静态展示 */ }
 }
 
 // ── 初始化：立即渲染内置评论，再尝试订阅 MVU 动态更新 ──
 async function lcInit() {
   // 1. 立即渲染内置评论（无需任何外部依赖）
-  if (LC_INITIAL.length > 0) lcRender(LC_INITIAL);
+  //    即使 LC_INITIAL 为空也调用 lcRender，让面板进入"等待直播开始"状态
+  lcRender(LC_INITIAL);
 
   // 2. 可选：等待 MVU 运行时就绪后订阅变量更新事件实现动态刷新
   //    不等待会导致 MVU 尚未初始化时订阅失败，后续 AI 更新评论无法动态显示
