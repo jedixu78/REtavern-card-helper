@@ -27,11 +27,13 @@ import type {
   LorebookEntry,
   LorebookPosition,
   MvuConfig,
+  MvuVariable,
   EjsEntryConfig,
   LiveStreamChatConfig,
   DraftPassthrough,
   LorebookEntryPassthrough,
 } from '../constants/defaults';
+import { deepClone } from '../utils/deep-clone';
 import { buildMvuScriptBundle } from './mvu-builder';
 import { migrateStagedDispatcherContent, alignStagedDispatcherBookName, escapeEjsSingleQuoted } from './staged-lorebook-builder';
 import { findStagedLorebookEntryIndices, isCharacterDescriptionSynced } from './lorebook-predicates';
@@ -112,16 +114,75 @@ const STATUS_BAR_PLACEHOLDER = '<StatusPlaceHolderImpl/>';
 /** Placeholder appended to first_mes for live stream chat panel rendering (independent of MVU) */
 const LIVE_CHAT_PLACEHOLDER = '<LiveStreamChatImpl/>';
 
-/** Prompt rule instructing AI to emit the live chat placeholder at the end of every reply.
- *  Without this, the placeholder only exists in first_mes and the panel vanishes after
- *  the first message because AI never outputs it again. */
+/** Prompt rule instructing AI to emit the live chat placeholder and generate viewer comments.
+ *  The live chat panel is a "danmaku" overlay for the user only--characters cannot see it
+ *  (fourth-wall boundary). AI generates viewer reactions based on plot progression via MVU. */
 const LIVE_CHAT_PROMPT_RULE = `---
 <live_chat_rule>
-- after any <UpdateVariable> block (if present), output the literal token \`<LiveStreamChatImpl/>\` on a new line at the very end of every reply
-- this token renders the live stream chat panel; never omit it, never translate or modify it
-- if the reply already ends with \`<StatusPlaceHolderImpl/>\`, place \`<LiveStreamChatImpl/>\` right after it on a new line
+## 直播间弹幕面板（观众评论）
+
+本面板是给用户看的"弹幕"，显示观众对剧情的实时评论。
+**剧情里的角色看不到这个面板**--它存在于"第四面墙"之外，不影响正文叙事。
+角色不会回应弹幕，弹幕也不会推进剧情。
+
+### 你的任务
+1. 在每条回复末尾、<UpdateVariable> 之后（若有），输出字面量 \`<LiveStreamChatImpl/>\` 占位符（独占一行）
+2. 若 MVU 启用，在 <UpdateVariable> 的 <JSONPatch> 里更新 \`stat_data.直播间.评论\` 数组：
+   - 根据当前剧情进展，生成 3-8 条观众评论（替换旧评论，非追加）
+   - 评论应反映"观众"视角：吃瓜、吐槽、玩梗、站队、猜测走向、情绪宣泄
+   - 评论风格口语化、碎片化，像真实直播间弹幕（短句、表情、梗）
+   - 每条评论是字符串，数组元素如 \`"前排吃瓜"\`, \`"这也太刺激了"\`, \`"主播冲鸭"\`
+3. 若回复末尾已有 \`<StatusPlaceHolderImpl/>\`，将 \`<LiveStreamChatImpl/>\` 紧跟其后（新行）
+
+### 禁止
+- 不要把弹幕内容写进正文叙事
+- 不要让角色感知、回应或提及弹幕
+- 不要用弹幕推进剧情或代替角色对话
+- 占位符不得省略、翻译或修改
 </live_chat_rule>
 ---`;
+
+/** 直播间评论变量在 MVU schema 里的路径 */
+const LIVE_CHAT_COMMENT_PATH = '直播间.评论';
+
+/**
+ * 当直播间面板启用且 MVU 也启用时，向 MVU schema 注入 `直播间.评论` 变量。
+ * 该变量是 z.array(z.string())，初始值取自 LiveStreamChatConfig.initialComments。
+ * 这样 AI 通过 MVU 的 <UpdateVariable> 更新该数组后，面板运行时脚本会自动渲染弹幕。
+ *
+ * 返回一个新的 MvuConfig 副本（深拷贝），不修改原始 draft.mvu。
+ * 若 schema 里已存在该路径的变量，则跳过注入（尊重用户手动配置）。
+ */
+function injectLiveChatVariable(mvu: MvuConfig, liveChat: LiveStreamChatConfig): MvuConfig {
+  const cloned = deepClone(mvu);
+  // 检查是否已存在该变量
+  for (const section of cloned.schemaSections) {
+    for (const v of section.variables) {
+      if (v.path === LIVE_CHAT_COMMENT_PATH) return cloned; // 已存在，跳过
+    }
+  }
+  // 注入到名为"直播间"的 section（或新建）
+  let liveSection = cloned.schemaSections.find(s => s.name === '直播间');
+  if (!liveSection) {
+    liveSection = { name: '直播间', variables: [] };
+    cloned.schemaSections.push(liveSection);
+  }
+  const initialComments = Array.isArray(liveChat.initialComments)
+    ? liveChat.initialComments.filter(c => typeof c === 'string' && c.trim()).slice(0, 20)
+    : [];
+  const liveVar: MvuVariable = {
+    path: LIVE_CHAT_COMMENT_PATH,
+    zodType: 'z.array(z.string())',
+    description: '直播间观众弹幕评论数组，每条回复根据剧情生成 3-8 条新评论（替换旧评论）',
+    prefix: '',
+    initialValue: initialComments,
+  };
+  liveSection.variables.push(liveVar);
+  // 清空缓存字段，强制 zodTxt / initvarYaml 从 schemaSections 重新生成
+  cloned.schemaTsContent = '';
+  cloned.initvarYamlContent = '';
+  return cloned;
+}
 
 /** Default creator notes used when draft.creator_notes is empty */
 const DEFAULT_CREATOR_NOTES = '本卡由「吟游手册」制作。\n请尊重创作者的劳动成果，本卡仅供个人娱乐与学习交流使用，严禁任何形式的商业用途、倒卖、转载售卖或未经授权的二次分发。';
@@ -890,7 +951,11 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
   // 直播间面板启用时，需要让 AI 在每条回复末尾输出占位符，否则面板只在 first_mes 出现一次。
   const liveChatEnabled = Boolean(draft.liveStreamChat?.enabled && draft.liveStreamChat.html?.trim());
   if (mvuEnabled && draft.mvu) {
-    const bundle = buildMvuScriptBundle(draft.mvu);
+    // 直播间 + MVU 同时启用：注入 `直播间.评论` 变量到 schema，让 AI 能通过 <UpdateVariable> 更新弹幕
+    const mvuForBundle = (liveChatEnabled && draft.liveStreamChat)
+      ? injectLiveChatVariable(draft.mvu, draft.liveStreamChat)
+      : draft.mvu;
+    const bundle = buildMvuScriptBundle(mvuForBundle);
     // MVU 启用 + 直播间启用：把直播间规则追加到变量输出格式条目末尾，让 AI 同时输出两个占位符
     if (liveChatEnabled) {
       bundle.variableOutputFormat = `${bundle.variableOutputFormat}\n${LIVE_CHAT_PROMPT_RULE}`;

@@ -114,7 +114,7 @@ export function StepLiveStreamChat({ config, onChange }: StepLiveStreamChatProps
         <div className="min-w-0">
           <h2 className="text-xl font-bold text-[var(--text-color)]">📺 直播间评论面板</h2>
           <p className="text-sm text-[var(--color-text-secondary)] mt-1">
-            可选的直播弹幕面板，纯正则驱动，不依赖 MVU 系统。开播时立即渲染内置初始评论，若 MVU 可用则自动订阅动态更新。
+            可选的直播弹幕面板，给用户看的"第四面墙"内容（角色看不到）。开播时立即渲染内置初始评论，若 MVU 可用则 AI 会根据剧情自动生成观众弹幕。
           </p>
         </div>
         <Button variant={enabled ? 'secondary' : 'ghost'} size="sm" onClick={toggleEnabled}>
@@ -250,9 +250,10 @@ export function StepLiveStreamChat({ config, onChange }: StepLiveStreamChatProps
           <div className={`${cardCls} text-xs text-[var(--color-text-secondary)] space-y-1`}>
             <p className="font-semibold text-[var(--color-text)]">工作原理</p>
             <p>• 导出时自动在开场白末尾追加占位符 <code className="px-1 rounded bg-[var(--color-surface-raised)]">&lt;LiveStreamChatImpl/&gt;</code></p>
-            <p>• 通过正则脚本将占位符替换为面板 HTML（仅界面显示，AI 不可见）</p>
+            <p>• 通过正则脚本将占位符替换为面板 HTML（面板内容对 AI 不可见，AI 只看到输出占位符的指令）</p>
+            <p>• <strong>弹幕是给用户看的"第四面墙"内容</strong>：剧情角色看不到弹幕，弹幕不影响正文叙事</p>
             <p>• 面板内置 JS 自包含运行，无需 MVU 即可展示初始弹幕</p>
-            <p>• 若卡片同时启用了 MVU，面板会自动订阅变量更新事件，读取 <code className="px-1 rounded bg-[var(--color-surface-raised)]">stat_data.直播间.评论</code> 实现动态刷新</p>
+            <p>• 若卡片同时启用了 MVU，导出时会自动注入 <code className="px-1 rounded bg-[var(--color-surface-raised)]">直播间.评论</code> 变量，AI 会根据剧情进展生成观众评论并通过 <code className="px-1 rounded bg-[var(--color-surface-raised)]">&lt;UpdateVariable&gt;</code> 更新该数组，面板实时刷新弹幕</p>
           </div>
         </>
       )}

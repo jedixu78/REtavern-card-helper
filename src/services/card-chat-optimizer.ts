@@ -147,7 +147,7 @@ function draftSnapshot(draft: WizardDraft): string {
   if (draft.liveStreamChat?.enabled) {
     lines.push(`\n## 直播间评论面板（已启用，可修改 HTML）`);
     lines.push(`liveStreamChat.html: ${JSON.stringify(truncate(draft.liveStreamChat.html || '', 2000))}`);
-    lines.push(`注：直播面板通过 stat_data.直播间.评论 数组渲染弹幕，占位符 <LiveStreamChatImpl/> 由正则脚本替换为面板 HTML。`);
+    lines.push(`注：直播面板是给用户看的"弹幕"（第四面墙内容，角色看不到）。若 MVU 启用，导出时自动注入 stat_data.直播间.评论 变量，AI 根据剧情生成观众评论并通过 <UpdateVariable> 更新该数组。占位符 <LiveStreamChatImpl/> 由正则脚本替换为面板 HTML。`);
   }
 
   return lines.join('\n');
