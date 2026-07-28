@@ -98,9 +98,9 @@ export function PresetPage() {
       const result = await cleanAllApologies();
       setCleanupResult(result);
       if (result.fieldsCleaned > 0) {
-        addToast('success', `已清理 ${result.cardsCleaned} 张卡片 + ${result.draftsCleaned} 个草稿中的 ${result.fieldsCleaned} 处道歉残留`);
+        addToast('success', `已清理 ${result.cardsCleaned} 张卡片 + ${result.draftsCleaned} 个草稿 + ${result.chatsCleaned} 个对话中的 ${result.fieldsCleaned} 处道歉残留`);
       } else {
-        addToast('info', `扫描完成：${result.cardsScanned} 张卡片 + ${result.draftsScanned} 个草稿，未发现道歉残留`);
+        addToast('info', `扫描完成：${result.cardsScanned} 张卡片 + ${result.draftsScanned} 个草稿 + ${result.chatsScanned} 个对话，未发现道歉残留`);
       }
     } catch (err) {
       addToast('error', '清理失败：' + (err instanceof Error ? err.message : '未知错误'));
@@ -319,7 +319,7 @@ export function PresetPage() {
                 {cleanupResult.fieldsCleaned > 0 ? (
                   <>
                     <p className="font-medium mb-2" style={{ color: 'var(--color-status-success)' }}>
-                      ✅ 已清理 {cleanupResult.cardsCleaned}/{cleanupResult.cardsScanned} 张卡片 + {cleanupResult.draftsCleaned}/{cleanupResult.draftsScanned} 个草稿，共 {cleanupResult.fieldsCleaned} 处道歉残留
+                      ✅ 已清理 {cleanupResult.cardsCleaned}/{cleanupResult.cardsScanned} 张卡片 + {cleanupResult.draftsCleaned}/{cleanupResult.draftsScanned} 个草稿 + {cleanupResult.chatsCleaned}/{cleanupResult.chatsScanned} 个对话，共 {cleanupResult.fieldsCleaned} 处道歉残留
                     </p>
                     <div className="space-y-1 max-h-40 overflow-y-auto" style={textMutedStyle}>
                       {cleanupResult.details.slice(0, 20).map((d, i) => (
@@ -338,7 +338,7 @@ export function PresetPage() {
                   </>
                 ) : (
                   <p style={{ color: 'var(--color-status-info)' }}>
-                    ℹ️ 扫描了 {cleanupResult.cardsScanned} 张卡片 + {cleanupResult.draftsScanned} 个草稿，未发现道歉残留。
+                    ℹ️ 扫描了 {cleanupResult.cardsScanned} 张卡片 + {cleanupResult.draftsScanned} 个草稿 + {cleanupResult.chatsScanned} 个对话，未发现道歉残留。
                   </p>
                 )}
               </div>

@@ -7,6 +7,8 @@
  * 清理范围：
  * - cards 表：V2 spec 卡片的 data.* 文本字段 + character_book.entries[].content
  * - wizard_drafts 表：WizardDraft 的 characters[].description、lorebookEntries[].content 等
+ * - wizard_drafts 表：草稿的 messages[] 对话历史（AI 道歉消息）
+ * - creator_chats 表：卡片对话创建器的 AI 对话历史（AI 道歉消息）
  */
 import { db } from '../db/database';
 import { stripApologyPrefix } from './ai-service';
@@ -22,6 +24,10 @@ export interface CleanupResult {
   draftsScanned: number;
   /** 被清理的草稿数 */
   draftsCleaned: number;
+  /** 扫描的对话总数 */
+  chatsScanned: number;
+  /** 被清理的对话数 */
+  chatsCleaned: number;
   /** 被清理的字段总数 */
   fieldsCleaned: number;
   /** 被清理的字段明细（用于日志/展示） */
@@ -215,13 +221,40 @@ function cleanWizardDraft(
 }
 
 /**
- * 批量清理所有已有卡片和草稿的道歉残留。
- * 扫描 cards 表（未软删）和 wizard_drafts 表，剥离道歉前缀并保存。
+ * 清理对话消息数组中的 AI 道歉残留（原地修改）。
+ * 只清理 assistant 消息的 content，不碰 user 消息。
+ * @returns 被清理的消息数
+ */
+function cleanChatMessages(
+  messages: Array<{ role: string; content: string }>,
+  chatName: string,
+  details: CleanupResult['details'],
+): number {
+  let cleanedCount = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'assistant' && typeof msg.content === 'string' && msg.content) {
+      const original = msg.content;
+      const cleaned = stripApologyPrefix(original);
+      if (cleaned !== original) {
+        msg.content = cleaned;
+        cleanedCount++;
+        details.push({ card: chatName, field: `messages[${i}].content`, strippedChars: original.length - cleaned.length });
+      }
+    }
+  }
+  return cleanedCount;
+}
+
+/**
+ * 批量清理所有已有卡片、草稿和对话历史的道歉残留。
+ * 扫描 cards 表、wizard_drafts 表（含 data 字段和 messages 字段）、creator_chats 表。
  */
 export async function cleanAllApologies(): Promise<CleanupResult> {
   const details: CleanupResult['details'] = [];
   let cardsCleaned = 0;
   let draftsCleaned = 0;
+  let chatsCleaned = 0;
   let fieldsCleaned = 0;
 
   // 1. 清理 cards 表
@@ -251,7 +284,7 @@ export async function cleanAllApologies(): Promise<CleanupResult> {
     })) as never[]);
   }
 
-  // 2. 清理 wizard_drafts 表
+  // 2. 清理 wizard_drafts 表（含 data 字段和 messages 字段）
   const allDrafts = await db.wizard_drafts.toArray();
   const draftsScanned = allDrafts.length;
   const draftsToUpdate: Array<{ id: string; record: Record<string, unknown> }> = [];
@@ -260,14 +293,25 @@ export async function cleanAllApologies(): Promise<CleanupResult> {
     const draftData = draftRecord.data as WizardDraft;
     if (!draftData || typeof draftData !== 'object') continue;
     const draftName = draftRecord.name || draftData.cardName || `草稿 ${draftRecord.id}`;
-    const fieldCount = cleanWizardDraft(draftData, draftName, details);
+    let fieldCount = cleanWizardDraft(draftData, draftName, details);
+
+    // 同时清理草稿的 messages 字段（卡片编辑器 AI 对话历史）
+    const recordObj = draftRecord as unknown as Record<string, unknown>;
+    if (Array.isArray(recordObj.messages)) {
+      fieldCount += cleanChatMessages(
+        recordObj.messages as Array<{ role: string; content: string }>,
+        draftName,
+        details,
+      );
+    }
+
     fieldsCleaned += fieldCount;
     if (fieldCount > 0) {
       draftsCleaned++;
-      // 保留原始记录的所有字段（currentStep, name, messages 等），只替换 data
+      // 保留原始记录的所有字段（currentStep, name 等），只替换 data 和 messages
       draftsToUpdate.push({
         id: draftRecord.id,
-        record: { ...draftRecord as unknown as Record<string, unknown>, data: draftData, updatedAt: new Date() },
+        record: { ...recordObj, data: draftData, updatedAt: new Date() },
       });
     }
   }
@@ -280,11 +324,40 @@ export async function cleanAllApologies(): Promise<CleanupResult> {
     })) as never[]);
   }
 
+  // 3. 清理 creator_chats 表（卡片对话创建器的 AI 对话历史）
+  const allChats = await db.creator_chats.toArray();
+  const chatsScanned = allChats.length;
+  const chatsToUpdate: Array<{ id: number; messages: Array<{ role: string; content: string }> }> = [];
+
+  for (const chat of allChats) {
+    if (!Array.isArray(chat.messages)) continue;
+    const chatName = chat.title || `对话 #${chat.id}`;
+    // 复制一份再清理，避免修改原始对象
+    const messagesCopy = chat.messages.map(m => ({ ...m }));
+    const fieldCount = cleanChatMessages(messagesCopy, chatName, details);
+    fieldsCleaned += fieldCount;
+    if (fieldCount > 0) {
+      chatsCleaned++;
+      chatsToUpdate.push({ id: chat.id!, messages: messagesCopy });
+    }
+  }
+
+  // 批量保存清理后的对话
+  if (chatsToUpdate.length > 0) {
+    await db.creator_chats.bulkPut(chatsToUpdate.map(({ id, messages }) => ({
+      id,
+      messages,
+      updatedAt: new Date(),
+    })) as never[]);
+  }
+
   return {
     cardsScanned,
     cardsCleaned,
     draftsScanned,
     draftsCleaned,
+    chatsScanned,
+    chatsCleaned,
     fieldsCleaned,
     details,
   };
