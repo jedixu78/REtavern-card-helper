@@ -29,28 +29,28 @@ import { buildMvuScriptBundle } from './mvu-builder';
 // ── 阈值 ────────────────────────────────────────────────────────────────────
 
 /**
- * 「健康」上限：常驻开销 ≤ 10000 token/轮。
+ * 「健康」上限：常驻开销 ≤ 40000 token/轮。
  *
  * 依据：主流模型上下文窗口已普遍 128K-1M（Claude 200K / GPT-4 128K / Gemini 1M / GLM 128K）。
- * 10000 token 在 128K 上下文里占约 8%，在 1M 里仅占 1%，留给聊天历史的空间充裕。
- * 复杂卡的蓝灯条目（角色设定 + 世界书常驻 + MVU 系统）轻松到 5000-8000，
- * 10000 的阈值避免正常卡频繁触发警告。
- * `WizardDraft.bookTokenBudget` 的默认值也是 10000（constants/defaults.ts），
+ * 40000 token 在 128K 上下文里占约 31%，在 1M 里仅占 4%，留给聊天历史的空间仍然充裕。
+ * 复杂卡的蓝灯条目（角色设定 + 世界书常驻 + MVU 系统 + 分阶段调度）轻松到 2-3 万，
+ * 40000 的阈值符合社区实际写卡习惯，避免正常卡频繁触发警告。
+ * `WizardDraft.bookTokenBudget` 的默认值也是 40000（constants/defaults.ts），
  * 它会原样写进导出卡的 `character_book.token_budget` —— 即这张卡自己向
  * SillyTavern 声明的世界书预算。ST 在世界信息预算耗尽后会按 priority 静默丢弃
  * 条目，所以常驻量一旦越过卡自己声明的预算，卡就开始「不可预期地缺内容」。
  */
-export const TOKEN_BUDGET_HEALTHY_MAX = 10000;
+export const TOKEN_BUDGET_HEALTHY_MAX = 40000;
 
 /**
- * 「危险」下限：常驻开销 > 20000 token/轮。
+ * 「危险」下限：常驻开销 > 80000 token/轮。
  *
- * 依据：20000 token 的固定开销在 128K 上下文里约占 16%，在 1M 里占 2%。
- * 超过此值通常意味着蓝灯条目过多（整本世界书都设成了常驻），
- * 即便用长上下文模型，注意力机制也会被大量固定内容稀释，角色表现变平淡。
- * 10000～20000 之间记为「偏高」：仍能跑，但应考虑把部分蓝灯改为关键词触发。
+ * 依据：80000 token 的固定开销在 128K 上下文里约占 63%，在 1M 里占 8%。
+ * 超过此值意味着蓝灯条目极多（整本世界书都设成了常驻），
+ * 即便用 1M 模型，注意力机制也会被大量固定内容稀释，角色表现变平淡。
+ * 40000～80000 之间记为「偏高」：仍能跑，但应考虑把部分蓝灯改为关键词触发。
  */
-export const TOKEN_BUDGET_HIGH_MAX = 20000;
+export const TOKEN_BUDGET_HIGH_MAX = 80000;
 
 export type TokenBudgetLevel = 'healthy' | 'high' | 'danger';
 
@@ -61,7 +61,7 @@ export const TOKEN_BUDGET_LEVEL_LABEL: Record<TokenBudgetLevel, string> = {
   danger: '危险',
 };
 
-/** 按「每轮固定开销」给出分级。边界取闭区间下沿：10000 仍算健康，20000 仍算偏高。 */
+/** 按「每轮固定开销」给出分级。边界取闭区间下沿：40000 仍算健康，80000 仍算偏高。 */
 export function classifyTokenBudget(perTurnFixed: number): TokenBudgetLevel {
   const value = Number.isFinite(perTurnFixed) ? perTurnFixed : 0;
   if (value > TOKEN_BUDGET_HIGH_MAX) return 'danger';
