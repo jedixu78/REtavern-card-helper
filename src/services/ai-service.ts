@@ -452,9 +452,70 @@ function isRetryableError(err: unknown): boolean {
     err.message.includes('AI 返回了空内容') ||
     err.message.includes('AI 响应没有内容')
   )) return true;
+  // 内容审查拦截不可重试——重试只会再次被拒，浪费 token 和时间
+  if (isContentPolicyRejection(err)) return false;
   // Retry on API errors that might be transient
   if (err instanceof Error && err.message.includes('AI API 返回错误')) return true;
   return false;
+}
+
+/**
+ * 检测是否为内容审查拦截（Google/OpenAI 平台层面拒绝，非模型生成）。
+ *
+ * Google Gemini: "The prompt could not be submitted...sensitive words...use-policy"
+ * OpenAI: "content_policy" / "content filter"
+ * Gemini API: "prompt_feedback" / "block_reason" / "SAFETY"
+ *
+ * 这类错误不是模型道歉，而是请求未到达模型即被平台拒绝，
+ * stripApologyPrefix 和预设规则都无法绕过。
+ */
+const CONTENT_POLICY_PATTERNS = [
+  /sensitive words/i,
+  /use-policy/i,
+  /could not be submitted/i,
+  /try rephrasing/i,
+  /content_policy/i,
+  /content filter/i,
+  /prompt_feedback/i,
+  /block_reason/i,
+  /finish_reason.*SAFETY/i,
+  /policy violation/i,
+  /违规|审查拦截|内容政策/i,
+];
+
+function isContentPolicyRejection(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message;
+  return CONTENT_POLICY_PATTERNS.some(pattern => pattern.test(msg));
+}
+
+/**
+ * 将内容审查拦截错误格式化为友好的中文提示。
+ * 保留原始错误消息供调试。
+ */
+function formatContentPolicyError(originalMsg: string): string {
+  // 判断是 Google 系还是 OpenAI 系
+  const isGoogle = /sensitive words|use-policy|could not be submitted|google/i.test(originalMsg);
+  const platform = isGoogle ? 'Google' : 'AI 平台';
+
+  return `内容审查拦截：${platform} 拒绝了此请求（检测到敏感词）。
+
+这并非预设问题，而是 ${platform} 平台层面的内容审查——请求未到达模型即被拒绝，预设规则和破限无法绕过。
+
+建议：
+1. 换用 Claude 或 GLM 模型（审查机制不同，对虚构创作更宽容）
+2. 简化或修改角色设定/世界书中的敏感内容
+3. 使用中转 API（部分中转会软化敏感词后再转发）
+
+原始错误：${originalMsg.slice(0, 200)}`;
+}
+
+/** 如果错误消息匹配内容审查模式，格式化为友好提示；否则原样返回 */
+function maybeFormatPolicyError(errMsg: string): string {
+  if (CONTENT_POLICY_PATTERNS.some(p => p.test(errMsg))) {
+    return formatContentPolicyError(errMsg);
+  }
+  return errMsg;
 }
 
 function normalizeMaxTokens(maxTokens: number | undefined): number {
@@ -579,7 +640,9 @@ async function callAIOnce(payload: AIRequestPayload, maxRetries: number): Promis
       });
 
       if (!response.ok) {
-        const errMsg = await readProxyError(response, `AI API 调用失败 (${response.status})`);
+        const errMsg = maybeFormatPolicyError(
+          await readProxyError(response, `AI API 调用失败 (${response.status})`)
+        );
 
         if (attempt < maxRetries && isRetryableStatus(response.status)) {
           lastError = new Error(errMsg);
@@ -593,6 +656,15 @@ async function callAIOnce(payload: AIRequestPayload, maxRetries: number): Promis
       const content = extractAIContent(data);
       const finishReason = extractFinishReason(data);
       if (!content) {
+        // 检查是否为内容审查导致的无内容（Google 可能返回 200 + prompt_feedback.block_reason）
+        const blockReason = typeof data === 'object' && data !== null
+          ? (data as Record<string, unknown>)?.prompt_feedback
+          : undefined;
+        if (blockReason && typeof blockReason === 'object') {
+          throw new Error(maybeFormatPolicyError(
+            `prompt_feedback: ${JSON.stringify(blockReason)}`
+          ));
+        }
         throw new Error('AI 响应没有内容，模型可能拒绝了请求');
       }
       return { content, finishReason };
@@ -705,7 +777,9 @@ async function streamAIOnce(
       });
 
       if (!response.ok) {
-        const errMsg = await readProxyError(response, `AI API 流式调用失败 (${response.status})`);
+        const errMsg = maybeFormatPolicyError(
+          await readProxyError(response, `AI API 流式调用失败 (${response.status})`)
+        );
 
         if (attempt < maxRetries && isRetryableStatus(response.status)) {
           lastError = new Error(errMsg);
@@ -742,6 +816,12 @@ async function streamAIOnce(
               const data = line.slice(5).trim();
               if (data === '[DONE]') {
                 if (!fullText.trim()) {
+                  // Google 可能返回 200 + finish_reason: SAFETY + 空内容
+                  if (finishReason && /safety|block|filter/i.test(finishReason)) {
+                    throw new Error(maybeFormatPolicyError(
+                      `finish_reason: ${finishReason}（内容被安全过滤拦截）`
+                    ));
+                  }
                   throw new Error('AI 返回了空内容（流式响应无数据）');
                 }
                 return { fullText, finishReason };
@@ -753,7 +833,7 @@ async function streamAIOnce(
                   const errMsg = typeof parsed.error === 'string'
                     ? parsed.error
                     : (parsed.error as Record<string, unknown>)?.message || JSON.stringify(parsed.error);
-                  throw new Error(`AI API 返回错误：${errMsg}`);
+                  throw new Error(maybeFormatPolicyError(`AI API 返回错误：${errMsg}`));
                 }
 
                 const choice = parsed.choices?.[0];
