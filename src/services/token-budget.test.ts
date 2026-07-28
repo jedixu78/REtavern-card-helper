@@ -70,7 +70,7 @@ describe('estimateTokens', () => {
 });
 
 describe('classifyTokenBudget', () => {
-  it('阈值边界：≤1500 健康，1500~3000 偏高，>3000 危险', () => {
+  it('阈值边界：≤3000 健康，3000~6000 偏高，>6000 危险', () => {
     expect(classifyTokenBudget(0)).toBe('healthy');
     expect(classifyTokenBudget(TOKEN_BUDGET_HEALTHY_MAX)).toBe('healthy');
     expect(classifyTokenBudget(TOKEN_BUDGET_HEALTHY_MAX + 1)).toBe('high');
@@ -266,16 +266,16 @@ describe('analyzeCardTokenBudget', () => {
 
   it('常驻量超过危险阈值时分级为 danger', () => {
     const draft = makeDraft({
-      lorebookEntries: [makeEntry({ name: '巨型常驻', content: '设'.repeat(3000), constant: true })],
+      lorebookEntries: [makeEntry({ name: '巨型常驻', content: '设'.repeat(5000), constant: true })],
     });
     const b = analyzeCardTokenBudget(draft);
     expect(b.perTurnFixed).toBeGreaterThan(TOKEN_BUDGET_HIGH_MAX);
     expect(b.level).toBe('danger');
   });
 
-  it('常驻量落在 1500~3000 之间时分级为 high', () => {
+  it('常驻量落在 3000~6000 之间时分级为 high', () => {
     const draft = makeDraft({
-      lorebookEntries: [makeEntry({ name: '偏大常驻', content: '设'.repeat(1500), constant: true })],
+      lorebookEntries: [makeEntry({ name: '偏大常驻', content: '设'.repeat(2500), constant: true })],
     });
     const b = analyzeCardTokenBudget(draft);
     expect(b.perTurnFixed).toBeGreaterThan(TOKEN_BUDGET_HEALTHY_MAX);

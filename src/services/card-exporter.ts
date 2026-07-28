@@ -1123,7 +1123,7 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
         name: bookName,
         description: draft.bookDescription || '',
         scan_depth: draft.bookScanDepth ?? 200,
-        token_budget: draft.bookTokenBudget ?? 1500,
+        token_budget: draft.bookTokenBudget ?? 3000,
         recursive_scanning: draft.bookRecursiveScanning ?? false,
         extensions: asRecord(passCharBook.extensions),
         entries,
@@ -1651,7 +1651,7 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
     character_version: (data.character_version as string) || '',
     tags: (data.tags as string[]) || [],
     bookScanDepth: (charBook?.scan_depth as number) ?? 200,
-    bookTokenBudget: (charBook?.token_budget as number) ?? 1500,
+    bookTokenBudget: (charBook?.token_budget as number) ?? 3000,
     bookRecursiveScanning: (charBook?.recursive_scanning as boolean) ?? false,
     // 书名保真：自定义书名原样保留；「派生默认形态」（卡名的世界书）存空串，
     // 让书名继续跟随卡名——否则改卡名后书名会卡在旧值。

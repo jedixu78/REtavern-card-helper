@@ -29,24 +29,25 @@ import { buildMvuScriptBundle } from './mvu-builder';
 // ── 阈值 ────────────────────────────────────────────────────────────────────
 
 /**
- * 「健康」上限：常驻开销 ≤ 1500 token/轮。
+ * 「健康」上限：常驻开销 ≤ 3000 token/轮。
  *
- * 依据：`WizardDraft.bookTokenBudget` 的默认值就是 1500（constants/defaults.ts），
+ * 依据：现代模型上下文窗口已普遍 32K+（Claude 200K / GPT-4 128K / Gemini 1M），
+ * 3000 token 在 32K 上下文里仅占约 9%，留给聊天历史的空间仍然充裕。
+ * `WizardDraft.bookTokenBudget` 的默认值也是 3000（constants/defaults.ts），
  * 它会原样写进导出卡的 `character_book.token_budget` —— 即这张卡自己向
  * SillyTavern 声明的世界书预算。ST 在世界信息预算耗尽后会按 priority 静默丢弃
  * 条目，所以常驻量一旦越过卡自己声明的预算，卡就开始「不可预期地缺内容」。
  */
-export const TOKEN_BUDGET_HEALTHY_MAX = 1500;
+export const TOKEN_BUDGET_HEALTHY_MAX = 3000;
 
 /**
- * 「危险」下限：常驻开销 > 3000 token/轮。
+ * 「危险」下限：常驻开销 > 6000 token/轮。
  *
- * 依据：社区跑卡的上下文窗口主流在 8K～16K。3000 token 的固定开销意味着
- * 8K 上下文里约 37%、16K 里约 18% 在对话还没开始时就被吃掉，留给聊天历史的
- * 空间被明显压缩（长对话更快丢前文、更容易出现人设漂移）。
- * 1500～3000 之间记为「偏高」：仍能跑，但应开始把蓝灯改成关键词触发。
+ * 依据：6000 token 的固定开销在 32K 上下文里约占 19%，在 8K 上下文里占 75%。
+ * 超过此值意味着即便用 32K 模型，长对话也会更快丢前文、出现人设漂移。
+ * 3000～6000 之间记为「偏高」：仍能跑，但应开始把蓝灯改成关键词触发。
  */
-export const TOKEN_BUDGET_HIGH_MAX = 3000;
+export const TOKEN_BUDGET_HIGH_MAX = 6000;
 
 export type TokenBudgetLevel = 'healthy' | 'high' | 'danger';
 
@@ -57,7 +58,7 @@ export const TOKEN_BUDGET_LEVEL_LABEL: Record<TokenBudgetLevel, string> = {
   danger: '危险',
 };
 
-/** 按「每轮固定开销」给出分级。边界取闭区间下沿：1500 仍算健康，3000 仍算偏高。 */
+/** 按「每轮固定开销」给出分级。边界取闭区间下沿：3000 仍算健康，6000 仍算偏高。 */
 export function classifyTokenBudget(perTurnFixed: number): TokenBudgetLevel {
   const value = Number.isFinite(perTurnFixed) ? perTurnFixed : 0;
   if (value > TOKEN_BUDGET_HIGH_MAX) return 'danger';
