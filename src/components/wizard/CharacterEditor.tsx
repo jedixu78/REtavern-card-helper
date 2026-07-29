@@ -240,6 +240,33 @@ export function CharacterEditor({
         placeholder={t('characterEditor.namePlaceholder')}
       />
 
+      {/* 蓝灯/绿灯切换：决定角色设定世界书条目是常驻还是关键词触发 */}
+      <div className="flex items-center gap-2 mt-1.5 mb-1">
+        <button
+          type="button"
+          onClick={() => onUpdate({ constant: !(character.constant ?? true) })}
+          className="flex items-center gap-1.5 text-[11px] py-1 px-2 rounded border transition-colors"
+          style={{
+            borderColor: 'var(--color-border-default)',
+            backgroundColor: 'color-mix(in srgb, var(--color-surface-raised) 50%, transparent)',
+            color: 'var(--text-color)',
+          }}
+          title={character.constant === false
+            ? '绿灯（关键词触发）：对话中提到角色名时才注入设定，省 token。点击切换为蓝灯。'
+            : '蓝灯（常驻）：设定始终占用上下文 token。点击切换为绿灯。'}
+        >
+          <span>{character.constant === false ? '🟢' : '🔵'}</span>
+          <span style={{ color: mutedText }}>
+            {character.constant === false ? '绿灯·关键词触发' : '蓝灯·常驻上下文'}
+          </span>
+        </button>
+        <span className="text-[10px]" style={{ color: faintText }}>
+          {character.constant === false
+            ? '配角模式：提到名字才加载设定'
+            : '主角/重要配角：设定始终在场'}
+        </span>
+      </div>
+
       {/* Alignment selector */}
       <details className="group">
         <summary className="flex items-center gap-2 cursor-pointer select-none text-xs font-medium mb-1.5 transition-colors hover:text-[var(--text-color)]" style={{ color: mutedText }}>

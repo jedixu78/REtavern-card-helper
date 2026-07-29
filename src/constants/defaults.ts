@@ -104,6 +104,13 @@ export interface WizardCharacter {
   nsfw?: boolean;
   /** IDs of world book entries auto-generated from this character */
   entryIds?: string[];
+  /**
+   * 角色设定世界书条目是否常驻（蓝灯 constant=true）。
+   * undefined / true → 蓝灯：始终注入上下文（主角、重要配角）
+   * false → 绿灯：关键词触发才注入（次要配角，省 token）
+   * AI 生成时自动判断；用户可在角色卡片上手动切换。
+   */
+  constant?: boolean;
 }
 
 /** D&D nine-grid alignment options (optional personality constraint) */
@@ -123,6 +130,8 @@ export const CHARACTER_ALIGNMENTS = [
 export interface AIGeneratedCharacter {
   name?: string;
   description?: string;
+  /** AI 判断：主角/重要配角 → true（蓝灯常驻），次要配角 → false（绿灯触发） */
+  constant?: boolean;
 }
 
 /** AI parsed result for lorebook entry generation */

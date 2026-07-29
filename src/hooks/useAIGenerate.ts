@@ -47,8 +47,8 @@ import type {
  */
 function sanitizeCharacterResult(
   _characterName: string,
-  result: { name?: string; description?: string },
-): { name?: string; description?: string } {
+  result: { name?: string; description?: string; constant?: boolean },
+): { name?: string; description?: string; constant?: boolean } {
   let description = result.description;
 
   if (description) {
@@ -77,7 +77,7 @@ function sanitizeCharacterResult(
     description = description.replace(/\n{3,}/g, '\n\n');
   }
 
-  return { name: result.name, description };
+  return { name: result.name, description, constant: result.constant };
 }
 
 export function useAIGenerate() {
@@ -154,6 +154,7 @@ export function useAIGenerate() {
     return sanitizeCharacterResult(characterName, {
       name: parsed.name,
       description: parsed.description,
+      constant: parsed.constant,
     });
   }, [generateCharacter]);
 
@@ -193,6 +194,7 @@ export function useAIGenerate() {
     return sanitizeCharacterResult(characterName, {
       name: parsed.name,
       description: parsed.description,
+      constant: parsed.constant,
     });
   }, [generateCharacterStreaming]);
 

@@ -1254,6 +1254,8 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
         id: c.id || generateId(),
         name: c.name,
         description: c.description,
+        // 保存 constant 以便重新打开卡时恢复蓝灯/绿灯设置
+        constant: c.constant,
         // 存**导出后**的条目 id：导出把 id 重排成 1..N，存草稿 id 会让重新打开卡时
         // entryIds 与 lorebookEntries 必然对不上（角色的「已同步」判定与 id 复用双双失效）。
         // 映射命中严格强于旧的 validEntryIds 过滤——被过滤掉的条目（MVU 未启用时的
@@ -1613,6 +1615,7 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
           name: (ch.name as string) || '',
           description: (ch.description as string) || '',
           entryIds: ((ch.entryIds as Array<string | number>) || []).map((id) => String(id ?? '')),
+          constant: typeof ch.constant === 'boolean' ? ch.constant : undefined,
         };
       })
       .filter((c) => (c.name || '').trim()) as WizardDraft['characters'];
@@ -1657,17 +1660,20 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
     // 长描述拆分后的续篇条目名为 "Name - 角色设定 (2)" 等，必须合并回同一角色。
     const generatedCharacterEntries = rawEntries.filter((e) => {
       const name = (e.name as string) || '';
-      return e.constant === true && /^.+ - 角色设定(\s+\(\d+\))?$/.test(name) && typeof e.content === 'string';
+      // 不限制 constant：绿灯配角（constant=false）的角色设定条目也要收集，
+      // 否则导入后配角会被丢失。角色的 constant 从条目反向推导。
+      return /^.+ - 角色设定(\s+\(\d+\))?$/.test(name) && typeof e.content === 'string';
     });
 
-    const entryGroups = new Map<string, Array<{ id: string; content: string; insertionOrder: number }>>();
+    const entryGroups = new Map<string, Array<{ id: string; content: string; insertionOrder: number; constant: boolean }>>();
     for (const e of generatedCharacterEntries) {
       const name = (e.name as string) || '';
       const baseName = name.replace(/ - 角色设定(\s+\(\d+\))?$/, '');
       const id = String(e.id ?? '') || generateId();
       const insertionOrder = (e.insertion_order as number) ?? 0;
+      const constant = e.constant !== false; // undefined / true → 蓝灯（默认）
       if (!entryGroups.has(baseName)) entryGroups.set(baseName, []);
-      entryGroups.get(baseName)!.push({ id, content: (e.content as string) || '', insertionOrder });
+      entryGroups.get(baseName)!.push({ id, content: (e.content as string) || '', insertionOrder, constant });
     }
 
     reconstructedEntryIds = new Set(
@@ -1676,11 +1682,14 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
 
     characters = Array.from(entryGroups.entries()).map(([baseName, groupEntries]) => {
       const sorted = groupEntries.slice().sort((a, b) => a.insertionOrder - b.insertionOrder);
+      // 同一角色的分块条目 constant 应一致；取首条作为角色 constant
+      const charConstant = sorted[0]?.constant ?? true;
       return {
         id: generateId(),
         name: baseName,
         description: sorted.map((e) => e.content).join('\n\n'),
         entryIds: sorted.map((e) => e.id),
+        constant: charConstant,
       };
     });
   }

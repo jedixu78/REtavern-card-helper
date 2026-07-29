@@ -156,7 +156,7 @@ function syncCharacterEntries(
           entry.name = t('wizard.roleSettingEntryName', { name: char.name }) + (ci > 0 ? ` (${ci + 1})` : '');
           entry.keys = [char.name];
           entry.content = finalChunks[ci];
-          entry.constant = true;
+          entry.constant = char.constant ?? true;
           entry.insertion_order = 1;
           entry.priority = 100 - ci; // earlier chunks get higher priority
           entry.comment = t('wizard.roleSettingComment', { name: char.name }) + (ci > 0 ? ` (续${ci + 1})` : '');
@@ -172,7 +172,7 @@ function syncCharacterEntries(
         entry.name = t('wizard.roleSettingEntryName', { name: char.name });
         entry.keys = [char.name];
         entry.content = content;
-        entry.constant = true;
+        entry.constant = char.constant ?? true;
         entry.insertion_order = 1;
         entry.priority = 100;
         entry.comment = t('wizard.roleSettingComment', { name: char.name });
@@ -618,7 +618,10 @@ ${e.content || ''}`)
         if (newDesc && newDesc.length > 20) {
           // Update character description directly — fills the textarea.
           // World book sync happens when user clicks "下一步" (handleNext → injectCharacterEntries).
-          updateCharacter(index, { description: newDesc });
+          const updates: Partial<WizardCharacter> = { description: newDesc };
+          // AI 判断主角/配角 → 蓝灯/绿灯；仅写入有效布尔值，undefined 保持原值
+          if (typeof parsed.constant === 'boolean') updates.constant = parsed.constant;
+          updateCharacter(index, updates);
           addToast('success', t('wizard.generateComplete', { name: char.name }));
         } else {
           logger.warn(`[生成] ${char.name} AI 返回内容为空或过短:`, parsed.description);
@@ -732,7 +735,9 @@ ${e.content || ''}`)
             const newDesc = (parsed.description as string)?.trim();
             if (newDesc && newDesc.length > 20) {
               // Update character description (pre-generation content already saved to history above)
-              updateCharacter(index, { description: newDesc });
+              const updates: Partial<WizardCharacter> = { description: newDesc };
+              if (typeof parsed.constant === 'boolean') updates.constant = parsed.constant;
+              updateCharacter(index, updates);
               // Store in local tracker for subsequent characters in this batch
               generatedDescriptions.set(char.id, newDesc);
               logger.log(`[批量生成] 角色 ${char.name} 描述已更新 (${newDesc.length} chars)`);
