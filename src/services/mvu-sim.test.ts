@@ -44,6 +44,14 @@ describe('toPathParts', () => {
     expect(toPathParts("a['k']")).toEqual(['a', 'k']);
     expect(toPathParts('a[裸键]')).toEqual(['a', '裸键']);
   });
+
+  it('兼容 JSON Pointer 路径（AI 在 JSONPatch 中常写 /a/b/c）', () => {
+    expect(toPathParts('/stat_data/时间/当日时辰')).toEqual(['stat_data', '时间', '当日时辰']);
+    expect(toPathParts('/a/b/0')).toEqual(['a', 'b', '0']);
+    expect(toPathParts('/a~1b/c~0d')).toEqual(['a/b', 'c~d']);
+    // 空串键仍保留（JSON Pointer 末尾 slash 语义）
+    expect(toPathParts('/a/')).toEqual(['a', '']);
+  });
 });
 
 describe('get/has/setAtPath', () => {

@@ -136,8 +136,17 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 // 路径工具（对齐 lodash get/set/has/unset 在 MVU 用到的子集）
 // ============================================================================
 
-/** 'a.b[0]["x y"]' → ['a','b','0','x y']。引号内的 ] 与转义引号按字面处理。 */
+/** 'a.b[0]["x y"]' → ['a','b','0','x y']。引号内的 ] 与转义引号按字面处理。
+ * 同时兼容 JSON Pointer 格式 '/a/b/c'（AI 经常在 JSONPatch 路径里写这种格式）。
+ */
 export function toPathParts(path: string): string[] {
+  // JSON Pointer：以 / 开头，段内 ~0 替换为 ~，~1 替换为 /
+  if (path.startsWith('/')) {
+    return path
+      .slice(1)
+      .split('/')
+      .map((seg) => seg.replace(/~1/g, '/').replace(/~0/g, '~'));
+  }
   const parts: string[] = [];
   let current = '';
   let i = 0;
