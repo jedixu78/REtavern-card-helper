@@ -35,6 +35,9 @@ function extractSnapshot(card: Record<string, unknown>): Record<string, unknown>
 /**
  * 保存一条版本快照。超出上限时自动淘汰最旧的版本。
  *
+ * 整个「添加 + 淘汰」放在一个事务里：避免快速连续保存时两次并发各自读到
+ * N 条、各自添加 1 条、各自删除超出部分——结果多删了旧版本。
+ *
  * @param cardId 卡片 ID
  * @param card 完整卡片记录（从中提取内容字段）
  * @param source 版本来源
@@ -49,28 +52,29 @@ export async function saveVersion(
   const name = String(card.name ?? '');
   const now = new Date();
 
-  const versionId = await db.card_versions.add({
-    cardId,
-    name,
-    snapshot,
-    source,
-    createdAt: now,
-  });
+  return db.transaction('rw', db.card_versions, async () => {
+    const versionId = await db.card_versions.add({
+      cardId,
+      name,
+      snapshot,
+      source,
+      createdAt: now,
+    });
 
-  // 淘汰超出上限的旧版本
-  const all = await db.card_versions
-    .where('cardId')
-    .equals(cardId)
-    .toArray();
-  if (all.length > MAX_VERSIONS_PER_CARD) {
-    const sorted = all.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    const toDelete = sorted.slice(MAX_VERSIONS_PER_CARD).map((v) => v.id!).filter(Boolean);
-    if (toDelete.length > 0) {
-      await db.card_versions.bulkDelete(toDelete);
+    const all = await db.card_versions
+      .where('cardId')
+      .equals(cardId)
+      .toArray();
+    if (all.length > MAX_VERSIONS_PER_CARD) {
+      const sorted = all.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      const toDelete = sorted.slice(MAX_VERSIONS_PER_CARD).map((v) => v.id!).filter(Boolean);
+      if (toDelete.length > 0) {
+        await db.card_versions.bulkDelete(toDelete);
+      }
     }
-  }
 
-  return versionId ?? 0;
+    return versionId ?? 0;
+  });
 }
 
 /** 列出卡片的版本历史（ newest first ） */

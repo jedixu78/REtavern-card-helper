@@ -620,11 +620,16 @@ export function pathFix(path: string): string {
   return fixedDots;
 }
 
-/** JSON Patch 路径 '/a/b/0' → 'a.b.0'（容忍缺少开头的 /）。 */
+/** JSON Patch 路径 '/a/b/0' → 'a.b.0'（容忍缺少开头的 /）。
+ * 按 RFC 6901 处理转义：~1 → /，~0 → ~（先 ~1 后 ~0，避免 ~01 歧义）。
+ */
 function jsonPatchPathToCommandPath(path: string | undefined): string {
   if (!path) return '';
   const pathWithoutRoot = path.startsWith('/') ? path.substring(1) : path;
-  return pathWithoutRoot.replace(/\//g, '.');
+  return pathWithoutRoot
+    .replace(/~1/g, '/')
+    .replace(/~0/g, '~')
+    .replace(/\//g, '.');
 }
 
 function isJsonPatch(value: unknown): value is Array<Record<string, unknown>> {

@@ -800,6 +800,17 @@ export function ChatPage() {
 
               {stagedPanelOpen && (
                 <div className="px-4 pb-3 max-h-72 overflow-y-auto text-xs space-y-4" style={{ color: mutedText }}>
+                  {!mvuTimeline.active && (
+                    <p
+                      className="rounded px-2 py-1.5"
+                      style={{
+                        backgroundColor: 'color-mix(in srgb, var(--color-status-warning, #fbbf24) 16%, transparent)',
+                        color: 'var(--text-color)',
+                      }}
+                    >
+                      ⚠ {label('chat.staged.mvuOff', 'MVU 未激活，无法追踪阶段变量实时变化。当前显示的是初始值。')}
+                    </p>
+                  )}
                   {stagedTrack.map((track, ti) => (
                     <div key={`track-${ti}`} className="space-y-2">
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
