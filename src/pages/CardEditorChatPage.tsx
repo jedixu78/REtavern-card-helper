@@ -13,7 +13,7 @@ import { Button } from '../components/shared/Button';
 import { Modal } from '../components/shared/Modal';
 import { useToast } from '../components/shared/Toast';
 import { useCardLibrary } from '../hooks/useCardLibrary';
-import { callAIStreaming } from '../services/ai-service';
+import { callAIStreaming, cancelActiveAIRequests } from '../services/ai-service';
 import { importFromPng, exportAsPng, exportAsJson, cardToDraft, assembleCard } from '../services/card-exporter';
 import { resizeImageToPngBuffer } from '../services/image-processing';
 import {
@@ -288,6 +288,11 @@ export function CardEditorChatPage() {
       if (coverPreviewUrl) URL.revokeObjectURL(coverPreviewUrl);
     };
   }, [coverPreviewUrl]);
+
+  // 组件卸载时中止进行中的流式 AI 请求，避免后台继续消耗 token + 对已卸载组件 setState
+  useEffect(() => {
+    return () => { cancelActiveAIRequests(); };
+  }, []);
 
   const updateCoverImage = useCallback((buffer: ArrayBuffer | null, source: 'imported' | 'custom' | 'default') => {
     setCoverPreviewUrl((prev) => {
@@ -782,7 +787,7 @@ export function CardEditorChatPage() {
     try {
       // 与导出一致：无损通道可用（未分歧）时，入库记录直接使用
       // 「原始 JSON + 已确认补丁」；name/时间戳等库级元数据仍由 saveCard 生成。
-      const id = await saveCard(draft, undefined, losslessCard ?? undefined);
+      const id = await saveCard(draft, undefined, losslessCard ?? undefined, 'editor');
       addToast('success', `已保存到卡库（ID: ${id}）`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '保存失败';

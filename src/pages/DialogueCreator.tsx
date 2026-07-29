@@ -12,7 +12,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Button } from '../components/shared/Button';
 import { useToast } from '../components/shared/Toast';
-import { callAIStreaming } from '../services/ai-service';
+import { callAIStreaming, cancelActiveAIRequests } from '../services/ai-service';
 import { db } from '../db/database';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { History, X, RefreshCw } from 'lucide-react';
@@ -76,6 +76,11 @@ export function DialogueCreator() {
   const [isNewMessage, setIsNewMessage] = useState(false);
 
   // ── Restore last viewed chat on mount ──────────────────────────────────────
+  // 组件卸载时中止进行中的流式 AI 请求
+  useEffect(() => {
+    return () => { cancelActiveAIRequests(); };
+  }, []);
+
   useEffect(() => {
     if (restored) return;
     let cancelled = false;

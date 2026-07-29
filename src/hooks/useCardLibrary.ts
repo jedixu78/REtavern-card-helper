@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { db } from '../db/database';
 import { assembleCard } from '../services/card-exporter';
+import { saveVersion, deleteAllVersions } from '../services/version-service';
 
 interface CardRecord {
   id?: number;
@@ -45,7 +46,11 @@ export function useCardLibrary() {
   }, []);
 
   useEffect(() => {
-    loadCards();
+    let cancelled = false;
+    loadCards().then(() => {
+      if (cancelled) return; // 卸载后不再触发 re-render（loadCards 内部已 setState，但 finally 已执行）
+    });
+    return () => { cancelled = true; };
   }, [loadCards]);
 
   /**
@@ -60,6 +65,7 @@ export function useCardLibrary() {
     draft: Parameters<typeof assembleCard>[0],
     existingId?: number,
     prebuiltCard?: ReturnType<typeof assembleCard>,
+    source?: string,
   ) => {
     const assembled = assembleCard(draft, existingId) as CardRecord;
     let card = assembled;
@@ -93,6 +99,16 @@ export function useCardLibrary() {
       }
     }
     const id = await db.cards.put(card);
+    // 保存版本快照（source 默认按是否已有 existingId 推断：新建='import'，更新='wizard'）
+    try {
+      await saveVersion(
+        id as number,
+        card as Record<string, unknown>,
+        (source || (existingId ? 'wizard' : 'import')) as 'wizard' | 'editor' | 'import' | 'rollback' | 'library-edit',
+      );
+    } catch {
+      // 版本快照失败不影响主保存流程
+    }
     await loadCards();
     return id;
   }, [loadCards]);
@@ -133,8 +149,9 @@ export function useCardLibrary() {
   /** Permanently delete a card from trash */
   const permanentDelete = useCallback(async (id: number) => {
     await db.cards.delete(id);
-    // Also delete associated chat sessions
+    // Also delete associated chat sessions and version history
     await db.chat_sessions.where('cardId').equals(id).delete();
+    await deleteAllVersions(id);
     await loadCards();
   }, [loadCards]);
 
@@ -145,6 +162,7 @@ export function useCardLibrary() {
       if (card.id) {
         await db.cards.delete(card.id);
         await db.chat_sessions.where('cardId').equals(card.id).delete();
+        await deleteAllVersions(card.id);
       }
     }
     await loadCards();

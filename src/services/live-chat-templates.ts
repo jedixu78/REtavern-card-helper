@@ -168,6 +168,15 @@ function lcRender(comments) {
       return;
     }
   }
+  // 内容相同则跳过渲染：状态栏更新 HP/MP 等会触发 VARIABLE_UPDATE_ENDED，
+  // 若评论未变，重置 innerHTML 会导致动画重播、时间戳重新生成、面板闪烁。
+  if (LC_CURRENT.length === comments.length) {
+    var same = true;
+    for (var k = 0; k < comments.length; k++) {
+      if (String(comments[k]) !== String(LC_CURRENT[k])) { same = false; break; }
+    }
+    if (same) return;
+  }
   // 重置每轮的名称/色相分配，让同一轮评论用户名多样
   LC_USED_NAMES = [];
   LC_USED_HUES = [];
@@ -237,6 +246,9 @@ async function lcInit() {
   try {
     if (typeof eventOn === 'function' && typeof Mvu !== 'undefined' && Mvu.events) {
       eventOn(Mvu.events.VARIABLE_UPDATE_ENDED, lcPopulate);
+      // 订阅成功后主动刷新一次：开场白可能已通过 setvar 写入评论，
+      // 若不主动读取，面板会一直显示 LC_INITIAL 直到首次 AI 回复触发事件。
+      lcPopulate();
     }
   } catch (e) { /* MVU 不可用不影响静态展示 */ }
 

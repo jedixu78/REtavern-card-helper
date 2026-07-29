@@ -109,12 +109,15 @@ export function useAIChat(card: CardForChat | null) {
       return;
     }
 
+    let cancelled = false;
     (async () => {
       try {
         const firstMes = activeCard.data.first_mes;
         if (!activeCard.id) {
-          setMessages(firstMes ? [{ role: 'assistant', content: firstMes, timestamp: Date.now() }] : []);
-          setSessionId(null);
+          if (!cancelled) {
+            setMessages(firstMes ? [{ role: 'assistant', content: firstMes, timestamp: Date.now() }] : []);
+            setSessionId(null);
+          }
           return;
         }
         // Try to find existing session for this card
@@ -122,6 +125,8 @@ export function useAIChat(card: CardForChat | null) {
           .where('cardId')
           .equals(activeCard.id)
           .last();
+
+        if (cancelled) return; // 卡片切换/组件卸载后丢弃过期结果
 
         if (existing) {
           setSessionId(existing.id ?? null);
@@ -136,11 +141,18 @@ export function useAIChat(card: CardForChat | null) {
           setSessionId(null);
         }
       } catch (err) {
+        if (cancelled) return;
         console.error('Failed to load chat session:', err);
         setError('加载对话记录失败');
       }
     })();
+    return () => { cancelled = true; };
   }, [cardKey]);
+
+  // 组件卸载时中止进行中的流式 AI 请求，避免后台继续消耗 token + 对已卸载组件 setState
+  useEffect(() => {
+    return () => { cancelActiveAIRequests(); };
+  }, []);
 
   // Save session to DB
   const saveSession = useCallback(async (msgs: ChatMessage[]) => {

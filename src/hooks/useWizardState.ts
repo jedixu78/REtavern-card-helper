@@ -9,6 +9,7 @@ import { createEmptyDraft, createEmptyCharacter, createEmptyLorebookEntry, WIZAR
 import type { WizardDraft } from '../constants/defaults';
 import { cardToDraft, assembleCard } from '../services/card-exporter';
 import { db } from '../db/database';
+import { saveVersion } from '../services/version-service';
 import {
   loadAutoDraft,
   saveAutoDraft,
@@ -84,11 +85,13 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
     setLoading(true);
     clearTimeout(saveTimerRef.current);
 
+    let cancelled = false;
     (async () => {
       try {
         if (editId) {
           // Edit mode — load saved card
           const card = await db.cards.get(editId);
+          if (cancelled) return;
           if (card) {
             const restored = cardToDraft(card as unknown as Record<string, unknown>);
             setDraft(normalizeDraft(restored));
@@ -98,6 +101,7 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
           // Manual drafts go through the same migration chain as auto drafts,
           // so bumping WIZARD_DRAFT_VERSION no longer bricks saved drafts.
           const saved = await loadDraftRecord(initialDraftId);
+          if (cancelled) return;
           const migrated = saved ? migrateDraftRecord(saved) : null;
           if (migrated) {
             setDraft(normalizeDraft(migrated.data as Partial<DraftState>));
@@ -113,6 +117,7 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
         } else {
           // New card mode — try restoring auto-saved draft
           const saved = await loadAutoDraft();
+          if (cancelled) return;
           const migrated = saved ? migrateDraftRecord(saved) : null;
           if (migrated) {
             setDraft(normalizeDraft(migrated.data as Partial<DraftState>));
@@ -123,6 +128,7 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
           } else if (saved) {
             // Stale draft from an older app version with no migration path: discard it.
             await clearAutoDraft();
+            if (cancelled) return;
             setDraft(createEmptyDraft());
             setCurrentStep(1);
           } else {
@@ -131,14 +137,18 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
           }
         }
       } catch {
+        if (cancelled) return;
         addToast('error', '加载草稿失败');
         setDraft(createEmptyDraft());
         setCurrentStep(1);
       } finally {
-        initialized.current = true;
-        setLoading(false);
+        if (!cancelled) {
+          initialized.current = true;
+          setLoading(false);
+        }
       }
     })();
+    return () => { cancelled = true; };
   }, [editId, initialDraftId, addToast, t]);
 
   // ── Debounced auto-save (new card mode only) ──────────────────────────────
@@ -282,7 +292,7 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
   }, [currentStep, validateStep]);
 
   /** Save the card to IndexedDB */
-  const saveCard = useCallback(async (draftOverride?: DraftState) => {
+  const saveCard = useCallback(async (draftOverride?: DraftState, source?: string) => {
     setSaving(true);
     try {
       const sourceDraft = draftOverride ?? draft;
@@ -297,7 +307,16 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
         }
       }
 
-      await db.cards.put(card);
+      const putId = await db.cards.put(card);
+
+      // 保存版本快照（source 默认按是否编辑模式推断）
+      try {
+        await saveVersion(
+          (putId ?? editId) as number,
+          card as Record<string, unknown>,
+          (source || (editId ? 'wizard' : 'import')) as 'wizard' | 'editor' | 'import' | 'rollback' | 'library-edit',
+        );
+      } catch { /* 版本快照失败不影响主保存流程 */ }
 
       // Clear auto-saved draft after successful save
       if (!editId) {

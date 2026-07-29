@@ -196,6 +196,28 @@ function injectLiveChatVariable(mvu: MvuConfig, liveChat: LiveStreamChatConfig):
   return cloned;
 }
 
+/**
+ * 判断 MVU 是否「实际启用」—— 即便 schema 为空，只要存在从导入卡还原的 MVU 内容
+ * （initvar / updateRules / ejsPreprocess / statusBarHtml），就视为启用。
+ *
+ * 背景：cardToDraft 还原导入卡时 schemaSections 恒为 []、schemaTsContent 恒为 ''，
+ * 但 initvarYamlContent / updateRulesYamlContent / ejsPreprocessContent / statusBarHtml
+ * 会从世界书条目与正则脚本中恢复。若仅用 schema 判断启用状态，导入卡重新导出时
+ * MVU 组件（脚本/正则/变量条目）会被全部丢弃。
+ */
+function isMvuEffectivelyEnabled(mvu: MvuConfig | undefined): boolean {
+  if (!mvu?.enabled) return false;
+  // 向导原生配置：有 schema 节或缓存 schema.ts
+  if (mvu.schemaTsContent || (mvu.schemaSections?.length ?? 0) > 0) return true;
+  // 导入卡还原内容：任一缓存字段非空即视为 MVU 实际启用
+  return Boolean(
+    mvu.initvarYamlContent ||
+    mvu.updateRulesYamlContent ||
+    mvu.ejsPreprocessContent ||
+    mvu.statusBarHtml
+  );
+}
+
 /** Default creator notes used when draft.creator_notes is empty */
 const DEFAULT_CREATOR_NOTES = '本卡由「吟游手册」制作。\n请尊重创作者的劳动成果，本卡仅供个人娱乐与学习交流使用，严禁任何形式的商业用途、倒卖、转载售卖或未经授权的二次分发。';
 
@@ -499,7 +521,7 @@ function appendPlaceholders(draft: WizardDraft, base: string): string {
 
 function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<string, unknown> {
   // 直播间评论面板独立于 MVU，纯正则驱动：只要任一启用就需要构建扩展
-  const mvuEnabled = Boolean(draft.mvu?.enabled && (draft.mvu.schemaTsContent || (draft.mvu.schemaSections?.length ?? 0) > 0));
+  const mvuEnabled = isMvuEffectivelyEnabled(draft.mvu);
   const liveChatEnabled = Boolean(draft.liveStreamChat?.enabled && draft.liveStreamChat.html?.trim());
   if (!mvuEnabled && !liveChatEnabled) return {};
 
@@ -830,7 +852,7 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
   // synchronized by the wizard before preview/save.
 
   // MVU 未启用时，普通世界书条目中的 MVU 资产也应被过滤掉，避免污染未启用 MVU 的卡片。
-  const mvuEnabled = Boolean(draft.mvu?.enabled && (draft.mvu.schemaTsContent || draft.mvu.schemaSections.length > 0));
+  const mvuEnabled = isMvuEffectivelyEnabled(draft.mvu);
   // 过滤掉已不存在于当前世界书中的 entryIds，避免下次编辑时生成重复条目。
   const validEntryIds = new Set(draft.lorebookEntries.map((e) => e.id));
   // 世界书名唯一来源：character_book.name、extensions.world 与分阶段调度条目的

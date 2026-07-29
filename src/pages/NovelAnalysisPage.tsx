@@ -20,6 +20,7 @@ import {
 } from '../services/novel-analysis-service';
 import { pushAnalysisToWorkshop } from '../services/novel-workshop-bridge';
 import { readFileText, MAX_NOVEL_FILE_BYTES, formatFileSize } from '../services/file-decode';
+import { cancelActiveAIRequests } from '../services/ai-service';
 import { themeAlpha } from '../constants/theme';
 
 const mutedText = 'color-mix(in srgb, var(--text-color) 60%, transparent)';
@@ -93,6 +94,14 @@ export function NovelAnalysisPage() {
   useEffect(() => {
     streamingTextRef.current = streamingText;
   }, [streamingText]);
+
+  // 组件卸载时中止进行中的流式 AI 请求，避免后台继续消耗 token + 对已卸载组件 setState
+  useEffect(() => {
+    return () => {
+      shouldAbortRef.current = true;
+      cancelActiveAIRequests();
+    };
+  }, []);
 
   // Auto-scroll streaming text to bottom
   useEffect(() => {

@@ -18,6 +18,8 @@ import { useTranslation } from '../i18n/I18nContext';
 import { WIZARD_DRAFT_VERSION } from '../constants/defaults';
 import { cardToDraft, assembleCard, exportAsJson, exportAsPng, importFromPng } from '../services/card-exporter';
 import { resizeImageToPngBuffer } from '../services/image-processing';
+import { saveVersion, listVersions, rollbackToVersion, deleteVersion } from '../services/version-service';
+import type { CardVersion } from '../db/database';
 import { Trash2, Edit2, MoreVertical, Image as ImageIcon } from 'lucide-react';
 
 export function LibraryPage() {
@@ -32,6 +34,9 @@ export function LibraryPage() {
   const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState<number | null>(null);
   const [exportMenuCard, setExportMenuCard] = useState<Record<string, unknown> | null>(null);
   const [showTrash, setShowTrash] = useState(false);
+  const [versionHistoryCardId, setVersionHistoryCardId] = useState<number | null>(null);
+  const [versions, setVersions] = useState<CardVersion[]>([]);
+  const [versionLoading, setVersionLoading] = useState(false);
   const { mode: viewMode, size: viewSize, setMode: setViewMode, setSize: setViewSize } = useViewPrefs('library');
 
   // Grid column classes per size — bigger size = fewer columns.
@@ -84,6 +89,58 @@ export function LibraryPage() {
       addToast('success', t('library.trashCleared'));
     }
   };
+
+  // ── 版本历史 ──────────────────────────────────────────────────────────
+  const SOURCE_LABELS: Record<string, string> = {
+    wizard: '向导保存',
+    editor: '编辑室保存',
+    import: '导入',
+    rollback: '回滚保底',
+    'library-edit': '库内编辑',
+  };
+
+  const handleOpenVersionHistory = useCallback(async (cardId: number) => {
+    setExportMenuCard(null);
+    setVersionHistoryCardId(cardId);
+    setVersionLoading(true);
+    try {
+      const list = await listVersions(cardId);
+      setVersions(list);
+    } catch {
+      setVersions([]);
+    } finally {
+      setVersionLoading(false);
+    }
+  }, []);
+
+  const handleRollbackVersion = useCallback(async (versionId: number) => {
+    if (!confirm('确定回滚到此版本？当前状态会自动保存一条保底版本，随时可再回滚。')) return;
+    try {
+      await rollbackToVersion(versionId);
+      await loadCards();
+      // 刷新版本列表（回滚会产生新版本）
+      if (versionHistoryCardId) {
+        const list = await listVersions(versionHistoryCardId);
+        setVersions(list);
+      }
+      addToast('success', '已回滚到历史版本');
+    } catch {
+      addToast('error', '回滚失败');
+    }
+  }, [versionHistoryCardId, loadCards, addToast]);
+
+  const handleDeleteVersion = useCallback(async (versionId: number) => {
+    try {
+      await deleteVersion(versionId);
+      if (versionHistoryCardId) {
+        const list = await listVersions(versionHistoryCardId);
+        setVersions(list);
+      }
+      addToast('success', '已删除版本');
+    } catch {
+      addToast('error', '删除版本失败');
+    }
+  }, [versionHistoryCardId, addToast]);
 
   /** 就地编辑原卡：直达 /wizard/:id 编辑模式，保存会更新库中原卡片，不触碰创建流程的自动草稿。 */
   const handleEditInPlace = (cardId: number) => {
@@ -218,7 +275,10 @@ export function LibraryPage() {
           updatedAt: new Date(),
           ...(coverBlob ? { coverImageBlob: coverBlob } : {}),
         };
-        await db.cards.add(cardToSave as Record<string, unknown>);
+        const newId = await db.cards.add(cardToSave as Record<string, unknown>);
+        try {
+          await saveVersion(newId as number, cardToSave as Record<string, unknown>, 'import');
+        } catch { /* 版本快照失败不影响导入 */ }
         await loadCards();
         addToast('success', t('library.importSuccess', { name: String(cardToSave.name) }));
       } catch (err: unknown) {
@@ -480,6 +540,13 @@ export function LibraryPage() {
                     >
                       🎨 {t('library.exportPngChoose')}
                     </button>
+                    <button
+                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                      style={{ color: 'var(--text-color)' }}
+                      onClick={() => handleOpenVersionHistory(cardId)}
+                    >
+                      📜 历史版本
+                    </button>
                   </div>
                 )}
               </div>
@@ -678,6 +745,13 @@ export function LibraryPage() {
                   >
                     🎨 {t('library.exportPngChoose')}
                   </button>
+                  <button
+                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+                    style={{ color: 'var(--text-color)' }}
+                    onClick={() => handleOpenVersionHistory(cardId)}
+                  >
+                    📜 历史版本
+                  </button>
                 </div>
               )}
             </div>
@@ -715,6 +789,63 @@ export function LibraryPage() {
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setPermanentDeleteConfirm(null)}>{t('common.cancel')}</Button>
           <Button variant="danger" onClick={() => permanentDeleteConfirm && handlePermanentDelete(permanentDeleteConfirm)}>{t('library.permanentDelete')}</Button>
+        </div>
+      </Modal>
+
+      {/* 版本历史 modal */}
+      <Modal
+        isOpen={versionHistoryCardId !== null}
+        onClose={() => { setVersionHistoryCardId(null); setVersions([]); }}
+        title="历史版本"
+      >
+        {versionLoading ? (
+          <p className="py-8 text-center" style={{ color: mutedText }}>加载中…</p>
+        ) : versions.length === 0 ? (
+          <p className="py-8 text-center" style={{ color: mutedText }}>暂无历史版本</p>
+        ) : (
+          <div className="max-h-[60vh] overflow-y-auto space-y-2">
+            {versions.map((v) => (
+              <div
+                key={v.id}
+                className="flex items-center gap-3 p-3 rounded-lg border"
+                style={{ borderColor, backgroundColor: surfaceBg }}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate" style={{ color: 'var(--text-color)' }}>
+                    {v.name || '(未命名)'}
+                  </div>
+                  <div className="text-[11px] mt-0.5 flex items-center gap-2" style={{ color: faintText }}>
+                    <span>{formatDate(v.createdAt)}</span>
+                    <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: 'color-mix(in srgb, var(--color-text-secondary) 16%, transparent)' }}>
+                      {SOURCE_LABELS[v.source] || v.source}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex gap-1.5 shrink-0">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => v.id && handleRollbackVersion(v.id)}
+                  >
+                    回滚
+                  </Button>
+                  <button
+                    onClick={() => v.id && handleDeleteVersion(v.id)}
+                    className="w-7 h-7 rounded-md flex items-center justify-center transition-colors hover:bg-red-600/20"
+                    style={{ color: 'var(--color-status-danger)' }}
+                    title="删除此版本"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="mt-4 flex justify-end">
+          <Button variant="ghost" onClick={() => { setVersionHistoryCardId(null); setVersions([]); }}>
+            {t('common.close')}
+          </Button>
         </div>
       </Modal>
     </div>

@@ -76,12 +76,27 @@ export interface WizardDraftRecord {
   rawCardDiverged?: boolean;
 }
 
+/** 卡片版本快照（用于历史版本回滚） */
+export interface CardVersion {
+  id?: number;
+  /** 关联的卡片 ID（cards 表主键） */
+  cardId: number;
+  /** 卡片名称快照（便于列表展示，无需反序列化整个 snapshot） */
+  name: string;
+  /** 完整卡片数据快照（spec/spec_version/data/_meta 等除 id/coverImageBlob 外的字段） */
+  snapshot: Record<string, unknown>;
+  /** 版本来源：'wizard' | 'editor' | 'import' | 'rollback' | 'library-edit' */
+  source: string;
+  createdAt: Date;
+}
+
 export const db = new Dexie('TavernCardHelper') as Dexie & {
   cards: EntityTable<CardRecord, 'id'>;
   chat_sessions: EntityTable<ChatSession, 'id'>;
   ai_settings: EntityTable<AISettings, 'id'>;
   creator_chats: EntityTable<CreatorChat, 'id'>;
   wizard_drafts: EntityTable<WizardDraftRecord, 'id'>;
+  card_versions: EntityTable<CardVersion, 'id'>;
 };
 
 db.version(5).stores({
@@ -90,6 +105,15 @@ db.version(5).stores({
   ai_settings: 'id',
   creator_chats: '++id, updatedAt',
   wizard_drafts: 'id',
+});
+
+db.version(6).stores({
+  cards: '++id, name, updatedAt, createdAt, deletedAt',
+  chat_sessions: '++id, cardId',
+  ai_settings: 'id',
+  creator_chats: '++id, updatedAt',
+  wizard_drafts: 'id',
+  card_versions: '++id, cardId, createdAt',
 });
 
 /**

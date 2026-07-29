@@ -6,9 +6,9 @@
  * NOTE: Preset injection is handled globally in ai-service.ts (injectPreset).
  * All AI calls automatically include the active writing preset.
  */
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useTranslation } from '../i18n/I18nContext';
-import { callAIWithPrompt, callAIWithPromptStreaming, type StreamCallback } from '../services/ai-service';
+import { callAIWithPrompt, callAIWithPromptStreaming, cancelActiveAIRequests, type StreamCallback } from '../services/ai-service';
 import {
   CHARACTER_GENERATE_PROMPT,
   LOREBOOK_GENERATE_PROMPT,
@@ -82,6 +82,11 @@ function sanitizeCharacterResult(
 
 export function useAIGenerate() {
   const { lang } = useTranslation();
+
+  // 组件卸载时中止进行中的流式 AI 请求，避免后台继续消耗 token + 对已卸载组件 setState
+  useEffect(() => {
+    return () => { cancelActiveAIRequests(); };
+  }, []);
 
   /**
    * Generate a character profile (non-streaming).

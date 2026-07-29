@@ -494,7 +494,7 @@ ${e.content || ''}`)
     // updateDraft 是异步的，所以同步结果要就地算出来传给 saveCard，不能指望它先落。
     const synced = syncCharacterEntries(draft.characters, draft.lorebookEntries, t);
     updateDraft({ lorebookEntries: synced.entries, characters: synced.characters });
-    const success = await saveCard({ ...draft, lorebookEntries: synced.entries, characters: synced.characters });
+    const success = await saveCard({ ...draft, lorebookEntries: synced.entries, characters: synced.characters }, 'wizard');
     if (success) {
       navigate('/library');
     }

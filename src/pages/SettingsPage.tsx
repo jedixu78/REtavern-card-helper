@@ -73,12 +73,16 @@ export function SettingsPage() {
   }, [addToast, t]);
 
   useEffect(() => {
+    let cancelled = false;
     getAISettings().then((s) => {
+      if (cancelled) return;
       setSettings(s);
       setTempKey(s.apiKey);
     }).catch((err) => {
+      if (cancelled) return;
       console.error('Failed to load AI settings:', err);
     });
+    return () => { cancelled = true; };
   }, []);
 
   const lastFetchedUrlRef = useRef<string>('');

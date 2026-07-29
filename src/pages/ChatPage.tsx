@@ -26,10 +26,13 @@ import {
   substituteVariableMacros,
   yamlStringify,
   omitDollarKeysDeep,
+  getAtPath,
   type MvuChange,
   type StatData,
 } from '../services/mvu-sim';
 import type { ActivatedEntry, SkippedEntry, SkipReason, TriggerResult } from '../services/lorebook-trigger';
+import { parseDispatcherContent } from '../services/staged-lorebook-builder';
+import type { CardBookEntry } from '../services/prompt-builder';
 
 const borderColor = 'var(--color-border-default)';
 const mutedText = 'color-mix(in srgb, var(--text-color) 60%, transparent)';
@@ -193,6 +196,7 @@ export function ChatPage() {
   } = useAIChat(selectedCard as Parameters<typeof useAIChat>[0]);
 
   const [mvuPanelOpen, setMvuPanelOpen] = useState(false);
+  const [stagedPanelOpen, setStagedPanelOpen] = useState(false);
 
   /** 只有卡里带状态栏占位符替换脚本时，才模拟真实 MVU 的「缺占位符自动补」行为 */
   const appendPlaceholder = useMemo(
@@ -247,6 +251,125 @@ export function ChatPage() {
       };
     }
   }, [mvuTimeline, messages, regexScripts, appendPlaceholder]);
+
+  /**
+   * 阶段追踪面板数据：从卡内世界书调度条目解析出阶段轴定义，
+   * 结合 MVU 时间线快照算出「当前阶段」与「历史轨迹」。
+   * 仅在检测到至少一个调度条目时返回非空数组。
+   */
+  const stagedTrack = useMemo(() => {
+    const card = selectedCard as { data?: { character_book?: { entries?: CardBookEntry[] } } } | null;
+    const entries = card?.data?.character_book?.entries;
+    if (!entries || entries.length === 0) return [];
+
+    type StageHistory = { messageIndex: number; role: string; value: unknown };
+    type StageInfo = {
+      dispatcherName: string;
+      axisPath: string;
+      bookName: string;
+      /** 调度条目里出现的阶段名列表（按 if/else if 顺序） */
+      stages: string[];
+      /** 当前阶段值（最后一条消息后的快照；enum 轴取数组首元素） */
+      currentValue: unknown;
+      /** 当前匹配的阶段名（enum 轴直接比对；数值轴按调度条目条件互斥匹配） */
+      currentStage: string | null;
+      /** 阶段值变化轨迹（仅记录发生变化的轮次） */
+      history: StageHistory[];
+    };
+
+    const snapshots = mvuTimeline.snapshots;
+    const lastSnapshot = snapshots.length > 0 ? snapshots[snapshots.length - 1] : mvuTimeline.init.statData;
+
+    const result: StageInfo[] = [];
+    for (const entry of entries) {
+      const content = entry?.content || '';
+      let parsed;
+      try {
+        parsed = parseDispatcherContent(content);
+      } catch {
+        continue;
+      }
+      if (!parsed) continue;
+
+      const { axisPath, bookName, childComments } = parsed;
+      // enum 轴调度条目读 `stat_data.XXX[0]`，statData 里存的是数组；数值轴直接是标量
+      const rawValue = getAtPath(lastSnapshot, axisPath);
+      const currentValue = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+
+      // 匹配当前阶段：enum 轴按字符串相等，数值轴暂用「条件表达式命中」
+      let currentStage: string | null = null;
+      if (childComments.length > 0) {
+        // childComments 形如 "调度名：阶段名"，取冒号后部分做展示与匹配
+        const stageNames = childComments.map((c) => {
+          const idx = c.indexOf('：');
+          return idx >= 0 ? c.slice(idx + 1) : c;
+        });
+        if (typeof currentValue === 'string') {
+          currentStage = stageNames.find((n) => n === currentValue) ?? null;
+        } else if (typeof currentValue === 'number' && Number.isFinite(currentValue)) {
+          // 数值轴：扫描调度条目 content 里的条件，找到第一个命中的
+          const condRegex = new RegExp(
+            String(axisPath).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+              '\\[0\\]\\s*(>=|<=)\\s*(-?\\d+(?:\\.\\d+)?)',
+            'g',
+          );
+          const conds: { op: string; threshold: number; stage: string }[] = [];
+          let m: RegExpExecArray | null;
+          while ((m = condRegex.exec(content)) !== null) {
+            // 条件之后紧跟着 getWorldInfo(..., "阶段名")，用最近的一个阶段名匹配
+            const tail = content.slice(m.index, m.index + 400);
+            const stageMatch = tail.match(/getWorldInfo\(\s*"(?:[^"\\]|\\.)*"\s*,\s*"((?:[^"\\]|\\.)*)"/);
+            if (stageMatch) {
+              const sn = stageMatch[1].replace(/\\(.)/g, '$1');
+              const idx2 = sn.indexOf('：');
+              const stageName = idx2 >= 0 ? sn.slice(idx2 + 1) : sn;
+              conds.push({ op: m[1]!, threshold: Number(m[2]), stage: stageName });
+            }
+          }
+          for (const c of conds) {
+            if (c.op === '>=' && currentValue >= c.threshold) { currentStage = c.stage; break; }
+            if (c.op === '<=' && currentValue <= c.threshold) { currentStage = c.stage; break; }
+          }
+        }
+      }
+
+      // 历史轨迹：遍历快照，记录每次值变化（含初始值）
+      const history: StageHistory[] = [];
+      let prevRaw: unknown = undefined;
+      let prevDisplay: string | undefined;
+      // 初始值（开场白前）
+      const initRaw = getAtPath(mvuTimeline.init.statData, axisPath);
+      const initValue = Array.isArray(initRaw) ? initRaw[0] : initRaw;
+      history.push({ messageIndex: -1, role: 'init', value: initValue });
+      prevRaw = initRaw;
+      prevDisplay = String(initValue ?? '');
+      for (let i = 0; i < messages.length; i++) {
+        const snap = snapshots[i] ?? lastSnapshot;
+        const r = getAtPath(snap, axisPath);
+        if (r === prevRaw) continue;
+        const v = Array.isArray(r) ? r[0] : r;
+        const display = String(v ?? '');
+        if (display === prevDisplay) continue;
+        history.push({ messageIndex: i, role: messages[i].role, value: v });
+        prevRaw = r;
+        prevDisplay = display;
+      }
+
+      result.push({
+        dispatcherName: entry?.name || entry?.comment || axisPath,
+        axisPath,
+        bookName,
+        stages: childComments.map((c) => {
+          const idx = c.indexOf('：');
+          return idx >= 0 ? c.slice(idx + 1) : c;
+        }),
+        currentValue,
+        currentStage,
+        history,
+      });
+    }
+    return result;
+  }, [selectedCard, mvuTimeline, messages]);
 
   /** 变更值的紧凑显示（长值截断，避免面板被撑爆） */
   const formatChangeValue = useCallback((value: unknown): string => {
@@ -650,6 +773,124 @@ export function ChatPage() {
                     {label(
                       'chat.mvu.note',
                       '模拟 MagVarUpdate 的 _.set/insert/delete/add 命令与 JSONPatch 块、[InitVar] 初始值、get/format_message_variable 宏。未模拟：schema 扩展性校验（真实 MVU 可能拒绝向未标记 extensible 的集合插入）、mathjs 函数求值、命令内 ST 宏替换；路径不存在的宏保留原样（真实运行时渲染 null）。',
+                    )}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 阶段追踪面板：检测到分阶段调度条目时才出现，默认折叠 */}
+          {stagedTrack.length > 0 && (
+            <div className="shrink-0 border-t" style={{ borderColor }}>
+              <button
+                type="button"
+                onClick={() => setStagedPanelOpen((v) => !v)}
+                className="w-full flex items-center justify-between px-4 py-2 text-xs"
+                style={{ color: mutedText }}
+              >
+                <span className="flex items-center gap-2">
+                  <span>{stagedPanelOpen ? '▾' : '▸'}</span>
+                  <span>🎭 {label('chat.staged.title', '阶段追踪（分阶段世界书）')}</span>
+                  <span style={{ color: faintText }}>
+                    {label('chat.staged.summary', '{{count}} 条阶段轴').replace('{{count}}', String(stagedTrack.length))}
+                  </span>
+                </span>
+              </button>
+
+              {stagedPanelOpen && (
+                <div className="px-4 pb-3 max-h-72 overflow-y-auto text-xs space-y-4" style={{ color: mutedText }}>
+                  {stagedTrack.map((track, ti) => (
+                    <div key={`track-${ti}`} className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-semibold" style={{ color: 'var(--text-color)' }}>
+                          {track.dispatcherName}
+                        </span>
+                        <span
+                          className="rounded px-1.5 py-0.5 font-mono"
+                          style={{ backgroundColor: 'color-mix(in srgb, var(--text-color) 10%, transparent)' }}
+                        >
+                          {track.axisPath}
+                        </span>
+                        <span style={{ color: faintText }}>→</span>
+                        {track.currentStage ? (
+                          <span
+                            className="rounded px-1.5 py-0.5"
+                            style={{
+                              backgroundColor: 'color-mix(in srgb, var(--color-status-success, #4ade80) 22%, transparent)',
+                              color: 'var(--text-color)',
+                            }}
+                          >
+                            {track.currentStage}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--color-status-warning, #fbbf24)' }}>
+                            ⚠ {label('chat.staged.noMatch', '未匹配到任何阶段')}
+                          </span>
+                        )}
+                        {track.currentValue !== undefined && (
+                          <span style={{ color: faintText }}>
+                            （{label('chat.staged.rawValue', '当前值')}:{' '}
+                            <span className="font-mono">{formatChangeValue(track.currentValue)}</span>）
+                          </span>
+                        )}
+                      </div>
+
+                      {track.stages.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {track.stages.map((stage, si) => {
+                            const isCurrent = stage === track.currentStage;
+                            return (
+                              <span
+                                key={`s-${ti}-${si}`}
+                                className="rounded px-1.5 py-0.5"
+                                style={{
+                                  backgroundColor: isCurrent
+                                    ? 'color-mix(in srgb, var(--color-status-success, #4ade80) 30%, transparent)'
+                                    : 'color-mix(in srgb, var(--text-color) 6%, transparent)',
+                                  color: isCurrent ? 'var(--text-color)' : faintText,
+                                  border: isCurrent
+                                    ? '1px solid color-mix(in srgb, var(--color-status-success, #4ade80) 50%, transparent)'
+                                    : '1px solid transparent',
+                                }}
+                              >
+                                {isCurrent ? '● ' : ''}{stage}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {track.history.length > 1 && (
+                        <div>
+                          <p className="mb-1" style={{ color: faintText }}>
+                            {label('chat.staged.history', '变化轨迹')}（{track.history.length}）
+                          </p>
+                          <ul className="space-y-0.5">
+                            {track.history.map((h, hi) => (
+                              <li key={`h-${ti}-${hi}`} className="flex items-center gap-2 font-mono" style={{ color: faintText }}>
+                                <span style={{ color: 'var(--color-status-success, #4ade80)' }}>
+                                  {hi === 0 ? 'init' : `#${h.messageIndex + 1}`}
+                                </span>
+                                <span>{h.role === 'assistant' ? '🤖' : h.role === 'user' ? '👤' : '·'}</span>
+                                <span style={{ color: 'var(--text-color)' }}>{formatChangeValue(h.value)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      <p style={{ color: faintText }}>
+                        {label('chat.staged.bookName', '世界书')}:{' '}
+                        <span className="font-mono">{track.bookName}</span>
+                      </p>
+                    </div>
+                  ))}
+
+                  <p className="pt-1 border-t" style={{ borderColor, color: faintText }}>
+                    {label(
+                      'chat.staged.note',
+                      '解析卡内分阶段调度条目（constant + getvar/getWorldInfo），结合 MVU 快照追踪阶段轴变量的实际取值。enum 轴按字符串相等匹配，数值轴按调度条目内的 >= / <= 条件互斥匹配。若显示「未匹配」，可能是阶段变量尚未初始化或调度条目条件未覆盖当前值。',
                     )}
                   </p>
                 </div>
