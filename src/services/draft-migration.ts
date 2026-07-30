@@ -4,7 +4,7 @@
  * 与 draft-service 分离的原因：draft-service 依赖 Dexie/IndexedDB，
  * 而迁移是纯数据变换，单独成模块可以被单测直接引用而不触碰数据库层。
  */
-import type { WizardDraft } from '../constants/defaults';
+import type { WizardDraft, LorebookEntry } from '../constants/defaults';
 import { WIZARD_DRAFT_VERSION } from '../constants/defaults';
 import type { WizardDraftRecord } from '../db/database';
 
@@ -24,6 +24,48 @@ function migrateStepV5ToV6(oldStep: number): number {
   return oldStep;
 }
 
+/**
+ * V6 → V7：合并「世界观锚定」+「世界书骨架」为「锚定世界观」步骤。
+ * - worldAnchor 重构为「从大到小」漏斗字段：type/era/culture/humanity/constraints
+ *   旧 V6 字段映射：era → era，hardConstraints → constraints（coreRules/tone 丢弃）
+ * - 移除 worldRules / skeletonTopic / skeletonCount / skeletonModeEnabled 字段
+ * - lorebookEntries 内的 fromSkeleton/skeletonExpanded 标记替换为 fromAnchor
+ * - 步号不变（仍是 8 步），但 step 2 的语义从「骨架」改为「锚定世界观」
+ */
+function migrateDataV6ToV7(data: Partial<WizardDraft>): Partial<WizardDraft> {
+  const next: Partial<WizardDraft> = { ...data };
+  // worldAnchor 字段重构
+  const oldAnchor = next.worldAnchor as unknown as
+    | { era?: string; coreRules?: string; hardConstraints?: string; tone?: string }
+    | undefined;
+  if (oldAnchor && (oldAnchor.era || oldAnchor.coreRules || oldAnchor.hardConstraints || oldAnchor.tone)) {
+    next.worldAnchor = {
+      type: '',
+      era: oldAnchor.era ?? '',
+      culture: '',
+      humanity: '',
+      constraints: oldAnchor.hardConstraints ?? '',
+    };
+  }
+  // 移除已删除字段（直接 delete，避免后续 normalizeDraft 把它们当成有效字段透传）
+  delete (next as Record<string, unknown>).worldRules;
+  delete (next as Record<string, unknown>).skeletonTopic;
+  delete (next as Record<string, unknown>).skeletonCount;
+  delete (next as Record<string, unknown>).skeletonModeEnabled;
+  // lorebookEntries 标记替换
+  if (Array.isArray(next.lorebookEntries)) {
+    next.lorebookEntries = next.lorebookEntries.map((e) => {
+      const entry = e as LorebookEntry & { fromSkeleton?: boolean; skeletonExpanded?: boolean };
+      if (entry.fromSkeleton) {
+        const { fromSkeleton: _fs, skeletonExpanded: _se, ...rest } = entry;
+        return { ...rest, fromAnchor: true };
+      }
+      return entry;
+    });
+  }
+  return next;
+}
+
 export interface MigratedDraftPayload {
   data: Partial<WizardDraft>;
   currentStep: number;
@@ -35,8 +77,7 @@ export interface MigratedDraftPayload {
  * 把任意历史版本的草稿记录迁移到当前 WIZARD_DRAFT_VERSION。
  * 返回 null 表示版本过旧无迁移路径（调用方自行决定丢弃或报错）。
  *
- * 注意：V4 草稿必须**链式**走 V4→V5→V6 两段步号映射——旧实现只做了 V4→V5，
- * 导致 V4 的导出步(7)映射到 8 后落在 V6 的「直播包装」而非「导出」(9)。
+ * 注意：V4 草稿必须**链式**走 V4→V5→V6→V7 多段步号/数据映射。
  */
 export function migrateDraftRecord(
   record: Pick<WizardDraftRecord, 'version' | 'data' | 'currentStep'>,
@@ -48,14 +89,19 @@ export function migrateDraftRecord(
     return { data, currentStep: step };
   }
   if (record.version === 4) {
-    return {
-      data: { ...data, worldRules: data.worldRules ?? '' },
-      currentStep: migrateStepV5ToV6(migrateStepV4ToV5(step)),
-      migratedFrom: 'V4',
-    };
+    const v5Step = migrateStepV4ToV5(step);
+    const v6Step = migrateStepV5ToV6(v5Step);
+    const v7Data = migrateDataV6ToV7(data);
+    return { data: v7Data, currentStep: v6Step, migratedFrom: 'V4' };
   }
   if (record.version === 5) {
-    return { data, currentStep: migrateStepV5ToV6(step), migratedFrom: 'V5' };
+    const v6Step = migrateStepV5ToV6(step);
+    const v7Data = migrateDataV6ToV7(data);
+    return { data: v7Data, currentStep: v6Step, migratedFrom: 'V5' };
+  }
+  if (record.version === 6) {
+    const v7Data = migrateDataV6ToV7(data);
+    return { data: v7Data, currentStep: step, migratedFrom: 'V6' };
   }
   return null;
 }

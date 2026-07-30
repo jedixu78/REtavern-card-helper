@@ -164,39 +164,59 @@ ${hasOtherChars ? '- 必须参考其他角色信息，在关系设定中建立�
 /**
  * Lorebook batch generation prompt (Step 4).
  * Generates world book entries with FULL SillyTavern V2 + runtime parameters.
+ * Supports secondary creation: reads existing entries (from Step 2 anchor) and
+ * produces updates + new complementary entries.
  */
-export const LOREBOOK_GENERATE_PROMPT = (cardName: string, characterSummaries: string, topic: string, batchCount: number, rules?: string, nsfw?: boolean, worldAnchor?: string, _lang: Language = 'zh') => {
+export const LOREBOOK_GENERATE_PROMPT = (cardName: string, characterSummaries: string, topic: string, batchCount: number, nsfw?: boolean, worldAnchor?: string, _lang: Language = 'zh', existingEntriesContext?: string) => {
   const nsfwBlock = nsfw
     ? `\n\n## NSFW 内容指令\n本角色卡允许生成成人内容（NSFW）。在生成世界书条目时：\n- 可以包含成人向的场景、关系、物品描述\n- 可以包含成人向的背景设定和事件\n- 写作风格应当自然融入世界观，不要刻意强调或过度描写`
     : `\n\n## 内容安全指令\n本角色卡不允许生成成人内容（NSFW）。在生成世界书条目时：\n- 禁止包含任何成人向、性暗示或色情内容\n- 场景和关系描述应当符合全年龄标准\n- 如果世界观中可能涉及敏感内容，请以隐晦、含蓄的方式处理或直接跳过`;
 
+  const existingBlock = existingEntriesContext
+    ? `\n\n## 已有世界书条目（必须阅读并在此基础上二创）\n以下是前序步骤已生成的世界书条目。你必须：\n1. 理解已有条目的覆盖范围和写作风格，保持世界观一致性\n2. 对已有条目中可以深化的内容进行「更新」（action=”update”），补充细节、人物、关系\n3. 发现已有条目未覆盖的空白领域，生成「新建」条目（action=”create”）\n4. 更新时不得删除原有信息，只能追加和丰富\n\n${existingEntriesContext}`
+    : '';
+
   return {
   system: `你是一位 SillyTavern 世界书作者，负责为角色卡构建一个可扮演、可扩展、逻辑自洽的世界观。
 
-核心写作原则：
-1. 逻辑通顺：同一角色卡内的所有设定必须自洽，能力、势力、地点、规则之间不能矛盾；新条目必须兼容已有世界书，只补充空白，不得重写或否定。
+## 核心写作原则
+
+1. 逻辑通顺：同一角色卡内的所有设定必须自洽，能力、势力、地点、规则、人物之间不能矛盾。新条目必须兼容已有世界书，只补充空白，不得重写或否定已有设定。
 2. 语句自然：用简体中文撰写，避免翻译腔和僵硬标签。键值对和列表里的每一项都应是完整、通顺的短语或短句，读起来像自然说明，而不是零散名词堆砌。
 3. 剧情作为前置知识库，而非既定叙事：
-   - 主线剧情、角色背景、世界历史可以写入世界书，但目的是让 AI 理解“已经发生了什么、世界/角色现在处于什么状态、有哪些约束”，从而更好地扮演后续内容。
+   - 主线剧情、角色背景、世界历史可以写入世界书，但目的是让 AI 理解”已经发生了什么、世界/角色现在处于什么状态、有哪些约束”，从而更好地扮演后续内容。
    - 写法上应是概括性、知识性的说明（时间、原因、结果、影响），不要写成小说式场景、对话或未来必定发生的情节。
-   - 事件/档案/传说/历史/纪录/逸闻类条目（名称含相关词）可包含更具体的时间线和事实，但仍以服务 AI 扮演为导向，不写沉浸式叙事。
-   - 其他条目（地点、势力、能力、物品、人物关系、文化、规则等） focus on 规则、机制、倾向、可能性；即使涉及背景，也只需说明其对当前状态的影响。
-   - 不写“一定会”“只能”“必然”等绝对断言，不把后续剧情写死。
+   - 事件/档案/传说/历史/纪录/逸闻类条目可包含更具体的时间线和事实，但仍以服务 AI 扮演为导向。
+   - 其他条目（地点、势力、能力、物品、人物关系、文化、规则等）focus on 规则、机制、倾向、可能性。
+   - 不写”一定会””只能””必然”等绝对断言，不把后续剧情写死。
 4. 多元化与可变性：
    - 世界不是铁板一块，要体现地区差异、时代差异、个体差异。
-   - 多用“通常”“往往”“可能”“在某些地区/情境下”“常见”“罕见”“并非绝对”等开放词。
+   - 多用”通常””往往””可能””在某些地区/情境下””常见””罕见””并非绝对”等开放词。
    - 对同一设定可给出 2-3 种变体或例外，让 AI 在扮演时有发挥空间。
 5. 信息密度：每条 content 至少 350 字，覆盖充分细节；每条信息都要说明它对 AI 扮演的实际影响。
 6. 四问过滤：每句话都要过四问——删了这句 AI 会错吗？是信息还是装饰？列表能替代吗？不看原文能理解吗？
 
-内容格式示例（自然语句风格）：
-  地点: 修仙界华东区
-  总体氛围: 灵气浓郁但秩序森严，城区内通常禁止御剑飞行
-  常见现象:
-    - 低阶修士在指定区域交易灵石
-    - 执法队对违规飞行处以灵石罚款，严重者暂扣法器
-    - 不同街区对妖兽坐骑的管制宽严不一
-  地区差异: 东部港口相对开放，西部内陆更守旧
+## 两层架构设计（重要）
+
+世界书应采用「总纲 + 详述」的双层触发结构：
+- **总纲层（constant=true, before_char）**：1-2 条全局概述条目，始终注入 AI 上下文。提供世界全貌、核心规则、势力关系网的鸟瞰图。让 AI 在任何对话节点都拥有全局认知。
+- **详述层（constant=false, keys 触发）**：大量按需触发的细节条目。只有对话涉及相关关键词时才注入，节省 token。包括具体地点、具体人物、具体组织、具体事件等。
+
+总纲条目命名格式：”XX世界书”或”XX世界总纲”（XX=卡片名）。
+详述条目命名格式：用层级前缀标明类别，如”势力详述：XX””人物：XX””地点：XX””规则：XX”。
+
+## 紧凑格式推荐（PList 风格）
+
+对于概述性、枚举性内容，推荐使用紧凑的 PList 格式以节省 token：
+  [名称: 一句话描述, has(特征1, 特征2, 特征3), 与XX关系: 友好/敌对/中立]
+示例：
+  [铁炉堡矮人: 西北山脉锻造城邦联盟, has(精湛锻造, 顽固脾气, 氏族长老制), 与诺顿王国: 坚定盟友, 与地精: 世仇]
+
+对于详述性条目，使用结构化 Markdown：
+  **核心概览**: …
+  **统治/运作体系**: …
+  **关键人物**: …
+  **外交/关系态势**: …
 
 ${nsfwBlock}
 
@@ -206,16 +226,149 @@ ${nsfwBlock}
 卡片名称：${cardName}
 角色：${characterSummaries}
 ${topic ? `主题/方向：${topic}` : ''}
-${rules ? `\n## 世界观约束与运行规则（必须严格遵守）\n${rules}` : ''}
-${worldAnchor ? `\n【世界观锚定（绝对约束，不可偏离）】：\n${worldAnchor}\n生成的所有条目必须严格遵守以上锚定，不得偏离时代背景或违反核心规则。` : ''}
+${worldAnchor ? `\n【世界观锚定（绝对约束，不可偏离）】：\n${worldAnchor}\n生成的所有条目必须严格遵守以上锚定，不得偏离类型/时代/文化背景或违反硬性约束。` : ''}
+${existingBlock}
 
 返回一个 JSON 数组，每个对象包含以下全部字段：
 {
-  "name": "条目标题（精简准确，2-6字，如：临渊市灰产、欲望树组织、温水切片控制法）",
-  "keys": ["关键词1", "关键词2", "关键词3"],
+  “action”: “create 或 update（更新已有条目时填 update，新建填 create）”,
+  “targetId”: “当 action=update 时，填已有条目的 id；action=create 时留空字符串”,
+  “name”: “条目标题（层级前缀+名称，如：人物：张三、势力详述：暗影会、地点：旧城区、规则：礼仪禁忌）”,
+  “keys”: [“关键词1”, “关键词2”, “关键词3”],
+  “secondary_keys”: [],
+  “content”: “详细条目内容，简体中文，至少350字”,
+  “comment”: “关于此条目覆盖内容的简短说明”,
+  “constant”: false,
+  “selective”: false,
+  “selectiveLogic”: 0,
+  “insertion_order”: 100,
+  “position”: “before_char”,
+  “priority”: 50,
+  “probability”: 100,
+  “group”: “”,
+  “group_weight”: 100,
+  “role”: 0,
+  “depth”: 4,
+  “exclude_recursion”: false,
+  “prevent_recursion”: false,
+  “sticky”: 0,
+  “cooldown”: 0,
+  “delay”: 0,
+  “use_regex”: false,
+  “match_whole_words”: true,
+  “ignore_budget”: false
+}
+
+字段说明：
+- action：”create”=全新条目，”update”=对已有条目的追加丰富（保留原内容，补充新维度）
+- targetId：action=update 时必须填对应已有条目的 id，以便前端合并
+- insertion_order：总纲/世界规则=10, 势力/组织=50, 人物/NPC=100, 地点=200, 能力体系=300, 物品=400, 事件/历史=500, 动态模板=900
+- priority：核心=100, 普通=50, 点缀=10。数值越低越先被丢弃
+- probability：100=始终触发，小于100用于随机事件
+- group：互斥条目共享组名（同一组只触发一个）
+- group_weight：组内权重，数值越大越优先
+- selectiveLogic：0=AND ANY, 1=AND ALL, 2=NOT ALL, 3=NOT ANY
+- role：0=系统(默认), 1=用户, 2=助手
+- depth：向前扫描多少条消息。4=常规
+- sticky/cooldown/delay：以消息数为单位的时间效果。0=禁用
+- constant（蓝灯/常驻）：持续生效、不依赖关键词触发的条目。适合总纲、核心世界规则、全局状态。常驻条目不宜过多，通常 1-3 条。
+- selective：这是 secondary_keys 过滤开关，不等于普通关键词触发。只有确实填写 secondary_keys 时才允许 selective=true。
+- position：世界设定/规则/势力/人物用”before_char”；动态输出模板（告诉AI如何格式化输出）用”after_char”
+- 关键词：严禁单汉字关键词。用2字以上名称（”小樱”不是”樱”）。避免过于泛用的词
+
+## 内容写作要求
+
+- 使用键值对和列表格式，不写散文段落
+- 全文简体中文
+- 不写主观评价，不写AI已知信息
+- 只写让AI会出错的差异信息
+- 非事件类条目 focus on 规则、机制、可能性、常见表现
+- 事件/背景类条目以知识库形式概括时间、原因、结果与影响
+- 多用开放词（通常、可能、往往、在某些情境下），少用绝对断言
+- 体现多元化：给出变体、例外、地区差异
+- 每条 content 至少350字，信息量要大
+
+## 条目分类覆盖（生成多样化的条目，尽量覆盖以下维度）
+
+1. **世界总纲与核心规则**：世界运行的底层逻辑、时代基调、核心限制（通常 constant=true）
+2. **势力/组织格局**：组织概述 + 详述，每个势力必须包含「关键人物」和「与其他势力的关系态势」
+3. **人物/NPC 种子**：重要角色的概括（身份、动机、性格倾向、当前状态、与他人的关系）。人物应编织进势力和地点中，也可独立成条。用 PList 格式紧凑呈现：[人物名: 身份, has(性格特征, 能力特长), 关系: 与XX是YY]
+4. **关系网络**：人物之间、人物与势力之间、势力与势力之间的关系图谱。明确标注：同盟/敌对/竞争/从属/暧昧/师徒/血亲等
+5. **重要地点/场景**：环境、氛围、规则、地区差异、驻留人物
+6. **力量/能力体系**：等级划分、限制与代价、常见表现、异常情况。尽量给出量化标准
+7. **物品/装备体系**：稀有度层级、获取方式、使用规则、常见变体
+8. **经济/社会系统**：货币、贸易、阶层、日常生活基准（给出具体数值参考）
+9. **世界事件/历史/传说**：作为前置知识库，说明起因、状态与影响
+10. **动态输出模板**（position=after_char）：告诉 AI 在特定情境下用什么格式输出（如：获得物品时、习得技能时、触发战斗时）。模板条目用 XML 标签包裹格式示例
+
+## 更新已有条目时的要求（action=”update”）
+
+- 仔细阅读目标条目的现有 content，理解其覆盖范围
+- 补充缺失维度（如：原条目只有地理描述，你补充关键人物和势力关系）
+- 保留原有信息不删除，在末尾或合适位置追加新内容
+- 输出的 content 是【完整的更新后内容】（原文 + 新增），不是只写增量
+
+请只输出 JSON 数组。`,
+  };
+};
+
+/**
+ * World anchor expansion prompt (Step 2 - 锚定世界观).
+ * Based on the 4 structured anchor fields (region / worldType / humanity / constraints),
+ * AI generates 1 总纲 entry (constant, before_char) + N 子条目 (locations / rules /
+ * organizations / mechanisms) directly as full world book entries — replacing the old
+ * skeleton→expand two-phase pipeline.
+ */
+export const WORLD_ANCHOR_EXPAND_PROMPT = (
+  cardName: string,
+  anchorText: string,
+  existingTitles: string,
+  nsfw?: boolean,
+  _lang: Language = 'zh',
+) => {
+  const nsfwBlock = nsfw
+    ? `\n\n## NSFW 内容指令\n本角色卡允许生成成人内容（NSFW）。在生成世界书条目时：\n- 可以包含成人向的场景、关系、物品描述\n- 可以包含成人向的背景设定和事件\n- 写作风格应当自然融入世界观，不要刻意强调或过度描写`
+    : `\n\n## 内容安全指令\n本角色卡不允许生成成人内容（NSFW）。在生成世界书条目时：\n- 禁止包含任何成人向、性暗示或色情内容\n- 场景和关系描述应当符合全年龄标准\n- 如果世界观中可能涉及敏感内容，请以隐晦、含蓄的方式处理或直接跳过`;
+
+  return {
+    system: `你是一位 SillyTavern 世界书作者，负责为角色卡锚定世界观框架。基于用户给定的世界观锚定（按从大到小细化：类型 → 时代/年份 → 文化背景 → 人文细节 → 硬性约束），生成 1 条总纲条目 + 3-6 条子条目，直接作为完整世界书条目加入世界书。
+
+核心写作原则：
+1. 逻辑通顺：所有条目必须自洽，与锚定字段一致，不得矛盾。
+2. 语句自然：简体中文，键值对和列表里的每一项应是完整、通顺的短语或短句。
+3. 剧情作为前置知识库，而非既定叙事：可写入背景历史但仅作概括说明（时间/原因/结果/影响），不写小说式场景、对话或未来必定发生的情节。
+4. 多元化与可变性：多用“通常”“往往”“可能”“在某些地区/情境下”“常见”“罕见”“并非绝对”等开放词。同一设定可给出 2-3 种变体或例外。
+5. 信息密度：每条 content 至少 350 字，覆盖充分细节，且说明对 AI 扮演的实际影响。
+${nsfwBlock}
+
+【卡片名称】：${cardName}
+【世界观锚定（绝对约束，不可偏离）】：
+${anchorText}
+${existingTitles ? `\n【已有条目（禁止重复）】：${existingTitles}` : ''}
+
+【输出要求】：
+1. 第一条必须是总纲条目：
+   - name: "${cardName}世界书"
+   - comment: "${cardName}世界书"
+   - constant: true（蓝灯常驻）
+   - position: "before_char"
+   - insertion_order: 0
+   - priority: 200
+   - content: 350+ 字，概括整个世界观的总体框架（地点/时代/风格/核心规则/基调/对 AI 扮演的整体指引），用键值对+列表格式
+2. 后续 3-6 条是子条目，根据锚定派生（不重复总纲）：
+   - 地点类：如“北京市” → 描述气候/景观/人文/对扮演的影响
+   - 规则类：如“礼仪”“饮食”“宗教”“货币”“交通” 等人文规则
+   - 组织/势力类（如适用）
+   - constant 由 AI 判断（核心规则类=true，具体地点/组织=false）
+   - position: 大多数 "after_char"；场景设置类用 "before_char"
+
+返回一个 JSON 数组，每个对象包含以下全部字段：
+{
+  "name": "条目标题（精简准确，2-6字）",
+  "keys": ["关键词1", "关键词2"],
   "secondary_keys": [],
-  "content": "详细条目内容，简体中文。使用键值对和列表格式，语句自然通顺。示例：\\n地点: XX城\\n总体氛围: 描述此地给 AI 扮演带来的基调\\n常见现象:\\n  - 现象一\\n  - 现象二\\n地区差异: 可给出不同情况",
-  "comment": "关于此条目覆盖内容的简短说明",
+  "content": "详细条目内容，简体中文。使用键值对和列表格式，语句自然通顺。",
+  "comment": "条目简短说明",
   "constant": false,
   "selective": false,
   "selectiveLogic": 0,
@@ -240,97 +393,105 @@ ${worldAnchor ? `\n【世界观锚定（绝对约束，不可偏离）】：\n${
 字段说明：
 - insertion_order：背景设定=100, 能力=200, 关系=300, 地点=400, 物品=500, 事件=600
 - priority：核心=100, 普通=50, 点缀=10。数值越低越先被丢弃
-- probability：100=始终触发，小于100用于随机事件
-- group：互斥条目共享组名（同一组只触发一个）
-- group_weight：组内权重，数值越大越优先
-- selectiveLogic：0=AND ANY, 1=AND ALL, 2=NOT ALL, 3=NOT ANY
-- role：0=系统(默认), 1=用户, 2=助手
-- depth：向前扫描多少条消息。4=常规
-- sticky/cooldown/delay：以消息数为单位的时间效果。0=禁用
-- constant（蓝灯/常驻）：持续生效、不依赖关键词触发的条目。适合核心世界观、全局运行规则、角色核心背景等对整个扮演都有持续影响的设定。但常驻条目不宜过多，通常只把真正全局核心的 1-3 条设为 true。
-- selective：这是 secondary_keys 过滤开关，不等于普通关键词触发。只有确实填写 secondary_keys 时才允许 selective=true。
-- 普通关键词触发条目：constant=false, selective=false, keys 填主触发词，secondary_keys 保持 []。
-- 需要二级过滤的条目：constant=false, selective=true, keys 填主触发词，secondary_keys 必须填 1 个以上过滤词。
-- constant 与 selective 的选择由 AI 根据条目内容判断：
-  - 核心世界观 / 基础规则 / 全局状态 / 角色核心背景 → constant=true, selective=false（蓝灯常驻）
-  - 具体技能 / 地点 / 物品 / 势力分支 / 可触发事件 → 通常使用普通关键词触发：constant=false, selective=false, secondary_keys=[]
-- position：大多数用"after_char"；场景设置类、需要在角色输出之前注入的用"before_char"
-- 关键词：严禁单汉字关键词。用2字以上名称（"小樱"不是"樱"）。避免过于泛用的词
+- constant（蓝灯/常驻）：持续生效、不依赖关键词触发。适合核心世界观、全局运行规则。但常驻条目不宜过多，通常 1-3 条。
+- position：大多数用 "after_char"；场景设置类、需要在角色输出之前注入的用 "before_char"
+- 关键词：严禁单汉字关键词。用2字以上名称。
 
-内容写作要求：
-- 使用键值对和列表格式，不写散文段落
-- 全文简体中文
-- 不写主观评价，不写AI已知信息
-- 只写让AI会出错的差异信息
-- 非事件类条目 focus on 规则、机制、可能性、常见表现；事件/背景类条目则以知识库形式概括时间、原因、结果与影响，不写小说式场景和未来固定剧本
-- 常驻/触发选择由 AI 根据条目作用判断：核心世界观、全局规则、角色核心背景设为 constant=true；具体技能、地点、物品、势力细节、可触发事件通常设为 constant=false、selective=false，用 keys 做普通关键词触发
-- 多用开放词（通常、可能、往往、在某些情境下），少用绝对断言
-- 体现多元化：给出变体、例外、地区差异
-- 每条 content 至少350字，信息量要大，覆盖细节要充分
-
-生成多样化的条目，覆盖：
-1. 世界基础规则与运行逻辑
-2. 力量/能力体系规则（限制、消耗、常见表现、异常情况）
-3. 势力/组织格局（规则、关系倾向，不是固定剧情）
-4. 重要地点/场景（环境、规则、地区差异）
-5. 值得注意的物品或道具（功能、使用规则、常见变体）
-6. 角色背景/关系（作为前置知识，概括经历、动机与当前状态，避免写成未来剧本）
-7. 世界事件/历史/传说（作为前置知识库，说明起因、状态与影响，不写死后续发展）
-
-请只输出 JSON 数组。`,
+请只输出 JSON 数组，不要加 markdown 代码块，不要加任何解释。`,
+    user: `为「${cardName}」基于世界观锚定生成 1 条总纲条目 + 3-6 条子条目。第一条 name 必须是 "${cardName}世界书"。`,
   };
 };
 
 /**
- * Lorebook skeleton prompt (Step 2 - 骨架模式).
- * Generates world book entry skeletons for fast iteration.
- * Inspired by st-card-builder's 骨架生成 pipeline.
- * Each skeleton is: title + detailed outline + keywords.
- * User expands skeletons individually later with AI 展开.
+ * Revise a batch of draft lorebook entries based on user's free-text modification request.
+ * Used by the "预览与修改" panel: AI takes the current draft entries + user request and
+ * outputs a FULL REPLACEMENT array (not a patch). The caller swaps the draft wholesale.
+ *
+ * Design choices:
+ * - Replacement (not JSON Patch): simpler for AI, less error-prone, draft size is small
+ *   (typically ≤10 entries) so token cost is acceptable.
+ * - No id/targetId in output: caller regenerates ids from createEmptyLorebookEntry().
+ * - Output array length may differ from input: user may ask to merge / split / delete.
  */
-export const LOREBOOK_SKELETON_PROMPT = (
-  cardName: string,
-  characterSummaries: string,
-  topic: string,
-  batchSize: number,
-  existingTitles: string,
-  rules?: string,
-  worldAnchor?: string,
+export const LOREBOOK_REVISE_PROMPT = (
+  _cardName: string,
+  anchorText: string,
+  currentEntriesJson: string,
+  userRequest: string,
+  nsfw?: boolean,
   _lang: Language = 'zh',
-) => ({
-  system: `你是一个 SillyTavern 世界书骨架生成器。产出【${batchSize}条】详细骨架。
+) => {
+  const nsfwBlock = nsfw
+    ? `\n\n## NSFW 内容指令\n本角色卡允许生成成人内容（NSFW）。修订时保持原有成人向设定的连贯性，不要无故删除或弱化。`
+    : `\n\n## 内容安全指令\n本角色卡不允许生成成人内容（NSFW）。修订时若涉及敏感内容，以隐晦、含蓄的方式处理或直接跳过。`;
 
-每条包含：
-- comment：标题（=== 标题 === 格式，精简准确，2-6字，如：临渊市灰产、欲望树组织、温水切片控制法）
-- content：详细设定概要（120-250字），用键值对格式，语句自然通顺（如"地点: XX\\n总体氛围: 描述此地对 AI 扮演的影响\\n常见现象:\\n  - 现象A\\n  - 现象B"），不要写散文
-- keys：2-4个触发词
-- strategy："selective"（绿灯/触发型）或 "constant"（蓝灯/常驻型）。由 AI 根据内容判断：核心世界观、全局规则、角色核心背景用 constant；具体技能、地点、物品、势力细节、可触发事件用 selective。
+  return {
+    system: `你是 SillyTavern 世界书修订助手。基于用户当前的草稿条目 + 修改需求，输出**完整的新版条目数组（替换式，非 patch）**。
 
-【角色】：${characterSummaries}
-${existingTitles ? `\n【已有条目（禁止重复）】：${existingTitles}` : ''}
-${topic ? `\n【方向】：${topic}` : ''}
-${rules ? `\n【世界观约束/已有世界书】：${rules}` : ''}
-${worldAnchor ? `\n【世界观锚定（绝对约束，不可偏离）】：\n${worldAnchor}` : ''}
+核心修订原则：
+1. 最小改动：只调整与用户需求直接相关的内容，用户未提及的部分保持原样（包括 name / keys / constant / position 等结构字段）。
+2. 锚定不偏离：所有修订必须与世界观锚定字段一致，不得引入与锚定矛盾的内容。
+3. 减少重复：识别条目间重复的内容并合并或精简，让每条都有独立信息价值。
+4. 关键词优化：精炼 keys / secondary_keys，剔除无效或冗余关键词，保留 2-4 个高命中率关键词，避免单汉字。
+5. 信息密度：被改动的 content 仍需 ≥350 字（若非用户要求精简）；未被改动的 content 保持原长度。
+6. 数量可变：用户要求合并/拆分/删除时，输出数组长度可变化。但不要无故增减条目。
+7. 总纲条目（name 形如 "xx世界书" 且 constant=true）若存在，必须保留为第一条且维持 constant=true / position="before_char" / insertion_order=0 / priority=200。
+${nsfwBlock}
 
-【输出】：JSON数组 [{ "comment":"===标题===", "content":"详细设定概要(120-250字)", "keys":["词","词"], "strategy":"selective" }, ...]
+【世界观锚定（绝对约束，不可偏离）】：
+${anchorText || '（未提供锚定字段）'}
 
-标题要求：精简准确，2-6字，如：临渊市灰产、欲望树组织、温水切片控制法。避免"XX时代 - 社会背景与系统性漏洞"这类冗长句式。
+【当前草稿条目（JSON 数组，作为修订基础）】：
+${currentEntriesJson}
 
-写作要求：
-- 信息密集丰富、不重复、覆盖多维度（地点/人物/组织/物品/事件/规则/能力）。
-- 严格遵守【世界观锚定】中的时代背景、核心规则和禁止偏离项，任何生成内容不得与之矛盾。
-- 主线剧情、角色背景、世界历史可以写入骨架，但只作为前置知识库：概括时间、原因、结果、影响，不写小说式场景或未来固定剧本；事件/档案/传说类条目可更具体，但仍以服务 AI 扮演为导向。其他条目不写既定剧情， focus on 规则、机制、可能性、常见表现。
-- 多用开放词（通常、可能、往往、在某些地区/情境下、并非绝对），体现世界观的多元与可变。
-- 同一设定可给出 2-3 种变体或例外。
-- 写得越详细越好，不要吝啬篇幅。
+【用户的修改需求】：
+${userRequest}
 
-请只输出 JSON 数组，不要加 markdown 代码块。`,
-  user: `为「${cardName}」生成 ${batchSize} 条世界书骨架。信息丰富详细，每条 120-250 字。`,
-});
+【输出要求】：
+返回一个 JSON 数组，每个对象包含以下全部字段：
+{
+  "name": "条目标题（精简准确，2-6字）",
+  "keys": ["关键词1", "关键词2"],
+  "secondary_keys": [],
+  "content": "详细条目内容，简体中文。使用键值对和列表格式，语句自然通顺。",
+  "comment": "条目简短说明",
+  "constant": false,
+  "selective": false,
+  "selectiveLogic": 0,
+  "insertion_order": 100,
+  "position": "after_char",
+  "priority": 50,
+  "probability": 100,
+  "group": "",
+  "group_weight": 100,
+  "role": 0,
+  "depth": 4,
+  "exclude_recursion": false,
+  "prevent_recursion": false,
+  "sticky": 0,
+  "cooldown": 0,
+  "delay": 0,
+  "use_regex": false,
+  "match_whole_words": true,
+  "ignore_budget": false
+}
+
+字段说明：
+- insertion_order：背景设定=100, 能力=200, 关系=300, 地点=400, 物品=500, 事件=600
+- priority：核心=100, 普通=50, 点缀=10。数值越低越先被丢弃
+- constant（蓝灯/常驻）：持续生效、不依赖关键词触发。常驻条目不宜过多，通常 1-3 条。
+- position：大多数用 "after_char"；场景设置类、需要在角色输出之前注入的用 "before_char"
+- 关键词：严禁单汉字关键词。用2字以上名称。
+
+请只输出 JSON 数组，不要加 markdown 代码块，不要加任何解释。`,
+    user: `基于上述修改需求，修订这批草稿条目并输出完整新版数组。`,
+  };
+};
 
 /**
- * Expand a skeleton world book entry into a full detailed entry.
- * Used by the "AI 展开" button on short entries.
+ * Expand a single world book entry into a fuller detailed version.
+ * Used by the "AI 展开" button on entries. Replaces the old skeleton→expand pipeline:
+ * now all entries are full entries; this just enriches/rewrites one entry on demand.
  */
 export const EXPAND_ENTRY_PROMPT = (
   entry: {
@@ -341,7 +502,6 @@ export const EXPAND_ENTRY_PROMPT = (
     position: number;
   },
   characterContext: string,
-  isSkeleton: boolean,
   userRequirement?: string,
   nsfw?: boolean,
   worldAnchor?: string,
@@ -352,14 +512,14 @@ export const EXPAND_ENTRY_PROMPT = (
     : `\n\n## 内容安全指令\n本角色卡不允许生成成人内容（NSFW）。在展开词条时：\n- 禁止包含任何成人向、性暗示或色情内容\n- 场景和关系描述应当符合全年龄标准\n- 如果涉及敏感内容，请以隐晦、含蓄的方式处理或直接跳过`;
 
   return {
-    system: `你是一位 SillyTavern 世界书设定专家。${isSkeleton ? '原条目是骨架概要，请展开为完整详细的世界书设定词条（至少350字），保留方向但大幅扩充。' : '原条目需要扩写和丰富，请大幅扩充内容，补充更多细节，使条目内容更加丰富详尽（至少350字）。'}
+    system: `你是一位 SillyTavern 世界书设定专家。请扩写/重写以下世界书条目，补充更多细节，使条目内容更加丰富详尽（至少350字）。
 【原词条】:
 标题: ${entry.comment}
 策略: ${entry.strategy}
 触发词: ${entry.keys.join(',')}
 内容: ${entry.content}
 ${characterContext ? `\n【角色上下文】：\n${characterContext.substring(0, 3000)}` : ''}${nsfwBlock}
-${worldAnchor ? `\n【世界观锚定（绝对约束）】：\n${worldAnchor}\n展开时必须严格遵守以上约束，不得偏离时代背景或违反核心规则。` : ''}
+${worldAnchor ? `\n【世界观锚定（绝对约束）】：\n${worldAnchor}\n展开时必须严格遵守以上约束，不得偏离类型/时代/文化背景或违反硬性约束。` : ''}
 
 【任务】：扩写/重写。输出JSON：
 { "comment": "标题（精简准确，2-6字，如：临渊市灰产、欲望树组织、温水切片控制法）", "content": "详细设定（至少350字，使用键值对和列表格式，语句自然通顺）", "keys": ["触发词", "2-5个"], "strategy": "selective 或 constant", "position": ${entry.position} }
@@ -380,9 +540,7 @@ ${worldAnchor ? `\n【世界观锚定（绝对约束）】：\n${worldAnchor}\n�
   - 对同一设定可给出 2-3 种变体或例外，避免世界显得铁板一块。
 
 请只输出 JSON，不要加 markdown 代码块。`,
-    user: isSkeleton
-      ? `将骨架「${entry.comment}」展开为完整详细设定。${userRequirement ? `额外要求：${userRequirement}` : ''}`
-      : `扩写词条「${entry.comment}」，补充更多细节和内容。${userRequirement ? `额外要求：${userRequirement}` : ''}`,
+    user: `扩写词条「${entry.comment}」，补充更多细节和内容。${userRequirement ? `额外要求：${userRequirement}` : ''}`,
   };
 };
 
@@ -440,29 +598,6 @@ ${targetWordCount ? `\n【字数】约 ${targetWordCount} 字，确保内容充�
 ${writingRequirements ? `\n最后提醒：开场白必须体现用户要求的内容和情节，不能只泛泛地基于角色设定写。` : ''}
 
 请只输出消息正文。`,
-  };
-};
-
-/**
- * World rules generation prompt (Step 2/4 - 世界观约束与运行规则).
- * Generates worldview constraints and operation rules based on card info.
- */
-export const WORLD_RULES_GENERATE_PROMPT = (
-  cardName: string,
-  characterSummaries: string,
-  topic?: string,
-  existingRules?: string,
-  existingWorldbookContext?: string,
-  nsfw?: boolean,
-  _lang: Language = 'zh',
-) => {
-  const nsfwBlock = nsfw
-    ? `\n\n## NSFW 内容指令\n本角色卡允许生成成人内容（NSFW）。在世界观规则中：\n- 可以包含成人向的设定、关系或背景规则\n- 不要刻意强调或过度描写，保持自然融入`
-    : `\n\n## 内容安全指令\n本角色卡不允许生成成人内容（NSFW）。在世界观规则中：\n- 禁止包含任何成人向、性暗示或色情内容\n- 规则描述应当符合全年龄标准`;
-
-  return {
-    system: `你是一位资深的世界观设定师。请根据角色卡名称、角色概要和主题方向，生成一份完整、具体、可执行的世界观约束与运行规则。\n\n规则应覆盖（根据主题选择相关项）：\n- 世界基础设定（时代、环境、核心背景）\n- 力量/体系规则（等级、能力、限制、消耗、常见异常）\n- 势力格局（主要组织、阵营、关系倾向）\n- 运行规则（AI 扮演时应遵循的行为、逻辑、禁忌）\n- 角色扮演约束（如何保持人设、如何回应用户、避免 OOC）\n\n写作要求：\n- 使用条目/列表格式，不要写成散文段落\n- 每条规则必须具体、可执行，避免空泛描述\n- 一句话一意，不写装饰性内容\n- 语句自然通顺，避免僵硬标签和翻译腔\n- 全文简体中文\n- 不要输出任何解释、总结或 markdown 代码块，只输出规则正文\n- **扩展模式**：如果提供了已有规则，必须完整保留已有规则的全部内容，只允许在其后补充新的规则条目，禁止删除、修改、重写或否定已有规则\n- **一致性**：如果提供了已生成的世界书条目，新增规则必须与之一致，不得矛盾\n- **多元与可变**：规则中多用“通常”“往往”“可能”“在某些地区/情境下”“常见”“罕见”“并非绝对”等开放词；同一规则可给出 2-3 种变体或例外，让 AI 扮演有发挥空间${nsfwBlock}`,
-    user: `为以下角色卡生成世界观约束与运行规则：\n\n卡片名称：${cardName}\n角色概要：${characterSummaries || '(暂无角色概要，请根据卡片名称和主题自由发挥)'}\n${topic ? `主题/方向：${topic}\n` : ''}${existingRules ? `\n已有规则（必须完整保留，仅在此基础上补充缺失的规则条目）：\n${existingRules}\n` : ''}\n${existingWorldbookContext ? `\n\n## 已生成的世界书条目（生成规则时必须与以下设定保持一致，不得冲突）\n${existingWorldbookContext}\n` : ''}请直接输出完整的世界观约束与运行规则正文（包含已有规则 + 新增补充）。`,
   };
 };
 

@@ -21,7 +21,6 @@
  * 复用它比在 services 里复制一份系数更符合「单一事实来源」。
  */
 import type { LorebookEntry, MvuConfig, WizardDraft } from '../constants/defaults';
-import { formatWorldAnchorForPrompt } from '../constants/defaults';
 import { estimateTokenCount } from '../components/novel-workshop/utils';
 import { findStagedLorebookEntryIndices, isProtectedLorebookEntry, isCharacterDescriptionSynced } from './lorebook-predicates';
 import { buildMvuScriptBundle } from './mvu-builder';
@@ -272,14 +271,14 @@ function estimateMvuPromptTokens(mvu: MvuConfig | undefined): number {
   }
 }
 
-/** 每轮固定进入上下文、但不属于世界书条目的字段（含导出时生成的「世界锚」常驻条目）。 */
+/** 每轮固定进入上下文、但不属于世界书条目的字段。
+ *  注：「锚定世界观」步骤生成的总纲条目已经是 lorebookEntries 中的一条常驻条目，
+ *  会被 analyzeLorebookTokens 计入常驻段，这里不重复计算。 */
 function estimateStaticFieldTokens(draft: WizardDraft): number {
-  const anchorText = formatWorldAnchorForPrompt(draft.worldAnchor);
   return (
     estimateTokens(draft.scenario) +
     estimateTokens(draft.system_prompt) +
-    estimateTokens(draft.post_history_instructions) +
-    (anchorText ? estimateTokens(`[世界观绝对约束 - AI 不得偏离]\n${anchorText}`) : 0)
+    estimateTokens(draft.post_history_instructions)
   );
 }
 
@@ -364,7 +363,7 @@ export function analyzeCardTokenBudget(draft: WizardDraft): CardTokenBudget {
       label: '常驻字段',
       kind: 'fixed',
       tokens: staticTokens,
-      note: '场景（scenario）、系统提示、历史后指令，以及导出时生成的「世界锚」常驻条目。',
+      note: '场景（scenario）、系统提示、历史后指令。「锚定世界观」总纲条目已作为常驻世界书条目计入「常驻世界书」段。',
     },
     {
       id: 'exampleDialogue',

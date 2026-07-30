@@ -225,16 +225,16 @@ describe('analyzeCardTokenBudget', () => {
     expect(b.oneTime).toBe(estimateTokens('开场白正文'.repeat(100)));
   });
 
-  it('常驻字段包含 scenario / system_prompt / 历史后指令 / 世界锚', () => {
+  it('常驻字段包含 scenario / system_prompt / 历史后指令', () => {
     const draft = makeDraft({
       scenario: '场景',
       system_prompt: '系统',
       post_history_instructions: '后置',
-      worldAnchor: { era: '现代', coreRules: '无魔法', hardConstraints: '不得出现超自然', tone: '写实' },
     });
     const b = analyzeCardTokenBudget(draft);
     const staticSeg = b.segments.find((s) => s.id === 'staticFields');
-    expect(staticSeg?.tokens).toBeGreaterThan(
+    // 重构后「锚定世界观」总纲条目已并入常驻世界书段，staticFields 仅含 scenario/system_prompt/post_history_instructions
+    expect(staticSeg?.tokens).toBe(
       estimateTokens('场景') + estimateTokens('系统') + estimateTokens('后置'),
     );
     expect(staticSeg?.kind).toBe('fixed');

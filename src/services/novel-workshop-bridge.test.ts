@@ -183,12 +183,11 @@ describe('workshopEntriesToLorebookEntries', () => {
     };
   }
 
-  it('tags every entry with fromSkeleton=true and skeletonExpanded=false', () => {
+  it('tags every entry with fromAnchor=true', () => {
     const entries = workshopEntriesToLorebookEntries([makeEntry(), makeEntry({ id: 'e2' })], []);
     expect(entries).toHaveLength(2);
     for (const e of entries) {
-      expect(e.fromSkeleton).toBe(true);
-      expect(e.skeletonExpanded).toBe(false);
+      expect(e.fromAnchor).toBe(true);
     }
   });
 

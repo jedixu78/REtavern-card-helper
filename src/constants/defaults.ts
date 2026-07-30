@@ -34,13 +34,10 @@ export interface LorebookEntry {
   comment: string;
   /** Per-entry NSFW toggle for AI expansion feature */
   expandNsfw?: boolean;
-  /** UI-only flag: entry was generated in Step 2 (skeleton mode).
-   *  Used to render a "🦴 骨架" badge in Step 4 so users can track which entries
-   *  still need AI expansion. Not exported to the SillyTavern card format. */
-  fromSkeleton?: boolean;
-  /** UI-only flag: entry has been AI-expanded in Step 4 (originally a skeleton).
-   *  Renders a "✅ 已展开" badge so users can see at-a-glance what's done. */
-  skeletonExpanded?: boolean;
+  /** UI-only flag: 条目由「锚定世界观」步骤的 AI 总纲生成器创建。
+   *  用于在 Step 4 渲染"⚓ 锚定"徽章，便于识别世界观锚定产物。
+   *  Not exported to the SillyTavern card format. */
+  fromAnchor?: boolean;
   // ST runtime
   probability: number;
   group: string;
@@ -136,6 +133,10 @@ export interface AIGeneratedCharacter {
 
 /** AI parsed result for lorebook entry generation */
 export interface AIGeneratedLorebookEntry {
+  /** "create" = new entry, "update" = enrich existing entry (merge content) */
+  action?: 'create' | 'update';
+  /** When action="update", the id of the existing entry to update */
+  targetId?: string;
   name?: string;
   keys?: string[];
   secondary_keys?: string[];
@@ -390,26 +391,32 @@ export const REGEX_SCRIPT_NAMES = {
   liveChat: '直播间界面',
 } as const;
 
-/** 世界观锚定 — 结构化约束，防止 AI 生成偏离设定 */
+/** 世界观锚定 — 按「从大到小细化」的漏斗顺序锚定创作方向，防止 AI 生成偏离设定。
+ *  用户填入后既作为 AI 生成时的硬约束注入，也作为「锚定世界观」步骤的输入：
+ *  AI 据此扩写出 1 条总纲条目 + N 条子条目（地点/规则/组织等）直接加入世界书。
+ *  字段顺序即思考路径：类型 → 时代/年份 → 文化背景 → 人文细节 → 硬性约束。 */
 export interface WorldAnchor {
-  /** 时代背景：现代/古代/未来/架空/自定义 */
+  /** 类型：最宏观的世界观类型（异世界/平行世界/赛博朋克/奇幻/末日/校园/都市…） */
+  type: string;
+  /** 时代/年份：时代或具体年份（古代/中世纪/近现代/近未来/2024年/唐朝…） */
   era: string;
-  /** 核心规则：这个世界的基本法则（如"无魔法"、"科技水平约2024年"） */
-  coreRules: string;
-  /** 禁止偏离项：AI 绝对不能违反的硬性约束（如"不存在超自然力量"） */
-  hardConstraints: string;
-  /** 基调/氛围：世界的整体调性 */
-  tone: string;
+  /** 文化背景：国家/文化圈（中国/欧洲/日本/韩国/美国/架空…） */
+  culture: string;
+  /** 人文细节：宗教/礼仪/饮食/习俗 等创作方向，自由文本 */
+  humanity: string;
+  /** 硬性约束：AI 绝对不能违反的（如"无魔法"、"科技不超过2024年"） */
+  constraints: string;
 }
 
-/** 将 WorldAnchor 格式化为 prompt 注入文本 */
+/** 将 WorldAnchor 格式化为 prompt 注入文本（按从大到小顺序） */
 export function formatWorldAnchorForPrompt(anchor: WorldAnchor | undefined): string {
   if (!anchor) return '';
   const parts: string[] = [];
-  if (anchor.era) parts.push(`时代背景: ${anchor.era}`);
-  if (anchor.coreRules) parts.push(`核心规则: ${anchor.coreRules}`);
-  if (anchor.hardConstraints) parts.push(`禁止偏离: ${anchor.hardConstraints}`);
-  if (anchor.tone) parts.push(`基调氛围: ${anchor.tone}`);
+  if (anchor.type) parts.push(`世界观类型: ${anchor.type}`);
+  if (anchor.era) parts.push(`时代/年份: ${anchor.era}`);
+  if (anchor.culture) parts.push(`文化背景: ${anchor.culture}`);
+  if (anchor.humanity) parts.push(`人文细节: ${anchor.humanity}`);
+  if (anchor.constraints) parts.push(`硬性约束: ${anchor.constraints}`);
   return parts.join('\n');
 }
 
@@ -447,16 +454,11 @@ export interface WizardDraft {
   bookRecursiveScanning: boolean;
   /** Whether NSFW content generation is allowed for world book entries */
   worldbookNsfw?: boolean;
-  /** World rules / generation constraints (persisted across sessions) */
-  worldRules?: string;
-  /** 世界观锚定 — 结构化约束 */
+  /** 世界观锚定 — 锚定创作方向的风格/地点/约束。既作 AI 生成约束注入，
+   *  也是「锚定世界观」步骤的输入，AI 据此扩写出总纲+子条目加入世界书。 */
   worldAnchor?: WorldAnchor;
-  /** Shared UI state between Step 2 (skeleton) and Step 4 (detail worldbook) — keeps the
-   *  topic / counts / mode in sync so users don't lose inputs when navigating back & forth. */
-  skeletonTopic?: string;
-  skeletonCount?: number;
+  /** Shared UI state — Step 4 世界书细节的批量生成数量，跨步骤保留以免用户重复输入。 */
   worldbookBatchCount?: number;
-  skeletonModeEnabled?: boolean;
   /** MVU + EJS configuration */
   mvu?: MvuConfig;
   /** Whether to use MVU-aware export (embeds scripts, Zod.txt, regex) */
@@ -570,8 +572,14 @@ export const LOREBOOK_ROLE_OPTIONS = [
  * Version number for persisted wizard drafts.
  * Bump this whenever the draft shape changes incompatibly so that old cached
  * drafts are discarded on app restart.
+ *
+ * V6 → V7：合并「世界观锚定」+「世界书骨架」为「锚定世界观」步骤。
+ * - worldAnchor 重构为从大到小漏斗字段（type/era/culture/humanity/constraints），
+ *   旧字段映射 era→era、hardConstraints→constraints（coreRules/tone 丢弃）
+ * - 移除 worldRules / skeletonTopic / skeletonCount / skeletonModeEnabled
+ * - lorebookEntries 内 fromSkeleton/skeletonExpanded → fromAnchor
  */
-export const WIZARD_DRAFT_VERSION = 6;
+export const WIZARD_DRAFT_VERSION = 7;
 
 /**
  * 世界书名的唯一推导来源。导出的 `character_book.name`、`extensions.world` 与
@@ -660,13 +668,8 @@ export function createEmptyDraft(): WizardDraft {
     bookTokenBudget: 40000,
     bookRecursiveScanning: false,
     worldbookNsfw: false,
-    worldRules: '',
-    worldAnchor: { era: '', coreRules: '', hardConstraints: '', tone: '' },
-    // Shared UI state between Step 2 (skeleton) & Step 4 (detail worldbook)
-    skeletonTopic: '',
-    skeletonCount: 8,
+    worldAnchor: { type: '', era: '', culture: '', humanity: '', constraints: '' },
     worldbookBatchCount: 8,
-    skeletonModeEnabled: true,
   };
 }
 
@@ -692,7 +695,7 @@ export function createEmptyMvuConfig(): MvuConfig {
 /** Wizard step definitions with labels and validation flags */
 export const WIZARD_STEPS = [
   { id: 1, label: '卡片名称', required: true },
-  { id: 2, label: '世界书骨架', required: false },
+  { id: 2, label: '锚定世界观', required: false },
   { id: 3, label: '角色配置', required: true },
   { id: 4, label: '世界书细节', required: false },
   { id: 5, label: 'MVU变量', required: false },

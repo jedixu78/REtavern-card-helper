@@ -42,7 +42,7 @@ describe('analysisToLorebookEntries', () => {
     expect(entries).toEqual([]);
   });
 
-  it('tags AI-extracted lorebookEntries with fromSkeleton + skeletonExpanded', () => {
+  it('tags AI-extracted lorebookEntries with fromAnchor', () => {
     const analysis = makeAnalysis({
       lorebookEntries: [
         {
@@ -55,8 +55,7 @@ describe('analysisToLorebookEntries', () => {
     });
     const entries = analysisToLorebookEntries(analysis);
     expect(entries).toHaveLength(1);
-    expect(entries[0].fromSkeleton).toBe(true);
-    expect(entries[0].skeletonExpanded).toBe(false);
+    expect(entries[0].fromAnchor).toBe(true);
     expect(entries[0].name).toBe('人物A');
   });
 
@@ -90,7 +89,7 @@ describe('analysisToLorebookEntries', () => {
       expect(itemEntry!.content).toContain('功能用途：斩杀');
       expect(itemEntry!.content).toContain('获取途径：深渊');
       expect(itemEntry!.content).toContain('叙事意义：主线关键');
-      expect(itemEntry!.fromSkeleton).toBe(true);
+      expect(itemEntry!.fromAnchor).toBe(true);
     });
 
     it('skips items without name or function', () => {
@@ -218,7 +217,7 @@ describe('analysisToLorebookEntries', () => {
       expect(eggEntry!.content).toContain("<%_ if (getvar('stat_data.彩蛋.hidden_reunion') === true) { _%>");
       expect(eggEntry!.content).toContain('她们在咖啡馆重逢');
       expect(eggEntry!.content).toContain('<%_ } _%>');
-      expect(eggEntry!.fromSkeleton).toBe(true);
+      expect(eggEntry!.fromAnchor).toBe(true);
     });
 
     it('skips easter eggs without id or content', () => {

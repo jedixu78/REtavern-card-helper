@@ -208,21 +208,6 @@ describe('assembleCard', () => {
     expect(card.data.character_book.entries[0].id).toBe(1);
   });
 
-  it('_meta 的 entryIds 在世界锚 unshift 重编号后仍指向正确条目', () => {
-    const entry = { ...createEmptyLorebookEntry(), name: 'E', comment: 'E', content: 'c', keys: ['k'] };
-    const char = { ...createEmptyCharacter(), name: '角色1', description: '描述', entryIds: [entry.id] };
-    const draft = makeDraft({
-      cardName: '测试',
-      characters: [char],
-      lorebookEntries: [entry],
-      worldAnchor: { era: '近未来', coreRules: '无超能力', hardConstraints: '', tone: '' },
-    });
-    const card = assembleCard(draft);
-    const mappedId = card._meta.characters[0].entryIds[0];
-    const target = card.data.character_book.entries.find((e) => String(e.id) === mappedId);
-    expect(target?.name).toBe('E');
-  });
-
   it('从 _meta 恢复时，数字型 id/entryIds 会被规范化为字符串', () => {
     const card = assembleCard(makeDraft({ cardName: '测试' }));
     card._meta = {

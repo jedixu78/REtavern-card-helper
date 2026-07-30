@@ -223,7 +223,7 @@ function workshopCategoryPriority(category: string): number {
 }
 
 /** Convert GeneratedEntry[] from Novel Workshop into LorebookEntry[] for the card wizard.
- *  - Tags every entry with fromSkeleton=true so the wizard shows the 🦴 badge.
+ *  - Tags every entry with fromAnchor=true so the wizard shows the ⚓ badge.
  *  - For entries with requiredFlags, wraps content in an EJS guard that only injects
  *    when ALL listed flags are true (checked via `getvar('stat_data.开关.{flagId}')`).
  *    The matching MVU boolean variables are produced by revealFlagsToVariableBlueprints. */
@@ -246,8 +246,7 @@ export function workshopEntriesToLorebookEntries(
     lore.priority = entry.priority || workshopCategoryPriority(entry.category);
     lore.prevent_recursion = true;
     lore.match_whole_words = true;
-    lore.fromSkeleton = true;
-    lore.skeletonExpanded = false;
+    lore.fromAnchor = true;
 
     // Gate content behind requiredFlags (AND logic). The flag booleans live at
     // `stat_data.开关.{flagId}` and are seeded by revealFlagsToVariableBlueprints.

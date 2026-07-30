@@ -1,15 +1,18 @@
 /**
- * Step World Book / Lorebook entries — shared between Step 2 (skeleton) and Step 4 (detail).
+ * Step World Book / Lorebook entries — Step 4 世界书细节.
  * Full SillyTavern V2 + runtime parameter support (CardForge reference).
+ *
+ * 重构后只有 detail 模式（骨架模式已与「锚定世界观」步骤合并移除）。
+ * worldRules 也已移除，AI 生成约束只通过 worldAnchor 注入。
  */
 import { useMemo, useState } from 'react';
 import { Button } from '../shared/Button';
 import { useToast } from '../shared/Toast';
 import { AIProgressPanel, type AIProgressStatus } from '../shared/AIProgressPanel';
 import { LorebookEntryEditor, type EntryExpandLevel } from './LorebookEntryEditor';
+import { LorebookReviewDialog } from './LorebookReviewDialog';
 import { useTranslation } from '../../i18n/I18nContext';
 import { AIGeneratePanel } from './AIGeneratePanel';
-import { WorldAnchorPanel } from './WorldAnchorPanel';
 import { OrganizePreviewTable } from './OrganizePreviewTable';
 import { useAIGenerate } from '../../hooks/useAIGenerate';
 import { themeAlpha, THEME_TOKENS } from '../../constants/theme';
@@ -22,6 +25,24 @@ import {
   TOKEN_BUDGET_HEALTHY_MAX,
 } from '../../services/token-budget';
 import type { TokenBudgetLevel } from '../../services/token-budget';
+
+/**
+ * Serialize existing lorebook entries into a compact context string for AI secondary creation.
+ * Includes id (for update targeting), name, trigger mode, keys, and content preview.
+ */
+function serializeEntriesForContext(entries: LorebookEntry[], maxContentChars = 600): string {
+  if (entries.length === 0) return '';
+  return entries
+    .filter((e) => e.content.trim() || e.name.trim())
+    .map((e) => {
+      const mode = e.constant ? '常驻(constant)' : `关键词触发(keys: ${e.keys.join(', ') || '无'})`;
+      const contentPreview = e.content.length > maxContentChars
+        ? e.content.slice(0, maxContentChars) + '…(已截断)'
+        : e.content;
+      return `[id: ${e.id}] ${e.name || '(未命名)'} | ${mode} | position: ${e.position}\n${contentPreview}`;
+    })
+    .join('\n\n---\n\n');
+}
 
 const POSITION_ORDER: Record<LorebookPosition, number> = {
   before_char: 0,
@@ -66,41 +87,17 @@ function getProtectedEntryLabel(entry: LorebookEntry, idx: number, stagedIndices
 interface StepWorldBookProps {
   entries: LorebookEntry[];
   onEntriesChange: (entries: LorebookEntry[]) => void;
-  /** Controlled world rules text — persisted in draft */
-  worldRules?: string;
-  onWorldRulesChange?: (worldRules: string) => void;
-  /** Character context for detail mode (full descriptions after characters are generated) */
+  /** Character context for AI generation (full descriptions) */
   characterContext?: string;
-  /** Mode: skeleton = step 2 (before characters), detail = step 4 (after characters) */
-  mode?: 'skeleton' | 'detail';
   /** Whether NSFW content generation is allowed for world book entries */
   nsfw?: boolean;
   onNsfwChange?: (nsfw: boolean) => void;
-  /** 世界观锚定 — 结构化约束 */
+  /** 世界观锚定 — 结构化约束（作为 AI 生成时的硬约束注入） */
   worldAnchor?: WorldAnchor;
   onWorldAnchorChange?: (anchor: WorldAnchor) => void;
-  /** MVU config — used to show EJS indicators on entries (detail mode only) */
+  /** MVU config — used to show EJS indicators on entries */
   mvu?: MvuConfig;
-  // ── Shared UI state between Step 2 (skeleton) & Step 4 (detail) ──
-  // When provided, these controlled values are persisted to the draft so that
-  // navigating back & forth between step 2 and step 4 preserves the user's
-  // topic, counts and mode toggle. Falls back to local state when not provided
-  // (e.g. legacy callers).
-  /** Controlled topic input — shared between step 2 & step 4 */
-  topicValue?: string;
-  onTopicChangePersist?: (topic: string) => void;
-  /** Controlled skeleton entry count — shared between step 2 & step 4 */
-  skeletonCountValue?: number;
-  onSkeletonCountPersist?: (count: number) => void;
-  /** Controlled full-mode batch count — shared between step 2 & step 4 */
-  batchCountValue?: number;
-  onBatchCountPersist?: (count: number) => void;
-  /** Controlled skeleton-mode toggle (step 4 only — step 2 is always skeleton) */
-  skeletonModeValue?: boolean;
-  onSkeletonModePersist?: (mode: boolean) => void;
-  /** Cross-step navigation callback — wired from WizardPage's setCurrentStep.
-   *  Lets the skeleton/detail banner jump directly to the linked step so users
-   *  can quickly flip back & forth without losing context. */
+  /** Cross-step navigation callback (currently unused in detail-only mode; kept for compat). */
   onJumpToStep?: (step: number) => void;
   // Legacy props kept for backward compat during transition
   cardName?: string;
@@ -112,23 +109,10 @@ interface StepWorldBookProps {
 export function StepWorldBook({
   entries,
   onEntriesChange,
-  worldRules: externalWorldRules = '',
-  onWorldRulesChange,
   characterContext,
-  mode = 'detail',
   nsfw,
   worldAnchor,
-  onWorldAnchorChange,
   mvu,
-  // Shared controlled UI state (step 2 ↔ step 4)
-  topicValue: externalTopic,
-  onTopicChangePersist,
-  skeletonCountValue: externalSkeletonCount,
-  onSkeletonCountPersist,
-  batchCountValue: externalBatchCount,
-  onBatchCountPersist,
-  onSkeletonModePersist,
-  onJumpToStep,
   // Legacy
   cardName: legacyCardName,
   characterSummaries: legacyCharacterSummaries,
@@ -137,26 +121,12 @@ export function StepWorldBook({
 }: StepWorldBookProps) {
   const { t } = useTranslation();
   const [generating, setGenerating] = useState(false);
-  // topic: prefer external controlled value, fallback to local state
   const [localTopic, setLocalTopic] = useState('');
-  const topic = externalTopic !== undefined ? externalTopic : localTopic;
-  const setTopic = onTopicChangePersist || setLocalTopic;
-  // worldRules: prefer external controlled value, fallback to local state
-  const [localWorldRules, setLocalWorldRules] = useState('');
-  const effectiveWorldRules = onWorldRulesChange ? externalWorldRules : localWorldRules;
-  const setWorldRules = onWorldRulesChange || setLocalWorldRules;
-  // Skeleton mode: default true in skeleton mode step.
-  // In detail mode (step 4) the toggle is hidden, so always use full generation.
-  const skeletonMode = mode === 'skeleton';
-  const setSkeletonMode = onSkeletonModePersist || (() => {});
-  // Skeleton count: shared between step 2 & step 4
-  const [localSkeletonCount, setLocalSkeletonCount] = useState(mode === 'skeleton' ? 8 : 6);
-  const skeletonCount = externalSkeletonCount !== undefined ? externalSkeletonCount : localSkeletonCount;
-  const setSkeletonCount = onSkeletonCountPersist || setLocalSkeletonCount;
-  // Full mode batch count: shared between step 2 & step 4
+  const topic = localTopic;
+  const setTopic = setLocalTopic;
   const [localBatchCount, setLocalBatchCount] = useState(8);
-  const batchCount = externalBatchCount !== undefined ? externalBatchCount : localBatchCount;
-  const setBatchCount = onBatchCountPersist || setLocalBatchCount;
+  const batchCount = localBatchCount;
+  const setBatchCount = setLocalBatchCount;
   // AI organize state
   const [organizing, setOrganizing] = useState(false);
   const [organizeResults, setOrganizeResults] = useState<AIOrganizeSuggestion[] | null>(null);
@@ -169,9 +139,13 @@ export function StepWorldBook({
   const [streamText, setStreamText] = useState('');
   // AI expand state
   const [expandingIndex, setExpandingIndex] = useState<number | null>(null);
+  /** 草稿态条目：批量生成后进入预览修改模式，导入时才合入主列表 */
+  const [pendingEntries, setPendingEntries] = useState<LorebookEntry[] | null>(null);
+  /** 生成前的原始快照：重新生成时作为基础，避免基于草稿迭代 */
+  const [pendingSnapshot, setPendingSnapshot] = useState<LorebookEntry[] | null>(null);
   // Collapse state: Map of entry ID → expand level
   const [expandLevels, setExpandLevels] = useState<Map<string, EntryExpandLevel>>(new Map());
-  const { generateLorebookParsedStreaming, generateLorebookSkeletonStreaming, organizeEntries, generateEntryKeys, expandLorebookEntry } = useAIGenerate();
+  const { generateLorebookParsedStreaming, organizeEntries, generateEntryKeys, expandLorebookEntry } = useAIGenerate();
   const { addToast } = useToast();
 
   // Unified entry update handler (supports both new and legacy APIs)
@@ -245,129 +219,110 @@ export function StepWorldBook({
     handleUpdateEntries(entries.map((e, i) => (i === index ? { ...e, ...updates } : e)));
   };
 
+  /**
+   * 批量生成核心逻辑：基于 baseEntries 调用 AI，返回 finalEntries（含 update+create
+   * 合并后的完整列表）+ newEntries（仅新增条目，供 toast 统计用）。失败返回 null。
+   * 不做任何 state 更新（setGenerating / setAiStatus / setPendingEntries），由调用方处理。
+   */
+  const runBatchGenerate = async (
+    baseEntries: LorebookEntry[],
+  ): Promise<{ finalEntries: LorebookEntry[]; newCount: number; updateCount: number } | null> => {
+    const existingContext = serializeEntriesForContext(baseEntries);
+    const result = await generateLorebookParsedStreaming(
+      effectiveCardName, effectiveCharacterContext, topic, batchCount,
+      (_chunk, fullText) => setStreamText(fullText),
+      nsfw,
+      formatWorldAnchorForPrompt(worldAnchor) || undefined,
+      existingContext || undefined,
+    );
+    if (!Array.isArray(result) || result.length === 0) return null;
+
+    // Split results into updates (targeting existing entries) and new creates
+    const updates = result.filter(
+      (item) => item.action === 'update' && item.targetId && baseEntries.some((e) => e.id === item.targetId),
+    );
+    const creates = result.filter((item) => !updates.includes(item));
+
+    // Apply updates: merge AI content into existing entries
+    const updatedEntries = [...baseEntries];
+    for (const upd of updates) {
+      const idx = updatedEntries.findIndex((e) => e.id === upd.targetId);
+      if (idx === -1) continue;
+      const existing = updatedEntries[idx];
+      const secondaryKeys = upd.secondary_keys || [];
+      updatedEntries[idx] = {
+        ...existing,
+        // AI returns full updated content (original + additions)
+        content: upd.content || existing.content,
+        name: upd.name || existing.name,
+        comment: upd.comment || existing.comment,
+        keys: upd.keys?.length ? upd.keys : existing.keys,
+        secondary_keys: secondaryKeys.length > 0 ? secondaryKeys : existing.secondary_keys,
+        constant: upd.constant ?? existing.constant,
+        insertion_order: upd.insertion_order ?? existing.insertion_order,
+        position: (upd.position ?? existing.position) as LorebookPosition,
+        priority: upd.priority ?? existing.priority,
+      };
+    }
+
+    // Create new entries
+    const newEntries = creates.map((item) => {
+      const base = createEmptyLorebookEntry();
+      const secondaryKeys = item.secondary_keys || [];
+      return {
+        ...base,
+        name: item.name || '',
+        keys: item.keys || [],
+        secondary_keys: secondaryKeys,
+        content: item.content || '',
+        comment: item.comment || item.name || '',
+        constant: item.constant ?? false,
+        selective: secondaryKeys.length > 0 ? item.selective ?? false : false,
+        insertion_order: item.insertion_order ?? 100,
+        position: (item.position ?? 'before_char') as LorebookPosition,
+        priority: item.priority ?? 50,
+        probability: item.probability ?? 100,
+        group: item.group || '',
+        group_weight: item.group_weight ?? 100,
+        selectiveLogic: item.selectiveLogic ?? 0,
+        role: item.role ?? 0,
+        depth: item.depth ?? 4,
+        exclude_recursion: item.exclude_recursion ?? false,
+        prevent_recursion: item.prevent_recursion ?? false,
+        use_regex: item.use_regex ?? false,
+        match_whole_words: item.match_whole_words ?? true,
+        sticky: item.sticky ?? 0,
+        cooldown: item.cooldown ?? 0,
+        delay: item.delay ?? 0,
+        ignore_budget: item.ignore_budget ?? false,
+      } as LorebookEntry;
+    });
+
+    const finalEntries = sortLorebookEntries([...updatedEntries, ...newEntries]);
+    return { finalEntries, newCount: newEntries.length, updateCount: updates.length };
+  };
+
   const handleBatchGenerate = async () => {
     setGenerating(true);
     setAiStatus('generating');
     setStreamText('');
-    const consistencyRules = [
-      effectiveWorldRules,
-      effectiveExistingContext ? `${t('worldBook.existingWorldbookHeader')}\n${effectiveExistingContext}` : '',
-    ].filter(Boolean).join('\n\n');
     try {
-      if (skeletonMode) {
-        // ── Skeleton mode: batch generation in groups of 5 ──
-        let allSkeletons: Array<{ comment: string; content: string; keys: string[]; strategy: string }> = [];
-        let remaining = skeletonCount;
-        let batchIndex = 0;
-
-        while (remaining > 0) {
-          const batchSize = Math.min(remaining, 5);
-          batchIndex++;
-          const existingTitles = allSkeletons.map((s) => s.comment).join('、');
-          const batchMarker = t('worldBook.batchMarker', { index: String(batchIndex), count: String(remaining) });
-          if (remaining < skeletonCount) {
-            setStreamText(prev => prev + `\n\n── ${batchMarker} ──\n`);
-          }
-          const skeletons = await generateLorebookSkeletonStreaming(
-            effectiveCardName, effectiveCharacterContext, topic, batchSize, existingTitles,
-            (_chunk, fullText) => setStreamText(prev => {
-              // Replace current batch's streaming portion
-              const lastMarker = prev.lastIndexOf('── ');
-              if (lastMarker >= 0) {
-                const before = prev.slice(0, lastMarker);
-                const markerLine = prev.slice(lastMarker).split('\n')[0];
-                return before + markerLine + '\n' + fullText;
-              }
-              return fullText;
-            }),
-            consistencyRules || undefined,
-            formatWorldAnchorForPrompt(worldAnchor) || undefined,
-          );
-          allSkeletons = [...allSkeletons, ...skeletons];
-          remaining -= batchSize;
-          if (remaining > 0) await new Promise((r) => setTimeout(r, 300));
-        }
-
-        // Convert skeletons to lorebook entries
-        const newEntries = allSkeletons.map((sk) => ({
-          ...createEmptyLorebookEntry(),
-          name: sk.comment.replace(/^=+|=+$/g, '').trim() || sk.comment,
-          comment: sk.comment,
-          content: sk.content,
-          keys: sk.keys,
-          constant: sk.strategy === 'constant',
-          position: 'after_char' as LorebookPosition,
-          insertion_order: 100,
-          priority: 50,
-          probability: 100,
-          depth: 4,
-          // Mark as skeleton-origin so Step 4 can show a 🦴 badge and track
-          // expansion progress. Cleared on AI-expand success.
-          fromSkeleton: true,
-          skeletonExpanded: false,
-        })) as LorebookEntry[];
-
-        handleUpdateEntries(sortLorebookEntries([...entries, ...newEntries]));
-        // Auto-collapse newly generated entries (show as collapsed)
-        setExpandLevels(prev => {
-          const next = new Map(prev);
-          newEntries.forEach(e => next.set(e.id, 'collapsed'));
-          return next;
-        });
-        addToast('success', t('worldBook.skeletonGeneratedToast', { count: String(newEntries.length) }));
+      const result = await runBatchGenerate(entries);
+      if (result) {
+        // 进入草稿态：保留原始快照（重新生成用），不直接合入主列表
+        setPendingSnapshot(entries);
+        setPendingEntries(result.finalEntries);
+        // 隐藏原始流式预览（草稿条目列表已展示内容）
+        setAiStatus('idle');
+        setStreamText('');
+        const parts: string[] = [];
+        if (result.newCount > 0) parts.push(t('worldBook.entriesGeneratedToast', { count: String(result.newCount) }));
+        if (result.updateCount > 0) parts.push(`${result.updateCount} 条已有条目已更新`);
+        addToast('success', parts.length > 0 ? `${parts.join('，')}（请预览修改后导入）` : t('worldBook.generatedToDraft'));
       } else {
-        // ── Full mode: streaming with live preview ──
-        const result = await generateLorebookParsedStreaming(
-          effectiveCardName, effectiveCharacterContext, topic, batchCount,
-          (_chunk, fullText) => setStreamText(fullText),
-          consistencyRules || undefined, nsfw,
-          formatWorldAnchorForPrompt(worldAnchor) || undefined,
-        );
-        if (Array.isArray(result) && result.length > 0) {
-          const newEntries = result.map((item) => {
-            const base = createEmptyLorebookEntry();
-            const secondaryKeys = item.secondary_keys || [];
-            return {
-              ...base,
-              name: item.name || '',
-              keys: item.keys || [],
-              secondary_keys: secondaryKeys,
-              content: item.content || '',
-              comment: item.comment || item.name || '',
-              constant: item.constant ?? false,
-              selective: secondaryKeys.length > 0 ? item.selective ?? false : false,
-              insertion_order: item.insertion_order ?? 100,
-              position: item.position ?? 'after_char',
-              priority: item.priority ?? 50,
-              probability: item.probability ?? 100,
-              group: item.group || '',
-              group_weight: item.group_weight ?? 100,
-              selectiveLogic: item.selectiveLogic ?? 0,
-              role: item.role ?? 0,
-              depth: item.depth ?? 4,
-              exclude_recursion: item.exclude_recursion ?? false,
-              prevent_recursion: item.prevent_recursion ?? false,
-              use_regex: item.use_regex ?? false,
-              match_whole_words: item.match_whole_words ?? true,
-              sticky: item.sticky ?? 0,
-              cooldown: item.cooldown ?? 0,
-              delay: item.delay ?? 0,
-              ignore_budget: item.ignore_budget ?? false,
-            } as LorebookEntry;
-          });
-          handleUpdateEntries(sortLorebookEntries([...entries, ...newEntries]));
-          // Auto-collapse newly generated entries (show as collapsed)
-          setExpandLevels(prev => {
-            const next = new Map(prev);
-            newEntries.forEach(e => next.set(e.id, 'collapsed'));
-            return next;
-          });
-          addToast('success', t('worldBook.entriesGeneratedToast', { count: String(newEntries.length) }));
-        } else {
-          addToast('error', t('worldBook.parseFailedToast'));
-        }
+        addToast('error', t('worldBook.parseFailedToast'));
+        setAiStatus('error');
       }
-      setAiStatus('done');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : t('common.unknownError');
       setAiStatus('error');
@@ -376,6 +331,61 @@ export function StepWorldBook({
     } finally {
       setGenerating(false);
     }
+  };
+
+  /** LorebookReviewDialog 的「重新生成」回调：基于原始快照重跑，覆盖草稿 */
+  const handleRegenerate = async (): Promise<boolean> => {
+    if (!pendingSnapshot) return false;
+    setGenerating(true);
+    setAiStatus('generating');
+    setStreamText('');
+    try {
+      const result = await runBatchGenerate(pendingSnapshot);
+      if (result) {
+        setPendingEntries(result.finalEntries);
+        setAiStatus('idle');
+        setStreamText('');
+        addToast('success', t('worldBook.regeneratedToDraft'));
+        return true;
+      }
+      addToast('error', t('worldBook.parseFailedToast'));
+      setAiStatus('error');
+      return false;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : t('common.unknownError');
+      setAiStatus('error');
+      setStreamText(msg);
+      addToast('error', t('worldBook.generateFailedToast', { message: msg }));
+      return false;
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  /** LorebookReviewDialog 的「导入」回调：合入主列表，自动折叠新增条目（id 不在原快照中的） */
+  const handleImportDraft = (finalEntries: LorebookEntry[]) => {
+    handleUpdateEntries(finalEntries);
+    // 只折叠"新增"条目（id 不在生成前快照中的）；被 update 的条目保持原展开状态
+    const snapshotIds = new Set((pendingSnapshot ?? []).map((e) => e.id));
+    setExpandLevels(prev => {
+      const next = new Map(prev);
+      finalEntries.forEach((e) => {
+        if (!snapshotIds.has(e.id)) next.set(e.id, 'collapsed');
+      });
+      return next;
+    });
+    setPendingEntries(null);
+    setPendingSnapshot(null);
+    setAiStatus('idle');
+    setStreamText('');
+  };
+
+  /** LorebookReviewDialog 的「放弃」回调：清空草稿态，主列表不动 */
+  const handleDiscardDraft = () => {
+    setPendingEntries(null);
+    setPendingSnapshot(null);
+    setAiStatus('idle');
+    setStreamText('');
   };
 
   // ── AI Expand single entry ──────────────────────────────────────────
@@ -405,8 +415,6 @@ export function StepWorldBook({
         content: result.content,
         keys: result.keys,
         constant: result.strategy === 'constant',
-        // Mark skeleton as expanded so the badge flips from 🦴 → ✅.
-        skeletonExpanded: true,
       });
       addToast('success', t('worldBook.expandDone', { name: result.comment || entry.name }));
     } catch (err: unknown) {
@@ -530,11 +538,10 @@ export function StepWorldBook({
   const renderEntry = ({ entry, index }: { entry: LorebookEntry; index: number }) => {
     const protectedLabel = getProtectedEntryLabel(entry, index, stagedIndices);
     const ejsConfig = mvu?.enabled ? mvu.ejsConfigs.find(c => c.entryId === entry.id) : undefined;
-    const isUnexpandedSkeleton = entry.fromSkeleton === true && entry.skeletonExpanded !== true;
-    const isExpandedSkeleton = entry.fromSkeleton === true && entry.skeletonExpanded === true;
+    const isAnchorEntry = entry.fromAnchor === true;
     const tokenInfo = tokenBreakdown.entries[index];
     const showTokens = !!tokenInfo && tokenInfo.tokens > 0;
-    const showBadges = !!(protectedLabel || ejsConfig || isUnexpandedSkeleton || isExpandedSkeleton) || showTokens;
+    const showBadges = !!(protectedLabel || ejsConfig || isAnchorEntry) || showTokens;
     return (
       <div key={entry.id} className="relative">
         {showBadges && (
@@ -542,22 +549,13 @@ export function StepWorldBook({
             {protectedLabel && (
               <span className="rounded border px-1.5 py-0.5" style={{ borderColor: themeAlpha('primary', 30), backgroundColor: themeAlpha('primary', 10), color: C.primary }}>{protectedLabel}</span>
             )}
-            {isUnexpandedSkeleton && (
+            {isAnchorEntry && (
               <span
                 className="rounded border px-1.5 py-0.5"
                 style={{ borderColor: themeAlpha('warning', 40), backgroundColor: themeAlpha('warning', 12), color: C.warning }}
-                title={t('worldBook.skeletonBadgeTooltip')}
+                title={t('worldBook.anchorBadgeTooltip')}
               >
-                🦴 {t('worldBook.skeletonBadge')}
-              </span>
-            )}
-            {isExpandedSkeleton && (
-              <span
-                className="rounded border px-1.5 py-0.5"
-                style={{ borderColor: themeAlpha('success', 35), backgroundColor: themeAlpha('success', 10), color: C.success }}
-                title={t('worldBook.expandedBadgeTooltip')}
-              >
-                ✅ {t('worldBook.expandedBadge')}
+                ⚓ {t('worldBook.anchorBadge')}
               </span>
             )}
             {ejsConfig && (
@@ -600,27 +598,8 @@ export function StepWorldBook({
 
   return (
     <div>
-      {/* ── Skeleton ↔ Detail continuity banner ──────────────────────────
-          In skeleton mode: tell the user their setup flows to step 4.
-          In detail mode: the banner is removed per request — step 4 stands alone. */}
-      {mode === 'skeleton' ? (
-        onJumpToStep && (entries.length > 0 || effectiveWorldRules.trim()) ? (
-          <div className="mb-4 flex justify-end">
-            <button
-              type="button"
-              onClick={() => onJumpToStep(4)}
-              className="shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors"
-              style={{ borderColor: themeAlpha('success', 40), backgroundColor: themeAlpha('success', 12), color: C.success }}
-              title={t('worldBook.jumpToDetailTooltip')}
-            >
-              {t('worldBook.jumpToDetail')} →
-            </button>
-          </div>
-        ) : null
-      ) : null}
-
-      {/* Batch tools bar — hidden in skeleton mode */}
-      {mode !== 'skeleton' && entries.length > 0 && (
+      {/* Batch tools bar */}
+      {entries.length > 0 && (
         <div className="space-y-3 mb-4">
           <div className="flex flex-col gap-2 p-3 rounded-lg border sm:flex-row sm:flex-wrap sm:items-center" style={{ backgroundColor: surfaceA(40), borderColor: borderA(50) }}>
             <input
@@ -646,8 +625,8 @@ export function StepWorldBook({
         </div>
       )}
 
-      {/* AI Tools bar — hidden in skeleton mode */}
-      {mode !== 'skeleton' && entries.length > 0 && (
+      {/* AI Tools bar */}
+      {entries.length > 0 && (
         <div className="flex flex-col gap-2 mb-4 p-3 rounded-lg border sm:flex-row sm:flex-wrap sm:items-center" style={{ backgroundColor: themeAlpha('warning', 10), borderColor: themeAlpha('warning', 30) }}>
           <span className="text-xs font-medium shrink-0" style={{ color: C.warning }}>🧹 {t('worldBook.aiToolsLabel')}</span>
           <Button
@@ -685,42 +664,24 @@ export function StepWorldBook({
       {/* Header */}
       <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h2 className="text-xl font-bold" style={{ color: C.text }}>{mode === 'skeleton' ? t('worldBook.skeletonTitle') : t('worldBook.title')}</h2>
+          <h2 className="text-xl font-bold" style={{ color: C.text }}>{t('worldBook.title')}</h2>
           <p className="text-sm mt-1" style={{ color: C.secondary }}>
             {t('worldBook.headerCount', { count: String(entries.length) })}
           </p>
         </div>
         <div className="flex gap-2 shrink-0">
-          {mode !== 'skeleton' && (
-            <Button variant="secondary" onClick={addEntry}>+ {t('worldBook.addEntry')}</Button>
-          )}
+          <Button variant="secondary" onClick={addEntry}>+ {t('worldBook.addEntry')}</Button>
         </div>
       </div>
-
-      {/* World Anchor Panel - skeleton mode only */}
-      {mode === 'skeleton' && onWorldAnchorChange && (
-        <WorldAnchorPanel
-          anchor={worldAnchor ?? { era: '', coreRules: '', hardConstraints: '', tone: '' }}
-          onChange={onWorldAnchorChange}
-          defaultExpanded={true}
-        />
-      )}
 
       {/* AI Generate Panel - always visible */}
       <AIGeneratePanel
         topic={topic}
-        worldRules={effectiveWorldRules}
         generating={generating}
-        onTopicChange={setTopic}
-        onWorldRulesChange={(val) => setWorldRules(val)}
-        skeletonMode={mode === 'skeleton' ? true : skeletonMode}
-        skeletonCount={skeletonCount}
         batchCount={batchCount}
-        onSkeletonModeChange={mode === 'skeleton' ? () => {} : setSkeletonMode}
-        onSkeletonCountChange={setSkeletonCount}
+        onTopicChange={setTopic}
         onBatchCountChange={setBatchCount}
         onGenerate={handleBatchGenerate}
-        hideTopicAndSkeleton={mode !== 'skeleton'}
       />
 
       {/* Streaming progress panel */}
@@ -729,8 +690,26 @@ export function StepWorldBook({
           <AIProgressPanel
             status={aiStatus}
             text={streamText}
-            title={t(skeletonMode ? 'aiPanel.skeletonGenerationTitle' : 'aiPanel.worldBookGenerationTitle')}
+            title={t('aiPanel.worldBookGenerationTitle')}
             onClear={() => { setAiStatus('idle'); setStreamText(''); }}
+          />
+        </div>
+      )}
+
+      {/* 草稿态：批量生成后进入预览修改模式，导入时才合入主列表 */}
+      {pendingEntries && pendingEntries.length > 0 && (
+        <div className="mb-6">
+          <LorebookReviewDialog
+            draftEntries={pendingEntries}
+            onDraftChange={(entries) => setPendingEntries(entries)}
+            onImport={handleImportDraft}
+            onDiscard={handleDiscardDraft}
+            onRegenerate={handleRegenerate}
+            cardName={effectiveCardName}
+            anchorText={formatWorldAnchorForPrompt(worldAnchor) || ''}
+            nsfw={nsfw}
+            title={t('worldBook.reviewTitle')}
+            canRegenerate={true}
           />
         </div>
       )}
@@ -742,9 +721,7 @@ export function StepWorldBook({
         </div>
       )}
 
-      {/* ── Token 预算摘要 ────────────────────────────────────────────────
-          蓝灯（常驻）条目每一轮对话都会进提示词，这里给出「每轮固定开销」
-          与超阈值提示，避免一张卡在对话开始前就吃掉几千 token 而作者无感。 */}
+      {/* ── Token 预算摘要 ──────────────────────────────────────────────── */}
       {entries.length > 0 && (
         <div
           className="mb-3 rounded-lg border px-3 py-2.5"

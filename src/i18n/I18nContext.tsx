@@ -5,6 +5,7 @@ import {
   useCallback,
   useMemo,
   useEffect,
+  type Context,
   type ReactNode,
 } from 'react';
 import { translations, type Language, getNestedValue } from './translations';
@@ -27,7 +28,23 @@ export interface I18nContextValue {
   t: (key: string, params?: Record<string, string>) => string;
 }
 
-export const I18nContext = createContext<I18nContextValue | null>(null);
+// 关键：跨 HMR 复用同一个 Context 对象。
+// 本文件 import 了 translations.ts，因此每次编辑翻译文件都会触发本模块 HMR 重执行，
+// 默认会创建一个全新的 I18nContext。但 main.tsx 里的 <I18nProvider> 不会随之重渲染，
+// 仍持有旧 Context；而热更新后的组件（如 StepCharacters）读到的是新 Context，
+// useContext 拿不到 Provider → 返回 null → useTranslation 抛
+// "must be used within I18nProvider"，整页白屏。
+// 用 import.meta.hot.data 在模块重载间保留同一个 Context 实例即可避免该问题。
+const hotData = import.meta.hot?.data as
+  | { i18nContext?: Context<I18nContextValue | null> }
+  | undefined;
+
+export const I18nContext: Context<I18nContextValue | null> =
+  hotData?.i18nContext ?? createContext<I18nContextValue | null>(null);
+
+if (import.meta.hot) {
+  import.meta.hot.data.i18nContext = I18nContext;
+}
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Language>(() => detectDefaultLanguage());

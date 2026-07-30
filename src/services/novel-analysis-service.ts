@@ -625,8 +625,8 @@ export function parseAnalysisImportJson(raw: string): AnalysisImportPayload {
 export function analysisToLorebookEntries(analysis: NovelAnalysisResult): LorebookEntry[] {
   const entries: LorebookEntry[] = [];
 
-  // 1. Convert the AI-extracted lorebookEntries array — tag each with fromSkeleton
-  //    so the wizard shows a 🦴 badge and tracks AI-expand progress.
+  // 1. Convert the AI-extracted lorebookEntries array — tag each with fromAnchor
+  //    so the wizard shows a ⚓ badge (denotes AI-generated world framework entry).
   analysis.lorebookEntries.forEach((entry, index) => {
     const category = entry.category || '素材';
     const lore = createEmptyLorebookEntry();
@@ -643,8 +643,7 @@ export function analysisToLorebookEntries(analysis: NovelAnalysisResult): Lorebo
     lore.priority = categoryPriority(category);
     lore.prevent_recursion = true;
     lore.match_whole_words = true;
-    lore.fromSkeleton = true;
-    lore.skeletonExpanded = false;
+    lore.fromAnchor = true;
     if (lore.content.trim()) entries.push(lore);
   });
 
@@ -671,8 +670,7 @@ export function analysisToLorebookEntries(analysis: NovelAnalysisResult): Lorebo
     lore.priority = categoryPriority('物品');
     lore.prevent_recursion = true;
     lore.match_whole_words = true;
-    lore.fromSkeleton = true;
-    lore.skeletonExpanded = false;
+    lore.fromAnchor = true;
     entries.push(lore);
   });
 
@@ -719,8 +717,7 @@ export function analysisToLorebookEntries(analysis: NovelAnalysisResult): Lorebo
       depth: 3,
       priority: 95,
       probability: 100,
-      fromSkeleton: true,
-      skeletonExpanded: false,
+      fromAnchor: true,
     } as LorebookEntry;
     entries.push(dispatcher);
 
@@ -739,8 +736,7 @@ export function analysisToLorebookEntries(analysis: NovelAnalysisResult): Lorebo
         depth: 4,
         priority: 50,
         probability: 100,
-        fromSkeleton: true,
-        skeletonExpanded: false,
+        fromAnchor: true,
       } as LorebookEntry;
       entries.push(child);
     });
@@ -784,8 +780,7 @@ export function analysisToLorebookEntries(analysis: NovelAnalysisResult): Lorebo
       probability: 100,
       prevent_recursion: true,
       match_whole_words: true,
-      fromSkeleton: true,
-      skeletonExpanded: false,
+      fromAnchor: true,
     } as LorebookEntry;
     entries.push(lore);
   });

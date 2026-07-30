@@ -55,7 +55,6 @@ const DRAFT_TEXT_FIELDS = [
   'system_prompt',
   'post_history_instructions',
   'creator_notes',
-  'worldRules',
 ] as const;
 
 /**

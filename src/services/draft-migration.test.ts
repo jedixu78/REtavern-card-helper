@@ -29,12 +29,50 @@ describe('migrateDraftRecord', () => {
     }
   });
 
-  it('V4 迁移补默认 worldRules', () => {
+  it('V4 迁移补默认 worldAnchor（新字段）', () => {
     const result = migrateDraftRecord({ version: 4, data: {}, currentStep: 1 });
-    expect(result?.data.worldRules).toBe('');
-    // 已有值不被覆盖
-    const kept = migrateDraftRecord({ version: 4, data: { worldRules: 'x' }, currentStep: 1 });
-    expect(kept?.data.worldRules).toBe('x');
+    // V7：worldAnchor 默认值由 normalizeDraft 在加载时填充，迁移函数本身不补默认
+    // 这里只验证旧字段（era/hardConstraints/worldRules）不会残留
+    expect((result?.data as Record<string, unknown>).worldRules).toBeUndefined();
+    // 旧字段 hardConstraints 作为键名不应残留（已重命名为 constraints）
+    expect((result?.data.worldAnchor as Record<string, unknown> | undefined)?.hardConstraints).toBeUndefined();
+    // 已有 worldAnchor.era 时迁移到新结构的 era 字段
+    const withEra = migrateDraftRecord({
+      version: 4,
+      data: { worldAnchor: { era: '近未来', hardConstraints: '无魔法' } },
+      currentStep: 1,
+    });
+    expect(withEra?.data.worldAnchor).toEqual({ type: '', era: '近未来', culture: '', humanity: '', constraints: '无魔法' });
+  });
+
+  it('V6 迁移到 V7：worldAnchor 字段重命名 + worldRules/skeleton* 移除', () => {
+    const v6Data = {
+      worldAnchor: { era: '近未来', coreRules: 'r', hardConstraints: 'hc', tone: 't' },
+      worldRules: 'legacy rules',
+      skeletonTopic: 'topic',
+      skeletonCount: 10,
+      skeletonModeEnabled: false,
+      lorebookEntries: [
+        { id: 'a', fromSkeleton: true, skeletonExpanded: false, content: 'c' },
+        { id: 'b', fromSkeleton: false, skeletonExpanded: false, content: 'c2' },
+      ],
+    };
+    const result = migrateDraftRecord({ version: 6, data: v6Data, currentStep: 1 });
+    expect(result?.migratedFrom).toBe('V6');
+    // era → era, hardConstraints → constraints; coreRules/tone 丢弃; type/culture/humanity 补空
+    expect(result?.data.worldAnchor).toEqual({ type: '', era: '近未来', culture: '', humanity: '', constraints: 'hc' });
+    // worldRules / skeleton* 字段被删除
+    const dataAsRecord = result?.data as Record<string, unknown>;
+    expect(dataAsRecord.worldRules).toBeUndefined();
+    expect(dataAsRecord.skeletonTopic).toBeUndefined();
+    expect(dataAsRecord.skeletonCount).toBeUndefined();
+    expect(dataAsRecord.skeletonModeEnabled).toBeUndefined();
+    // lorebookEntries fromSkeleton/skeletonExpanded → fromAnchor
+    expect(result?.data.lorebookEntries?.[0].fromAnchor).toBe(true);
+    expect((result?.data.lorebookEntries?.[0] as unknown as Record<string, unknown>).fromSkeleton).toBeUndefined();
+    expect((result?.data.lorebookEntries?.[0] as unknown as Record<string, unknown>).skeletonExpanded).toBeUndefined();
+    // 非 skeleton 条目不会被错误标记 fromAnchor
+    expect(result?.data.lorebookEntries?.[1].fromAnchor).toBeUndefined();
   });
 
   it('V5 步号迁移：导出步 8 → 9，其余不变', () => {

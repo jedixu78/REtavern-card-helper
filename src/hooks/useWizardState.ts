@@ -54,12 +54,9 @@ function normalizeDraft(raw: Partial<DraftState>): DraftState {
     alternate_greetings: raw.alternate_greetings ?? defaults.alternate_greetings,
     mvu: raw.mvu ? { ...defaults.mvu, ...raw.mvu } : defaults.mvu,
     liveStreamChat: raw.liveStreamChat ? { ...defaults.liveStreamChat, ...raw.liveStreamChat } : defaults.liveStreamChat,
-    worldRules: raw.worldRules ?? defaults.worldRules,
-    // Shared UI state between Step 2 & Step 4 — fall back to defaults for old drafts
-    skeletonTopic: raw.skeletonTopic ?? defaults.skeletonTopic,
-    skeletonCount: raw.skeletonCount ?? defaults.skeletonCount,
+    worldAnchor: raw.worldAnchor ? { ...defaults.worldAnchor, ...raw.worldAnchor } : defaults.worldAnchor,
+    // Shared UI state — fall back to defaults for old drafts
     worldbookBatchCount: raw.worldbookBatchCount ?? defaults.worldbookBatchCount,
-    skeletonModeEnabled: raw.skeletonModeEnabled ?? defaults.skeletonModeEnabled,
   };
   return merged;
 }

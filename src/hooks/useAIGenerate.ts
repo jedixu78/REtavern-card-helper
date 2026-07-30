@@ -12,10 +12,10 @@ import { callAIWithPrompt, callAIWithPromptStreaming, cancelActiveAIRequests, ty
 import {
   CHARACTER_GENERATE_PROMPT,
   LOREBOOK_GENERATE_PROMPT,
-  LOREBOOK_SKELETON_PROMPT,
+  WORLD_ANCHOR_EXPAND_PROMPT,
+  LOREBOOK_REVISE_PROMPT,
   EXPAND_ENTRY_PROMPT,
   FIRST_MESSAGE_PROMPT,
-  WORLD_RULES_GENERATE_PROMPT,
   ORGANIZE_ENTRIES_PROMPT,
   GENERATE_KEYS_PROMPT,
   CARD_DIAGNOSIS_PROMPT,
@@ -37,7 +37,42 @@ import type {
   AIGeneratedLorebookEntry,
   AIOrganizeSuggestion,
   AIGeneratedKeys,
+  LorebookEntry,
 } from '../constants/defaults';
+
+/**
+ * Strip runtime-only fields (id, fromAnchor, expandNsfw, uiFlags, …) from a LorebookEntry
+ * before sending it to the AI in LOREBOOK_REVISE_PROMPT. Keeps only spec-relevant fields so
+ * the AI focuses on content, not internal bookkeeping.
+ */
+function sanitizeEntryForRevisePrompt(e: LorebookEntry) {
+  return {
+    name: e.name || '',
+    keys: e.keys || [],
+    secondary_keys: e.secondary_keys || [],
+    content: e.content || '',
+    comment: e.comment || '',
+    constant: e.constant ?? false,
+    selective: e.selective ?? false,
+    selectiveLogic: e.selectiveLogic ?? 0,
+    insertion_order: e.insertion_order ?? 100,
+    position: e.position ?? 'after_char',
+    priority: e.priority ?? 50,
+    probability: e.probability ?? 100,
+    group: e.group || '',
+    group_weight: e.group_weight ?? 100,
+    role: e.role ?? 0,
+    depth: e.depth ?? 4,
+    exclude_recursion: e.exclude_recursion ?? false,
+    prevent_recursion: e.prevent_recursion ?? false,
+    sticky: e.sticky ?? 0,
+    cooldown: e.cooldown ?? 0,
+    delay: e.delay ?? 0,
+    use_regex: e.use_regex ?? false,
+    match_whole_words: e.match_whole_words ?? true,
+    ignore_budget: e.ignore_budget ?? false,
+  };
+}
 
 /**
  * Post-process AI-generated character to fix common format issues:
@@ -199,60 +234,55 @@ export function useAIGenerate() {
   }, [generateCharacterStreaming]);
 
   /**
-   * Generate lorebook skeleton entries in batch.
-   * Returns ultra-compressed entries for fast iteration.
+   * Generate world-anchor-based world book entries (Step 2 - 锚定世界观).
+   * Replaces the old skeleton pipeline: AI directly produces 1 总纲 entry +
+   * N 子条目 as full lorebook entries, based on the 4 anchor fields.
+   * Returns parsed AIGeneratedLorebookEntry[] (caller maps to LorebookEntry).
    */
-  const generateLorebookSkeleton = useCallback(async (
+  const generateWorldAnchorEntriesStreaming = useCallback(async (
     cardName: string,
-    characterSummaries: string,
-    topic: string,
-    batchSize: number,
-    existingTitles: string,
-    rules?: string,
-    worldAnchor?: string,
-  ): Promise<Array<{ comment: string; content: string; keys: string[]; strategy: string }>> => {
-    const prompts = LOREBOOK_SKELETON_PROMPT(cardName, characterSummaries, topic, batchSize, existingTitles, rules, worldAnchor, lang);
-    const text = await callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.9, presetMode: 'force' });
-    const parsed = parseAIJson(text) as Array<{ comment?: string; content?: string; keys?: string[]; strategy?: string }> | null;
-    return (parsed || []).map((sk) => ({
-      comment: sk.comment || '未命名',
-      content: sk.content || '(待展开)',
-      keys: Array.isArray(sk.keys) ? sk.keys : [],
-      strategy: sk.strategy || 'normal',
-    }));
-  }, [lang]);
-
-  /**
-   * Generate lorebook skeleton entries in batch with streaming.
-   * Avoids Vercel serverless timeout by establishing SSE connection early.
-   */
-  const generateLorebookSkeletonStreaming = useCallback(async (
-    cardName: string,
-    characterSummaries: string,
-    topic: string,
-    batchSize: number,
+    anchorText: string,
     existingTitles: string,
     onChunk: StreamCallback,
-    rules?: string,
-    worldAnchor?: string,
-  ): Promise<Array<{ comment: string; content: string; keys: string[]; strategy: string }>> => {
-    const prompts = LOREBOOK_SKELETON_PROMPT(cardName, characterSummaries, topic, batchSize, existingTitles, rules, worldAnchor, lang);
-    const text = await callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.9, presetMode: 'force' });
-    const parsed = parseAIJson(text) as Array<{ comment?: string; content?: string; keys?: string[]; strategy?: string }> | null;
-    return (parsed || []).map((sk) => ({
-      comment: sk.comment || '未命名',
-      content: sk.content || '(待展开)',
-      keys: Array.isArray(sk.keys) ? sk.keys : [],
-      strategy: sk.strategy || 'normal',
-    }));
+    nsfw?: boolean,
+  ): Promise<AIGeneratedLorebookEntry[]> => {
+    const prompts = WORLD_ANCHOR_EXPAND_PROMPT(cardName, anchorText, existingTitles, nsfw, lang);
+    const text = await callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.85, presetMode: 'force' });
+    const parsed = parseAIJson(text) as AIGeneratedLorebookEntry[] | null;
+    return parsed || [];
   }, [lang]);
 
   /**
-   * Generate lorebook entries in batch.
+   * Revise a batch of draft lorebook entries based on the user's free-text modification
+   * request. Used by the "预览与修改" panel in Step 2 / Step 4: AI takes the current
+   * draft (LorebookEntry[]) + user request and outputs a FULL REPLACEMENT array.
+   * Caller regenerates ids and merges into draft state.
+   */
+  const reviseLorebookEntriesStreaming = useCallback(async (
+    cardName: string,
+    anchorText: string,
+    currentEntries: LorebookEntry[],
+    userRequest: string,
+    onChunk: StreamCallback,
+    nsfw?: boolean,
+  ): Promise<AIGeneratedLorebookEntry[]> => {
+    const sanitizedJson = JSON.stringify(
+      currentEntries.map(sanitizeEntryForRevisePrompt),
+      null,
+      2,
+    );
+    const prompts = LOREBOOK_REVISE_PROMPT(cardName, anchorText, sanitizedJson, userRequest, nsfw, lang);
+    const text = await callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.7, presetMode: 'force' });
+    const parsed = parseAIJson(text) as AIGeneratedLorebookEntry[] | null;
+    return parsed || [];
+  }, [lang]);
+
+  /**
+   * Generate lorebook entries in batch (Step 4 - 世界书细节).
    * @returns Raw text response
    */
-  const generateLorebook = useCallback(async (cardName: string, characterSummaries: string, topic: string, batchCount: number, rules?: string, nsfw?: boolean): Promise<string> => {
-    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, rules, nsfw, lang);
+  const generateLorebook = useCallback(async (cardName: string, characterSummaries: string, topic: string, batchCount: number, nsfw?: boolean, worldAnchor?: string, existingEntriesContext?: string): Promise<string> => {
+    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, nsfw, worldAnchor, lang, existingEntriesContext);
     return callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.8, presetMode: 'force' });
   }, [lang]);
 
@@ -265,11 +295,11 @@ export function useAIGenerate() {
     topic: string,
     batchCount: number,
     onChunk: StreamCallback,
-    rules?: string,
     nsfw?: boolean,
     worldAnchor?: string,
+    existingEntriesContext?: string,
   ): Promise<string> => {
-    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, rules, nsfw, worldAnchor, lang);
+    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, nsfw, worldAnchor, lang, existingEntriesContext);
     return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.8, presetMode: 'force' });
   }, [lang]);
 
@@ -277,8 +307,8 @@ export function useAIGenerate() {
    * Generate lorebook entries and parse as JSON array.
    * Returns entries with all V2 spec + SillyTavern runtime fields.
    */
-  const generateLorebookParsed = useCallback(async (cardName: string, characterSummaries: string, topic: string, batchCount: number, rules?: string, nsfw?: boolean) => {
-    const text = await generateLorebook(cardName, characterSummaries, topic, batchCount, rules, nsfw);
+  const generateLorebookParsed = useCallback(async (cardName: string, characterSummaries: string, topic: string, batchCount: number, nsfw?: boolean, worldAnchor?: string, existingEntriesContext?: string) => {
+    const text = await generateLorebook(cardName, characterSummaries, topic, batchCount, nsfw, worldAnchor, existingEntriesContext);
     const parsed = parseAIJson(text) as AIGeneratedLorebookEntry[] | null;
     return parsed || [];
   }, [generateLorebook]);
@@ -292,11 +322,11 @@ export function useAIGenerate() {
     topic: string,
     batchCount: number,
     onChunk: StreamCallback,
-    rules?: string,
     nsfw?: boolean,
     worldAnchor?: string,
+    existingEntriesContext?: string,
   ) => {
-    const text = await generateLorebookStreaming(cardName, characterSummaries, topic, batchCount, onChunk, rules, nsfw, worldAnchor);
+    const text = await generateLorebookStreaming(cardName, characterSummaries, topic, batchCount, onChunk, nsfw, worldAnchor, existingEntriesContext);
     const parsed = parseAIJson(text) as AIGeneratedLorebookEntry[] | null;
     return parsed || [];
   }, [generateLorebookStreaming]);
@@ -328,33 +358,6 @@ export function useAIGenerate() {
   ): Promise<string> => {
     const prompts = FIRST_MESSAGE_PROMPT(cardName, characterDescriptions, sceneHint, targetWordCount, worldbookContext, writingRequirements, lang);
     return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.9, presetMode: 'force', max_tokens: 12000 });
-  }, [lang]);
-
-  /** Generate worldview constraints / operation rules */
-  const generateWorldRules = useCallback(async (
-    cardName: string,
-    characterSummaries: string,
-    topic?: string,
-    existingRules?: string,
-    existingWorldbookContext?: string,
-    nsfw?: boolean,
-  ): Promise<string> => {
-    const prompts = WORLD_RULES_GENERATE_PROMPT(cardName, characterSummaries, topic, existingRules, existingWorldbookContext, nsfw, lang);
-    return callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.7, presetMode: 'force' });
-  }, [lang]);
-
-  /** Generate worldview constraints / operation rules with streaming */
-  const generateWorldRulesStreaming = useCallback(async (
-    cardName: string,
-    characterSummaries: string,
-    onChunk: StreamCallback,
-    topic?: string,
-    existingRules?: string,
-    existingWorldbookContext?: string,
-    nsfw?: boolean,
-  ): Promise<string> => {
-    const prompts = WORLD_RULES_GENERATE_PROMPT(cardName, characterSummaries, topic, existingRules, existingWorldbookContext, nsfw, lang);
-    return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.7, presetMode: 'force' });
   }, [lang]);
 
   /**
@@ -395,8 +398,8 @@ export function useAIGenerate() {
   }, [lang]);
 
   /**
-   * Expand a skeleton world book entry into a full detailed entry.
-   * Detects skeleton (content < 60 chars) and automatically adds expansion hint.
+   * Expand / rewrite a single world book entry into a fuller detailed version.
+   * Used by the "AI 展开" button on entries (no longer skeleton-specific).
    */
   const expandLorebookEntry = useCallback(async (
     entry: {
@@ -411,8 +414,7 @@ export function useAIGenerate() {
     nsfw?: boolean,
     worldAnchor?: string,
   ) => {
-    const isSkeleton = (entry.content || '').length < 120;
-    const prompts = EXPAND_ENTRY_PROMPT(entry, characterContext, isSkeleton, userRequirement, nsfw, worldAnchor, lang);
+    const prompts = EXPAND_ENTRY_PROMPT(entry, characterContext, userRequirement, nsfw, worldAnchor, lang);
     const text = await callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.8, presetMode: 'force' });
     const parsed = parseAIJson(text) as { comment?: string; content?: string; keys?: string[]; strategy?: string } | null;
 
@@ -511,16 +513,14 @@ export function useAIGenerate() {
     generateCharacterStreaming,
     generateCharacterParsed,
     generateCharacterParsedStreaming,
+    generateWorldAnchorEntriesStreaming,
+    reviseLorebookEntriesStreaming,
     generateLorebook,
     generateLorebookStreaming,
     generateLorebookParsed,
     generateLorebookParsedStreaming,
-    generateLorebookSkeleton,
-    generateLorebookSkeletonStreaming,
     generateFirstMessage,
     generateFirstMessageStreaming,
-    generateWorldRules,
-    generateWorldRulesStreaming,
     organizeEntries,
     generateEntryKeys,
     expandLorebookEntry,

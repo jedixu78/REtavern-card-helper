@@ -21,7 +21,7 @@
  *     2. 对AI隐藏状态栏：把占位符从 prompt 中删除（promptOnly）
  *   first_mes 末尾自动追加占位符，保证开场消息也会渲染状态栏。
  */
-import { generateId, MVU_LOREBOOK_ENTRY_NAMES, formatWorldAnchorForPrompt, REGEX_SCRIPT_NAMES, resolveBookName } from '../constants/defaults';
+import { generateId, MVU_LOREBOOK_ENTRY_NAMES, REGEX_SCRIPT_NAMES, resolveBookName } from '../constants/defaults';
 import type {
   WizardDraft,
   LorebookEntry,
@@ -943,40 +943,6 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
       });
     });
 
-  // ── World Anchor entry (constant, highest priority, before_char) ──────────
-  // Injected when the user has configured structured world constraints.
-  const anchorText = formatWorldAnchorForPrompt(draft.worldAnchor);
-  if (anchorText) {
-    entries.unshift({
-      id: 0, // will be re-indexed below
-      keys: [],
-      secondary_keys: [],
-      content: `[世界观绝对约束 - AI 不得偏离]\n${anchorText}`,
-      name: '世界锚',
-      enabled: true,
-      insertion_order: 0,
-      case_sensitive: false,
-      selective: false,
-      constant: true,
-      position: 'before_char',
-      priority: 200,
-      comment: '世界锚',
-      use_regex: false,
-      extensions: buildSTExtensions({
-        position: 'before_char',
-        displayIndex: 0,
-        probability: 100,
-        ignoreBudget: true,
-      }),
-    });
-    // Re-index all entry IDs after unshift
-    entries.forEach((e, i) => { e.id = i + 1; });
-    // 映射也要跟着 +1，否则 _meta.entryIds 会全部偏移一位
-    for (const [sourceId, exportedId] of exportedIdBySourceId) {
-      exportedIdBySourceId.set(sourceId, exportedId + 1);
-    }
-  }
-
   // ── MVU entries (embedded when MVU is enabled) ──────────────────────────
   // 入口条件：MVU 启用 且 (有 schemaTsContent 或 schemaSections 非空)
   // buildMvuScriptBundle 内部会兜底生成缺失的 schemaTs/initvar/updateRules
@@ -1785,12 +1751,8 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
     liveStreamChat: reconstructLiveStreamChat(data),
     // 导入字段直通层：卡片级未知字段（data / extensions / regex_scripts / character_book）
     _passthrough: collectCardPassthrough(data, dataExt, charBook, mvuEnabled, Boolean(reconstructLiveStreamChat(data)?.enabled)),
-    worldRules: '',
-    // Shared UI state between Step 2 & Step 4 — start with defaults when loading a card.
-    // (These are draft-only UI state, not persisted in the card itself.)
-    skeletonTopic: '',
-    skeletonCount: 8,
+    // Shared UI state — start with defaults when loading a card.
+    // (This is draft-only UI state, not persisted in the card itself.)
     worldbookBatchCount: 8,
-    skeletonModeEnabled: true,
   };
 }

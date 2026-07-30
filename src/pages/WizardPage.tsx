@@ -18,6 +18,7 @@ import { WizardShell } from '../components/wizard/WizardShell';
 // the step for the current view is fetched on demand and cached thereafter.
 const StepCardName = lazy(() => import('../components/wizard/StepCardName').then((m) => ({ default: m.StepCardName })));
 const StepCharacters = lazy(() => import('../components/wizard/StepCharacters').then((m) => ({ default: m.StepCharacters })));
+const StepWorldAnchor = lazy(() => import('../components/wizard/StepWorldAnchor').then((m) => ({ default: m.StepWorldAnchor })));
 const StepWorldBook = lazy(() => import('../components/wizard/StepWorldBook').then((m) => ({ default: m.StepWorldBook })));
 const StepFirstMessage = lazy(() => import('../components/wizard/StepFirstMessage').then((m) => ({ default: m.StepFirstMessage })));
 const StepMvuVariables = lazy(() => import('../components/wizard/StepMvuVariables').then((m) => ({ default: m.StepMvuVariables })));
@@ -520,13 +521,9 @@ ${e.content || ''}`)
         updates.tags = empty.tags;
         break;
       case 2:
-        // Skeleton world book — clear entries, rules, and shared UI state
-        updates.lorebookEntries = empty.lorebookEntries;
-        updates.worldRules = empty.worldRules ?? '';
-        updates.skeletonTopic = empty.skeletonTopic ?? '';
-        updates.skeletonCount = empty.skeletonCount ?? 8;
-        updates.worldbookBatchCount = empty.worldbookBatchCount ?? 8;
-        updates.skeletonModeEnabled = empty.skeletonModeEnabled ?? true;
+        // 锚定世界观 — 清空锚定字段 + 锚定产物条目
+        updates.worldAnchor = empty.worldAnchor;
+        updates.lorebookEntries = draft.lorebookEntries.filter((e) => e.fromAnchor !== true);
         break;
       case 3:
         // Characters
@@ -913,30 +910,17 @@ ${e.content || ''}`)
           />
         );
       case 2:
-        // ── Step 2: 世界书骨架（角色前，建立世界观框架）──
-        // Shared UI state (topic / counts / mode) is persisted to the draft so
-        // that navigating to step 4 picks up exactly what the user set up here.
+        // ── Step 2: 锚定世界观（角色前，建立世界观框架）──
+        // 用户按从大到小填 5 个锚定字段（类型/时代/文化背景/人文细节/硬性约束）+ 点 AI 锚定生成 → 1 条总纲 + N 条子条目
+        // 直接加入 lorebookEntries（标记 fromAnchor）。条目编辑在第 4 步。
         return (
-          <StepWorldBook
+          <StepWorldAnchor
+            cardName={draft.cardName}
+            worldAnchor={draft.worldAnchor ?? { type: '', era: '', culture: '', humanity: '', constraints: '' }}
+            onWorldAnchorChange={(worldAnchor) => updateDraft({ worldAnchor })}
             entries={draft.lorebookEntries}
             onEntriesChange={(entries) => updateDraft({ lorebookEntries: entries })}
-            worldRules={draft.worldRules ?? ''}
-            onWorldRulesChange={(worldRules) => updateDraft({ worldRules })}
             nsfw={draft.worldbookNsfw}
-            onNsfwChange={(nsfw) => updateDraft({ worldbookNsfw: nsfw })}
-            mode="skeleton"
-            cardName={draft.cardName}
-            topicValue={draft.skeletonTopic ?? ''}
-            onTopicChangePersist={(skeletonTopic) => updateDraft({ skeletonTopic })}
-            skeletonCountValue={draft.skeletonCount ?? 8}
-            onSkeletonCountPersist={(skeletonCount) => updateDraft({ skeletonCount })}
-            batchCountValue={draft.worldbookBatchCount ?? 8}
-            onBatchCountPersist={(worldbookBatchCount) => updateDraft({ worldbookBatchCount })}
-            skeletonModeValue={draft.skeletonModeEnabled ?? true}
-            onSkeletonModePersist={(skeletonModeEnabled) => updateDraft({ skeletonModeEnabled })}
-            worldAnchor={draft.worldAnchor}
-            onWorldAnchorChange={(worldAnchor) => updateDraft({ worldAnchor })}
-            onJumpToStep={handleQuickJump}
           />
         );
       case 3:
@@ -963,28 +947,15 @@ ${e.content || ''}`)
         );
       case 4:
         // ── Step 4: 世界书细节（参考已生成的角色补充细节）──
-        // Reads back the shared UI state persisted from step 2 so the topic,
-        // counts, and skeleton-mode toggle remain consistent across steps.
         return (
           <StepWorldBook
             entries={draft.lorebookEntries}
             onEntriesChange={(entries) => updateDraft({ lorebookEntries: entries })}
-            worldRules={draft.worldRules ?? ''}
-            onWorldRulesChange={(worldRules) => updateDraft({ worldRules })}
             nsfw={draft.worldbookNsfw}
             onNsfwChange={(nsfw) => updateDraft({ worldbookNsfw: nsfw })}
             characterContext={characterContext}
-            mode="detail"
             cardName={draft.cardName}
             mvu={draft.mvu}
-            topicValue={draft.skeletonTopic ?? ''}
-            onTopicChangePersist={(skeletonTopic) => updateDraft({ skeletonTopic })}
-            skeletonCountValue={draft.skeletonCount ?? 8}
-            onSkeletonCountPersist={(skeletonCount) => updateDraft({ skeletonCount })}
-            batchCountValue={draft.worldbookBatchCount ?? 8}
-            onBatchCountPersist={(worldbookBatchCount) => updateDraft({ worldbookBatchCount })}
-            skeletonModeValue={draft.skeletonModeEnabled ?? true}
-            onSkeletonModePersist={(skeletonModeEnabled) => updateDraft({ skeletonModeEnabled })}
             worldAnchor={draft.worldAnchor}
             onWorldAnchorChange={(worldAnchor) => updateDraft({ worldAnchor })}
             onJumpToStep={handleQuickJump}
