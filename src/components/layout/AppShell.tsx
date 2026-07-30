@@ -40,6 +40,10 @@ export function AppShell() {
     setSidebarCollapsed((prev) => !prev);
   }, []);
 
+  // 创建/编辑卡片（/wizard、/wizard/:id）时隐藏移动端顶部横栏，腾出纵向创作空间；
+  // 离开向导页自动恢复。向导页仍可从屏幕左缘右滑唤出侧栏，不影响导航。
+  const isWizardRoute = location.pathname.startsWith('/wizard');
+
   // Swipe gestures: left-edge swipe to open, left swipe on overlay to close
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     touchStartX.current = e.touches[0].clientX;
@@ -82,21 +86,23 @@ export function AppShell() {
 
       {/* Main content */}
       <main className="flex-1 h-full min-h-0 overflow-hidden flex flex-col" {...(sidebarOpen ? { inert: true } : {})}>
-        {/* Mobile header bar */}
-        <div className="md:hidden shrink-0 z-30 flex items-center gap-3 px-4 py-3 glass-header">
-          <button
-            onClick={toggleSidebar}
-            className="p-1.5 -ml-1 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--text-color)] hover:bg-[color-mix(in_srgb,var(--color-text-color)_5%,transparent)] transition-colors"
-            aria-label={t('sidebar.openMenu')}
-          >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <line x1="3" y1="6" x2="21" y2="6" />
-              <line x1="3" y1="12" x2="21" y2="12" />
-              <line x1="3" y1="18" x2="21" y2="18" />
-            </svg>
-          </button>
-          <span className="text-sm font-semibold" style={{ color: 'var(--color-primary)' }}>{t('common.appName')}</span>
-        </div>
+        {/* Mobile header bar — 向导页隐藏以腾出纵向空间 */}
+        {!isWizardRoute && (
+          <div className="md:hidden shrink-0 z-30 flex items-center gap-3 px-4 py-3 glass-header">
+            <button
+              onClick={toggleSidebar}
+              className="p-1.5 -ml-1 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--text-color)] hover:bg-[color-mix(in_srgb,var(--color-text-color)_5%,transparent)] transition-colors"
+              aria-label={t('sidebar.openMenu')}
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </button>
+            <span className="text-sm font-semibold" style={{ color: 'var(--color-primary)' }}>{t('common.appName')}</span>
+          </div>
+        )}
 
         <div className="w-full px-3 sm:px-5 lg:px-8 py-4 sm:py-7 flex-1 min-h-0 flex flex-col overflow-y-auto">
           <div key={location.key} className="route-transition flex-1 flex flex-col min-h-0">

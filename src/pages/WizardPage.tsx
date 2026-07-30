@@ -10,7 +10,6 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useWizardState } from '../hooks/useWizardState';
 import { useAIGenerate } from '../hooks/useAIGenerate';
 import { useToast } from '../components/shared/Toast';
-import { Button } from '../components/shared/Button';
 import { WizardShell } from '../components/wizard/WizardShell';
 
 // Each wizard step is a heavy component (some 600-900+ lines) but only one is
@@ -28,7 +27,7 @@ const StepPolishExport = lazy(() => import('../components/wizard/StepPolishExpor
 import { generateId, createEmptyDraft, createEmptyLorebookEntry, createEmptyMvuConfig, MVU_LOREBOOK_ENTRY_NAMES, resolveBookName } from '../constants/defaults';
 import type { LorebookEntry, WizardCharacter, WizardDraft } from '../constants/defaults';
 import { consumeAnalysisLorebookImport } from '../services/novel-analysis-service';
-import { cancelActiveAIRequests, AIGenerationCancelledError } from '../services/ai-service';
+import { AIGenerationCancelledError } from '../services/ai-service';
 import { getStagedTemplateById } from '../components/wizard/staged-templates';
 import { consumeWorkshopLorebookImport, mergeVariableBlueprintsIntoMvu } from '../services/novel-workshop-bridge';
 import { findStagedLorebookEntryIndices } from '../services/lorebook-predicates';
@@ -225,12 +224,8 @@ export function WizardPage() {
   } = useWizardState(editId, draftIdFromUrl);
 
   const [stepError, setStepError] = useState<string | null>(null);
-  const [batchGenerating, setBatchGenerating] = useState(false);
   const [generatingIndex, setGeneratingIndex] = useState<number | null>(null);
   const [modifyingIndex, setModifyingIndex] = useState<number | null>(null);
-  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
-  // 批量生成的停止标记：点「停止」后置 true，循环在下一轮退出（配合 cancelActiveAIRequests 中止在途请求）
-  const batchCancelRef = useRef(false);
   const [pngBuffer, setPngBuffer] = useState<ArrayBuffer | null>(null);
   const { generateCharacterParsedStreaming, modifyCharacterDescription, polishSelection } = useAIGenerate();
   const { addToast } = useToast();
@@ -451,22 +446,17 @@ ${e.content || ''}`)
    * 步骤条跳转入口：goToStep 向前跳会逐步校验、向后跳直接放行。
    * 从步骤 ≤3 跨到 >3 时同步角色→世界书条目（幂等，syncCharacterEntries
    * 按 entryIds/名称复用条目 ID）。注意顺序：先校验导航、成功后才注入——
-   * 否则校验失败也已执行注入副作用。批量生成期间禁用跳步（否则停止按钮
-   * 会离开视野，且并发注入有覆盖风险）。
+   * 否则校验失败也已执行注入副作用。
    */
   const handleStepClick = useCallback((step: number) => {
     if (step === currentStep) return;
-    if (batchGenerating) {
-      addToast('info', t('wizard.stepNavDisabledDuringBatch'));
-      return;
-    }
     const crossing = currentStep <= 3 && step > 3;
     const error = goToStep(step);
     setStepError(error);
     if (!error && crossing) {
       injectCharacterEntries();
     }
-  }, [currentStep, batchGenerating, addToast, injectCharacterEntries, goToStep, t]);
+  }, [currentStep, addToast, injectCharacterEntries, goToStep, t]);
 
   /**
    * 页内「前往步骤 X」快捷按钮（骨架↔细节来回翻、导出页回跳修改）：
@@ -476,16 +466,12 @@ ${e.content || ''}`)
    */
   const handleQuickJump = useCallback((step: number) => {
     if (step === currentStep) return;
-    if (batchGenerating) {
-      addToast('info', t('wizard.stepNavDisabledDuringBatch'));
-      return;
-    }
     if (currentStep <= 3 && step > 3) {
       injectCharacterEntries();
     }
     setCurrentStep(step);
     setStepError(null);
-  }, [currentStep, batchGenerating, addToast, injectCharacterEntries, setCurrentStep, t]);
+  }, [currentStep, addToast, injectCharacterEntries, setCurrentStep, t]);
 
   const handleSave = async () => {
     // 保存不经过「下一步」，所以这里必须自己做一次角色→世界书同步。
@@ -571,9 +557,6 @@ ${e.content || ''}`)
   const handleGenerateCharacter = async (index: number) => {
     const char = draft.characters[index];
     if (!char?.name?.trim()) return;
-    // 批量生成期间禁止启动并发的单角色生成：cancelActiveAIRequests 是全局全停，
-    // 点「停止批量」会把并发生成一起误杀并弹误导性的失败提示
-    if (batchGenerating) return;
 
     setGeneratingIndex(index);
     try {
@@ -640,163 +623,10 @@ ${e.content || ''}`)
     }
   };
 
-  // ── Batch generate all named characters (sequentially, one API call per character) ──
-  const handleBatchGenerateCharacters = async () => {
-    const toGenerate = draft.characters
-      .map((c, i) => ({ char: c, index: i }))
-      .filter(({ char }) => char.name?.trim());
-    if (toGenerate.length === 0) return;
-
-    // 批量生成会覆盖已有描述（版本历史只在内存，刷新即失）——有存量描述时先确认
-    const withExisting = toGenerate.filter(({ char }) => char.description?.trim());
-    if (withExisting.length > 0 && !window.confirm(
-      t('wizard.batchGenerateOverwriteConfirm', { count: String(withExisting.length) }),
-    )) {
-      return;
-    }
-
-    batchCancelRef.current = false;
-    setBatchGenerating(true);
-    setBatchProgress({ current: 0, total: toGenerate.length });
-
-    // Track generated descriptions locally so subsequent characters
-    // can see earlier ones' results (fixes stale closure over draft.characters)
-    const generatedDescriptions = new Map<string, string>();
-    // Pre-fill with existing descriptions from draft
-    for (const c of draft.characters) {
-      if (c.id && c.description?.trim()) {
-        generatedDescriptions.set(c.id, c.description);
-      }
-    }
-
-    let successCount = 0;
-    let errorCount = 0;
-
-    let cancelled = false;
-    try {
-      for (let i = 0; i < toGenerate.length; i++) {
-        if (batchCancelRef.current) {
-          cancelled = true;
-          break;
-        }
-        const { char, index } = toGenerate[i];
-        setBatchProgress({ current: i + 1, total: toGenerate.length });
-        setGeneratingIndex(index); // Show loading on individual character editor
-
-        try {
-          const hint = char.description || '';
-
-          // Use ref to read latest history (avoids stale closure in async loop)
-          const existingHistory = characterHistoryRef.current[char.id] || [];
-          if (existingHistory.length === 0) {
-            // First generation: save current input as "original"
-            if (hint.trim()) {
-              addToCharacterHistory(char.id, hint, true);
-            }
-          } else {
-            // Subsequent generations: save current content before replacing
-            if (hint.trim() && hint !== existingHistory[existingHistory.length - 1].content) {
-              addToCharacterHistory(char.id, hint, false);
-            }
-          }
-
-          // Build context from ALL other characters, using locally tracked
-          // generated descriptions (which include results from earlier in this loop)
-          const otherCharsContext = draft.characters
-            .filter((c, ci) => ci !== index && c.name?.trim())
-            .map(c => {
-              // Prefer the latest generated description from our local tracker
-              const desc = generatedDescriptions.get(c.id) || c.description || '';
-              return desc.trim() ? `### ${c.name}\n${desc.slice(0, 2000)}` : null;
-            })
-            .filter((s): s is string => s !== null)
-            .join('\n\n');
-
-          logger.log(`[批量生成] 开始生成角色 ${i + 1}/${toGenerate.length}: ${char.name}`);
-
-          const result = await generateCharacterParsedStreaming(
-            char.name,
-            hint,
-            (chunk, fullText) => {
-              streamingChunkCallbackRef.current.get(index)?.(chunk, fullText);
-            },
-            otherCharsContext || undefined,
-            char.alignment || undefined,
-            char.nsfw ?? false,
-          );
-
-          logger.log(`[批量生成] 角色 ${char.name} 生成完成, result type:`, typeof result, result ? 'truthy' : 'falsy');
-
-          if (result && typeof result === 'object') {
-            const parsed = result as Record<string, unknown>;
-            const newDesc = (parsed.description as string)?.trim();
-            if (newDesc && newDesc.length > 20) {
-              // Update character description (pre-generation content already saved to history above)
-              const updates: Partial<WizardCharacter> = { description: newDesc };
-              if (typeof parsed.constant === 'boolean') updates.constant = parsed.constant;
-              updateCharacter(index, updates);
-              // Store in local tracker for subsequent characters in this batch
-              generatedDescriptions.set(char.id, newDesc);
-              logger.log(`[批量生成] 角色 ${char.name} 描述已更新 (${newDesc.length} chars)`);
-              successCount++;
-            } else {
-              logger.warn(`[批量生成] 角色 ${char.name} AI 返回内容为空或过短:`, parsed.description);
-              addToast('error', t('wizard.batchGenerateSkippedEmpty', { name: char.name }));
-              errorCount++;
-            }
-          } else {
-            logger.warn(`[批量生成] 角色 ${char.name} 返回格式异常:`, result);
-            addToast('error', t('wizard.batchGenerateSkippedFormat', { name: char.name }));
-            errorCount++;
-          }
-        } catch (err: unknown) {
-          // 用户点了停止：不计入失败，直接结束循环
-          if (err instanceof AIGenerationCancelledError || batchCancelRef.current) {
-            cancelled = true;
-            break;
-          }
-          errorCount++;
-          const msg = err instanceof Error ? err.message : t('common.unknownError');
-          console.error(`[批量生成] 角色 ${char.name} 生成失败:`, err);
-          addToast('error', t('wizard.batchGenerateFailed', { name: char.name, message: msg }));
-        } finally {
-          setGeneratingIndex(null);
-        }
-
-        // Small delay between API calls to avoid rate limiting
-        if (i < toGenerate.length - 1) {
-          await new Promise(r => setTimeout(r, 500));
-        }
-      }
-    } catch (unexpectedErr) {
-      console.error('[批量生成] 意外错误，循环中断:', unexpectedErr);
-      addToast('error', t('wizard.batchGenerateInterrupted'));
-    }
-
-    setGeneratingIndex(null);
-    setBatchGenerating(false);
-    setBatchProgress({ current: 0, total: 0 });
-
-    if (cancelled) {
-      addToast('info', t('wizard.batchGenerateStopped', { count: String(successCount) }));
-    } else if (successCount > 0 && errorCount > 0) {
-      addToast('success', t('wizard.batchGeneratePartialSuccess', { success: String(successCount), error: String(errorCount) }));
-    } else if (successCount > 0) {
-      addToast('success', t('wizard.batchGenerateAllSuccess', { count: String(successCount) }));
-    }
-  };
-
-  /** 停止批量生成：中止在途 AI 请求并让循环在下一轮退出。 */
-  const handleStopBatchGenerate = () => {
-    batchCancelRef.current = true;
-    cancelActiveAIRequests();
-  };
-
   // ── Partial modification of character description ──────────────────
   const handleModifyCharacter = async (index: number, instructions: string, currentDescription: string) => {
     const char = draft.characters[index];
     if (!char?.name?.trim() || !currentDescription?.trim()) return;
-    if (batchGenerating) return; // 见 handleGenerateCharacter 的说明
 
     setModifyingIndex(index);
     try {
@@ -877,9 +707,6 @@ ${e.content || ''}`)
   const handleEntriesUpdate = useCallback((entries: LorebookEntry[]) => {
     updateDraft({ lorebookEntries: entries });
   }, [updateDraft]);
-
-  const namedCharacterCount = draft.characters.filter(c => c.name?.trim()).length;
-  const isGenerating = batchGenerating || generatingIndex !== null || modifyingIndex !== null;
 
   /** Full character context (name + description) for world book detail step.
    *  Must be called before any early return to keep hook order stable. */
@@ -1068,30 +895,12 @@ ${e.content || ''}`)
     }
   };
 
-  // Build extra actions for step 3 (characters).
-  // 批量生成进行中按钮变为可点击的「停止」——生成是真金白银的 token，必须可中断。
-  const step3ExtraActions = currentStep === 3 && namedCharacterCount > 0 ? (
-    batchGenerating ? (
-      <Button variant="secondary" onClick={handleStopBatchGenerate}>
-        ⏹ {t('wizard.batchGenerateStopButton', { current: String(batchProgress.current), total: String(batchProgress.total) })}
-      </Button>
-    ) : (
-      <Button
-        variant="secondary"
-        onClick={handleBatchGenerateCharacters}
-        disabled={isGenerating}
-      >
-        {t('wizard.batchGenerateAllCharacters')}
-      </Button>
-    )
-  ) : undefined;
-
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <h1 className="text-2xl font-bold mb-1 shrink-0" style={textPrimaryStyle}>
+      <h1 className="hidden md:block text-2xl font-bold mb-1 shrink-0" style={textPrimaryStyle}>
         {isEditMode ? t('wizard.titleEdit') : t('wizard.titleCreate')}
       </h1>
-      <p className="text-sm mb-6 shrink-0" style={textMutedStyle}>
+      <p className="hidden md:block text-sm mb-6 shrink-0" style={textMutedStyle}>
         {isEditMode ? t('wizard.subtitleEdit') : t('wizard.subtitleCreate')}
       </p>
 
@@ -1107,7 +916,6 @@ ${e.content || ''}`)
         onClearStep={handleClearCurrentStep}
         stepError={stepError}
         saving={saving}
-        extraActions={step3ExtraActions}
       >
         <Suspense
           fallback={

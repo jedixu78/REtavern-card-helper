@@ -71,7 +71,7 @@ export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, 
                         {isCompleted ? <Check size={12} strokeWidth={3} /> : step.id}
                       </button>
                       <span
-                        className={`mt-1 sm:mt-1.5 text-[10px] sm:text-[11px] font-medium whitespace-nowrap transition-colors duration-200 ${isCurrent ? 'text-primary-bright' : ''}`}
+                        className={`hidden md:block mt-1 sm:mt-1.5 text-[10px] sm:text-[11px] font-medium whitespace-nowrap transition-colors duration-200 ${isCurrent ? 'text-primary-bright' : ''}`}
                         style={{ color: isCurrent ? undefined : isCompleted ? 'color-mix(in srgb, var(--color-status-success) 70%, transparent)' : 'var(--color-text-muted)' }}
                       >
                         {t(stepKeys[step.id - 1])}
@@ -117,34 +117,36 @@ export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, 
           className="absolute bottom-0 left-0 right-0 z-30 pointer-events-none"
           aria-label={t('wizard.navigation')}
         >
-          <div className="flex flex-col sm:flex-row justify-between gap-1.5 sm:gap-3 pt-2 sm:pt-4">
-            {/* 移动端第 1 行：上一步 + 下一步/保存（两端对齐）。桌面端：上一步在左 */}
-            <Button variant="ghost" onClick={onPrev} disabled={isFirst} className="pointer-events-auto order-2 sm:order-1">
-              &larr; {t('common.previous')}
-            </Button>
-            <div className="flex items-center justify-end gap-1.5 sm:gap-3 sm:flex-wrap order-1 sm:order-2">
-              {/* 次要按钮：移动端用 sm 尺寸省空间，桌面端默认 md */}
+          <div className="flex flex-col gap-1.5 sm:gap-3 pt-2 sm:pt-4">
+            {/* 第 1 行：次要操作（清除 / 保存草稿 / 额外动作）。右对齐，窄屏自动换行 */}
+            <div className="flex items-center justify-end flex-wrap gap-1.5 sm:gap-3">
               {onClear && (
-                <Button variant="ghost" size="sm" onClick={onClear} disabled={saving} className="pointer-events-auto sm:px-4 sm:py-2 sm:text-sm">
+                <Button variant="ghost" size="sm" onClick={onClear} disabled={saving} className="pointer-events-auto">
                   {t('wizard.clearDraft')}
                 </Button>
               )}
               {onClearStep && (
-                <Button variant="ghost" size="sm" onClick={onClearStep} disabled={saving} className="pointer-events-auto sm:px-4 sm:py-2 sm:text-sm">
+                <Button variant="ghost" size="sm" onClick={onClearStep} disabled={saving} className="pointer-events-auto">
                   {t('wizard.clearCurrentStep')}
                 </Button>
               )}
               {onSaveDraft && (
-                <Button variant="secondary" size="sm" onClick={() => onSaveDraft()} disabled={saving} className="pointer-events-auto sm:px-4 sm:py-2 sm:text-sm">
+                <Button variant="secondary" size="sm" onClick={() => onSaveDraft()} disabled={saving} className="pointer-events-auto">
                   {t('wizard.saveDraft')}
                 </Button>
               )}
               {extraActions && <span className="pointer-events-auto inline-flex">{extraActions}</span>}
               {alwaysShowSave && !isLast && (
-                <Button variant="secondary" size="sm" onClick={onSave} disabled={saving} className="pointer-events-auto sm:px-4 sm:py-2 sm:text-sm">
+                <Button variant="secondary" size="sm" onClick={onSave} disabled={saving} className="pointer-events-auto">
                   {saving ? t('common.saving') : t('wizard.saveCard')}
                 </Button>
               )}
+            </div>
+            {/* 第 2 行：导航按钮。上一步在左、下一步/保存在右，两端对齐贴底，拇指易触达 */}
+            <div className="flex items-center justify-between gap-1.5 sm:gap-3">
+              <Button variant="ghost" onClick={onPrev} disabled={isFirst} className="pointer-events-auto">
+                &larr; {t('common.previous')}
+              </Button>
               {/* 主操作保持默认尺寸显眼 */}
               {isLast ? (
                 <Button onClick={onSave} disabled={saving} className="pointer-events-auto">
