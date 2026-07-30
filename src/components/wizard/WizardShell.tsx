@@ -20,7 +20,6 @@ interface WizardShellProps {
   alwaysShowSave?: boolean;
   onSaveDraft?: () => void;
   onClear?: () => void;
-  onClearStep?: () => void;
   stepError: string | null;
   saving: boolean;
   extraActions?: React.ReactNode;
@@ -28,7 +27,7 @@ interface WizardShellProps {
   children: React.ReactNode;
 }
 
-export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, alwaysShowSave, onSaveDraft, onClear, onClearStep, stepError, saving, extraActions, hideBottomNav, children }: WizardShellProps) {
+export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, alwaysShowSave, onSaveDraft, onClear, stepError, saving, extraActions, hideBottomNav, children }: WizardShellProps) {
   const { t } = useTranslation();
   const isFirst = currentStep === 1;
   const isLast = currentStep === WIZARD_STEPS.length;
@@ -114,37 +113,60 @@ export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, 
           className="absolute bottom-0 left-0 right-0 z-30 pointer-events-none"
           aria-label={t('wizard.navigation')}
         >
-          <div className="flex flex-col gap-1.5 sm:gap-3 pt-2 sm:pt-4">
-            {/* 第 1 行：次要操作（清除 / 保存草稿 / 额外动作）。右对齐，窄屏自动换行 */}
-            <div className="flex items-center justify-end flex-wrap gap-1.5 sm:gap-3">
+          {/* 移动端：单行，按钮均匀分布，窄屏自动换行 */}
+          <div className="sm:hidden flex items-center justify-between flex-wrap gap-1.5 pt-2">
+            <Button variant="ghost" size="sm" onClick={onPrev} disabled={isFirst} className="pointer-events-auto">
+              &larr; {t('common.previous')}
+            </Button>
+            {onClear && (
+              <Button variant="ghost" size="sm" onClick={onClear} disabled={saving} className="pointer-events-auto">
+                {t('wizard.clearDraft')}
+              </Button>
+            )}
+            {onSaveDraft && (
+              <Button variant="secondary" size="sm" onClick={() => onSaveDraft()} disabled={saving} className="pointer-events-auto">
+                {t('wizard.saveDraft')}
+              </Button>
+            )}
+            {extraActions && <span className="pointer-events-auto inline-flex">{extraActions}</span>}
+            {alwaysShowSave && !isLast && (
+              <Button variant="secondary" size="sm" onClick={onSave} disabled={saving} className="pointer-events-auto">
+                {saving ? t('common.saving') : t('wizard.saveCard')}
+              </Button>
+            )}
+            {isLast ? (
+              <Button size="sm" onClick={onSave} disabled={saving} className="pointer-events-auto">
+                {saving ? t('common.saving') : t('wizard.saveCard')}
+              </Button>
+            ) : (
+              <Button size="sm" onClick={onNext} className="pointer-events-auto">
+                {t('common.next')} &rarr;
+              </Button>
+            )}
+          </div>
+
+          {/* 桌面端：单行。上一步在左，次要操作 + 下一步在右，统一尺寸 */}
+          <div className="hidden sm:flex items-center justify-between gap-3 pt-4">
+            <Button variant="ghost" onClick={onPrev} disabled={isFirst} className="pointer-events-auto">
+              &larr; {t('common.previous')}
+            </Button>
+            <div className="flex items-center gap-3">
               {onClear && (
-                <Button variant="ghost" size="sm" onClick={onClear} disabled={saving} className="pointer-events-auto">
+                <Button variant="ghost" onClick={onClear} disabled={saving} className="pointer-events-auto">
                   {t('wizard.clearDraft')}
                 </Button>
               )}
-              {onClearStep && (
-                <Button variant="ghost" size="sm" onClick={onClearStep} disabled={saving} className="pointer-events-auto">
-                  {t('wizard.clearCurrentStep')}
-                </Button>
-              )}
               {onSaveDraft && (
-                <Button variant="secondary" size="sm" onClick={() => onSaveDraft()} disabled={saving} className="pointer-events-auto">
+                <Button variant="secondary" onClick={() => onSaveDraft()} disabled={saving} className="pointer-events-auto">
                   {t('wizard.saveDraft')}
                 </Button>
               )}
               {extraActions && <span className="pointer-events-auto inline-flex">{extraActions}</span>}
               {alwaysShowSave && !isLast && (
-                <Button variant="secondary" size="sm" onClick={onSave} disabled={saving} className="pointer-events-auto">
+                <Button variant="secondary" onClick={onSave} disabled={saving} className="pointer-events-auto">
                   {saving ? t('common.saving') : t('wizard.saveCard')}
                 </Button>
               )}
-            </div>
-            {/* 第 2 行：导航按钮。上一步在左、下一步/保存在右，两端对齐贴底，拇指易触达 */}
-            <div className="flex items-center justify-between gap-1.5 sm:gap-3">
-              <Button variant="ghost" onClick={onPrev} disabled={isFirst} className="pointer-events-auto">
-                &larr; {t('common.previous')}
-              </Button>
-              {/* 主操作保持默认尺寸显眼 */}
               {isLast ? (
                 <Button onClick={onSave} disabled={saving} className="pointer-events-auto">
                   {saving ? t('common.saving') : t('wizard.saveCard')}

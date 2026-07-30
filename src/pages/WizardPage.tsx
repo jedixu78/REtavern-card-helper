@@ -24,13 +24,12 @@ const StepMvuVariables = lazy(() => import('../components/wizard/StepMvuVariable
 const StepStagedMode = lazy(() => import('../components/wizard/StepStagedMode').then((m) => ({ default: m.StepStagedMode })));
 const StepLiveStreamChat = lazy(() => import('../components/wizard/StepLiveStreamChat').then((m) => ({ default: m.StepLiveStreamChat })));
 const StepPolishExport = lazy(() => import('../components/wizard/StepPolishExport').then((m) => ({ default: m.StepPolishExport })));
-import { generateId, createEmptyDraft, createEmptyLorebookEntry, createEmptyMvuConfig, MVU_LOREBOOK_ENTRY_NAMES, resolveBookName } from '../constants/defaults';
-import type { LorebookEntry, WizardCharacter, WizardDraft } from '../constants/defaults';
+import { generateId, createEmptyLorebookEntry, createEmptyMvuConfig, resolveBookName } from '../constants/defaults';
+import type { LorebookEntry, WizardCharacter } from '../constants/defaults';
 import { consumeAnalysisLorebookImport } from '../services/novel-analysis-service';
 import { AIGenerationCancelledError } from '../services/ai-service';
 import { getStagedTemplateById } from '../components/wizard/staged-templates';
 import { consumeWorkshopLorebookImport, mergeVariableBlueprintsIntoMvu } from '../services/novel-workshop-bridge';
-import { findStagedLorebookEntryIndices } from '../services/lorebook-predicates';
 import { escapeEjsDoubleQuoted } from '../services/staged-lorebook-builder';
 import { useTranslation } from '../i18n/I18nContext';
 import { logger } from '../services/logger';
@@ -494,65 +493,6 @@ ${e.content || ''}`)
     }
   };
 
-  /** Reset only the fields belonging to the current wizard step. */
-  const handleClearCurrentStep = () => {
-    if (!window.confirm(t('wizard.clearCurrentStepConfirm'))) return;
-
-    const empty = createEmptyDraft();
-    const updates: Partial<WizardDraft> = {};
-
-    switch (currentStep) {
-      case 1:
-        updates.cardName = empty.cardName;
-        updates.tags = empty.tags;
-        break;
-      case 2:
-        // 锚定世界观 — 清空锚定字段 + 锚定产物条目
-        updates.worldAnchor = empty.worldAnchor;
-        updates.lorebookEntries = draft.lorebookEntries.filter((e) => e.fromAnchor !== true);
-        break;
-      case 3:
-        // Characters
-        updates.characters = empty.characters;
-        break;
-      case 4:
-        // World book detail
-        updates.lorebookEntries = empty.lorebookEntries;
-        break;
-      case 5:
-        // MVU variables
-        updates.mvu = empty.mvu;
-        updates.lorebookEntries = draft.lorebookEntries.filter(
-          (e) => !MVU_LOREBOOK_ENTRY_NAMES.includes(e.name) && !MVU_LOREBOOK_ENTRY_NAMES.includes(e.comment || ''),
-        );
-        break;
-      case 6:
-        // Staged mode
-        updates.stagedMode = empty.stagedMode;
-        updates.worldbookNsfw = empty.worldbookNsfw;
-        {
-          const stagedIndices = findStagedLorebookEntryIndices(draft.lorebookEntries);
-          updates.lorebookEntries = draft.lorebookEntries.filter((_, idx) => !stagedIndices.has(idx));
-        }
-        break;
-      case 7:
-        // First message
-        updates.firstMessage = empty.firstMessage;
-        updates.alternate_greetings = empty.alternate_greetings;
-        updates.post_history_instructions = empty.post_history_instructions;
-        updates.creator_notes = empty.creator_notes;
-        break;
-      case 8:
-      default:
-        // 导出页无内部状态需要清空
-        return;
-    }
-
-    updateDraft(updates);
-    setStepError(null);
-    addToast('success', t('wizard.clearCurrentStepSuccess'));
-  };
-
   // ── Generate a specific character by index ───────────────
   const handleGenerateCharacter = async (index: number) => {
     const char = draft.characters[index];
@@ -913,7 +853,6 @@ ${e.content || ''}`)
         alwaysShowSave={isEditMode}
         onSaveDraft={isEditMode ? undefined : saveDraftNow}
         onClear={isEditMode ? undefined : handleClear}
-        onClearStep={handleClearCurrentStep}
         stepError={stepError}
         saving={saving}
       >
