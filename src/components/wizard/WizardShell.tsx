@@ -88,9 +88,6 @@ export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, 
               })}
             </div>
           </div>
-          <p className="md:hidden text-center text-xs mt-1" style={{ color: 'color-mix(in srgb, var(--text-color) 40%, transparent)' }}>
-            {t('wizard.stepIndicator', { current: String(currentStep), total: String(WIZARD_STEPS.length) })}
-          </p>
         </div>
 
         {/* Step content — internal scroll area, extra bottom padding prevents content being hidden under the transparent nav */}
