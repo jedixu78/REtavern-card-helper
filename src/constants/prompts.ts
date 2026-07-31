@@ -221,7 +221,7 @@ export const LOREBOOK_GENERATE_PROMPT = (cardName: string, characterSummaries: s
 ${nsfwBlock}
 
 请只输出 JSON 数组，不要加 markdown 代码块，不要加任何解释。`,
-  user: `为以下角色卡生成 ${batchCount} 条世界书条目：
+  user: `为以下角色卡生成 1~${batchCount} 条世界书条目（根据主题实际可写内容决定条数，不必凑满，1 条也可以）：
 
 卡片名称：${cardName}
 角色：${characterSummaries}

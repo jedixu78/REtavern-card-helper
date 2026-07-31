@@ -56,7 +56,7 @@ export function AIGeneratePanel({
           style={{ backgroundColor: C.inputBg }}
         />
         <div className="flex gap-1.5">
-          {[4, 8, 12, 16].map((n) => (
+          {[1, 4, 8, 12, 16].map((n) => (
             <button
               key={n}
               onClick={() => onBatchCountChange(n)}

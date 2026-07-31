@@ -185,7 +185,7 @@ const CHECK_ITEMS: CheckItem[] = [
     severity: 'suggestion',
     jumpStep: 4,
     optimizeFields: ['lorebookEntries'],
-    threshold: '≥5 条',
+    threshold: '≥1 条',
     applicable: () => true,
     check: (d) => {
       const stagedIndices = getStagedIndices(d);
@@ -193,9 +193,9 @@ const CHECK_ITEMS: CheckItem[] = [
         (e, idx) => e.enabled && !isProtectedLorebookEntry(e, idx, stagedIndices),
       ).length;
       return {
-        passed: count >= 5,
+        passed: count >= 1,
         actual: `${count} 条`,
-        fixHint: count >= 5 ? '' : `当前 ${count} 条用户条目（已排除 MVU/分阶段系统条目），建议补充至 5 条以上以丰富世界观`,
+        fixHint: count >= 1 ? '' : `当前 0 条用户条目（已排除 MVU/分阶段系统条目），建议至少生成 1 条世界书条目`,
       };
     },
   },
