@@ -116,16 +116,16 @@ export interface ReflectedSection {
 /** 按路径关键词映射语义色（绿黄红是通用语言，资源条/徽章三态着色） */
 function varAccent(path: string): string {
   const p = path.toLowerCase();
-  if (/hp|生命|血量|健康|体力/.test(path) || p.includes('health')) return 'var(--sb-danger)';
-  if (/mp|魔力|法力|灵力|查克拉/.test(path) || p.includes('mana')) return 'var(--sb-accent)';
-  if (/好感|亲密|爱意|情感|羁绊|信任|倾向|天平/.test(path)) return 'var(--sb-good)';
-  if (/金币|金钱|财富|灵石|资源|经验/.test(path) || p.includes('gold') || p.includes('exp')) return 'var(--sb-warn)';
-  if (/威胁|危险|敌意|心魔|感染|出血/.test(path)) return 'var(--sb-danger)';
+  if (/hp|生命|血量|健康|体力/.test(p) || p.includes('health')) return 'var(--sb-danger)';
+  if (/mp|魔力|法力|灵力|查克拉/.test(p) || p.includes('mana')) return 'var(--sb-accent)';
+  if (/好感|亲密|爱意|情感|羁绊|信任|倾向|天平/.test(p)) return 'var(--sb-good)';
+  if (/金币|金钱|财富|灵石|资源|经验/.test(p) || p.includes('gold') || p.includes('exp')) return 'var(--sb-warn)';
+  if (/威胁|危险|敌意|心魔|感染|出血/.test(p)) return 'var(--sb-danger)';
   // 分阶段模板轴变量语义色
-  if (/修为|境界|修仙|灵根/.test(path)) return 'var(--sb-good)';      // 成长突破型：绿（正向递增）
-  if (/污染|堕落|腐化|黑化/.test(path)) return 'var(--sb-danger)';    // 黑化堕落型：红（负面递增）
-  if (/真相|调查|推理|线索/.test(path)) return 'var(--sb-warn)';      // 悬疑推理型：黄（揭露度）
-  if (/进度|主线|剧情/.test(path)) return 'var(--sb-accent)';         // 冒险剧情型：主题色（中性推进）
+  if (/修为|境界|修仙|灵根/.test(p)) return 'var(--sb-good)';      // 成长突破型：绿（正向递增）
+  if (/污染|堕落|腐化|黑化/.test(p)) return 'var(--sb-danger)';    // 黑化堕落型：红（负面递增）
+  if (/真相|调查|推理|线索/.test(p)) return 'var(--sb-warn)';      // 悬疑推理型：黄（揭露度）
+  if (/进度|主线|剧情/.test(p)) return 'var(--sb-accent)';         // 冒险剧情型：主题色（中性推进）
   return 'var(--sb-accent)';
 }
 
@@ -134,7 +134,7 @@ function classifyVariable(v: MvuVariable): VarKind {
   const z = v.zodType;
   if (z === 'z.coerce.number()') {
     // 有合理范围（跨度 ≤ 1000）→ 资源条；否则纯数值
-    if (v.range && (v.range.max - v.range.min) <= 1000) return 'bar';
+    if (v.range && v.range.max > v.range.min && (v.range.max - v.range.min) <= 1000) return 'bar';
     return 'number';
   }
   if (z.startsWith('z.enum(')) return 'enum';
@@ -225,8 +225,10 @@ function populateJsForVar(v: ReflectedVar): string {
     if(!el) return;
     var pct = Math.max(0, Math.min(100, ((v - ${min}) / (${max - min})) * 100));
     var fill = el.querySelector('.sb-bar-fill');
+    if(!fill) return;
     fill.style.width = pct + '%';
-    el.querySelector('.sb-bar-text').textContent = v + ' / ' + ${max};
+    var txt = el.querySelector('.sb-bar-text');
+    if(txt) txt.textContent = v + ' / ' + ${max};
     ${unidirectional ? `fill.classList.toggle('sb-danger', pct <= 30);
     fill.classList.toggle('sb-warn', pct > 30 && pct <= 60);` : ''}
   })();`;
@@ -234,7 +236,9 @@ function populateJsForVar(v: ReflectedVar): string {
     case 'number':
       return `  (function(){
     var el = document.getElementById(${JSON.stringify(v.elId)});
-    if(el) el.querySelector('.sb-val').textContent = ${get};
+    if(!el) return;
+    var val = el.querySelector('.sb-val');
+    if(val) val.textContent = ${get};
   })();`;
     case 'enum':
       return `  (function(){
@@ -250,6 +254,7 @@ function populateJsForVar(v: ReflectedVar): string {
     var el = document.getElementById(${JSON.stringify(v.elId)});
     if(!el) return;
     var b = el.querySelector('.sb-badge');
+    if(!b) return;
     b.textContent = v ? '是' : '否';
     b.classList.toggle('sb-bad', !!v);
     b.classList.toggle('sb-ok', !v);
@@ -260,14 +265,15 @@ function populateJsForVar(v: ReflectedVar): string {
     var el = document.getElementById(${JSON.stringify(v.elId)});
     if(!el) return;
     var ul = el.querySelector('.sb-list');
+    if(!ul) return;
     var html = '';
     if (Array.isArray(v)) {
-      v.forEach(function(item){ html += '<li>' + (typeof item === 'object' ? JSON.stringify(item) : item) + '</li>'; });
+      v.forEach(function(item){ html += '<li>' + escH(typeof item === 'object' ? JSON.stringify(item) : item) + '</li>'; });
     } else if (v && typeof v === 'object') {
       Object.entries(v).forEach(function(e){
         var name = e[0], d = e[1];
         var qty = (d && typeof d === 'object' && d['数量'] != null) ? ' ×' + d['数量'] : (typeof d === 'object' ? '' : ' ' + d);
-        html += '<li><span>' + name + '</span><span>' + qty + '</span></li>';
+        html += '<li><span>' + escH(name) + '</span><span>' + escH(qty) + '</span></li>';
       });
     }
     ul.innerHTML = html || '<li class="sb-empty">空</li>';
@@ -276,7 +282,9 @@ function populateJsForVar(v: ReflectedVar): string {
     default:
       return `  (function(){
     var el = document.getElementById(${JSON.stringify(v.elId)});
-    if(el) el.querySelector('.sb-val').textContent = ${get};
+    if(!el) return;
+    var val = el.querySelector('.sb-val');
+    if(val) val.textContent = ${get};
   })();`;
   }
 }
@@ -288,6 +296,7 @@ function buildRuntimeScript(reflected: ReflectedSection[], opts: StatusBarGenera
   const previewValues = JSON.stringify(opts.previewValues ?? {}).replace(/<\/script/gi, '<\\/script');
   return `<script type="module">
 var sbPreviewValues = ${previewValues};
+function escH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 // 自包含路径读取（不依赖 lodash）
 function sbGet(obj, path, def) {
   if (Object.prototype.hasOwnProperty.call(sbPreviewValues, path)) return sbPreviewValues[path];
@@ -323,8 +332,8 @@ async function sbInit() {
   });
 }
 if (typeof document !== 'undefined') {
-  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', sbInit); }
-  else { sbInit(); }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', function(){ sbInit().catch(function(e){console.error('[StatusBar]',e);}); }); }
+  else { sbInit().catch(function(e){console.error('[StatusBar]',e);}); }
 }
 </script>`;
 }
@@ -537,6 +546,6 @@ export function generateStatusBarHtml(
 ): string {
   const template = getStatusBarTemplateById(templateId);
   if (!template) return '';
-  const merged: StatusBarGenerateOptions = { themeId: opts.themeId || template.defaultTheme, ...opts };
+  const merged: StatusBarGenerateOptions = { ...opts, themeId: opts.themeId || template.defaultTheme };
   return template.generate(sections, merged);
 }

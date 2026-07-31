@@ -114,7 +114,7 @@ function buildReplacement(
   for (const trim of trimStrings) {
     if (trim) matched = matched.split(trim).join('');
   }
-  return replaceString.replace(/\{\{match\}\}|\$(\d)/gi, (whole, digit?: string) => {
+  return replaceString.replace(/\{\{match\}\}|\$(\d{1,2})/g, (whole, digit?: string) => {
     if (digit === undefined) return matched;
     const index = Number(digit);
     if (index === 0) return matched;
@@ -177,7 +177,7 @@ export function applyRegexScripts(
 
 /** 未被围栏包住、但明显是 HTML 块的启发式判定（避免把 <怒> 之类的角色扮演文本误判）。 */
 const RAW_HTML_BLOCK =
-  /<\s*(div|section|table|style|script|figure|article|main|header|footer|nav|aside|details|iframe)\b/i;
+  /<\s*(div|section|table|style|script|figure|article|main|header|footer|nav|aside|details|iframe|span|p|ul|ol|li|svg|canvas|form|button|a|h[1-6]|pre|code|blockquote|dl|dt|dd|summary|picture|video|audio|source|template|slot)\b/i;
 
 export function messageContainsHtml(text: string): boolean {
   if (!text) return false;
@@ -186,9 +186,9 @@ export function messageContainsHtml(text: string): boolean {
 }
 
 /** 已闭合的 ```html 围栏 */
-const CLOSED_HTML_FENCE = /```[ \t]*html[ \t]*\r?\n([\s\S]*?)```/gi;
+const CLOSED_HTML_FENCE = /```[ \t]*html[ \t]*\r?\n([\s\S]*?)\r?\n```/gi;
 /** 未闭合的 ```html 围栏（AI 回复被截断时会出现），其后内容仍按 HTML 处理 */
-const OPEN_HTML_FENCE = /```[ \t]*html[ \t]*\r?\n?([\s\S]*)$/i;
+const OPEN_HTML_FENCE = /```[ \t]*html[ \t]*\r?\n([\s\S]*)$/i;
 
 /**
  * 把（已应用正则脚本的）消息切成纯文本段与 HTML 段。

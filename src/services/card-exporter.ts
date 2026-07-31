@@ -481,7 +481,7 @@ function appendPlaceholders(draft: WizardDraft, base: string): string {
   // 只要状态栏已启用且存在模板/样式选择，就保留占位符；HTML 可在导出前由模板重新生成。
   const mvuStatusBarActive = draft.mvu?.enabled &&
     draft.mvu.statusBarStyle !== 'none' &&
-    (draft.mvu.statusBarHtml?.trim() || draft.mvu.statusBarStyle);
+    Boolean(draft.mvu.statusBarHtml?.trim());
   if (mvuStatusBarActive) {
     if (!result.includes(STATUS_BAR_PLACEHOLDER)) {
       result = result ? `${result}\n${STATUS_BAR_PLACEHOLDER}` : STATUS_BAR_PLACEHOLDER;
@@ -638,19 +638,20 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
     // （与可用卡「银帷骑士团」方案一致，不依赖 MVU InitVar 或 JS 渲染脚本）
     if (draft.mvu.statusBarHtml && draft.mvu.statusBarHtml.trim()) {
       const cleanedBase = draft.mvu.statusBarHtml
-        .replace(/^@@render_after\s*\n?/m, '')
+        .replace(/^@@render_after\s*\n?/, '')
         // 兼容旧版 AI 生成的 EJS getvar -> SillyTavern 内置 format_message_variable 宏
-        .replace(/<%-\s*getvar\(\s*(['"])stat_data\.([^'"]+)\1\s*,\s*\{\s*defaults:\s*[^}]+\}\s*\)\s*%>/g, '{{format_message_variable::stat_data.$2}}')
+        .replace(/<%-\s*getvar\(\s*(['"])stat_data\.([^'"]+)\1\s*,\s*\{[^)]*\}\s*\)\s*%>/g, '{{format_message_variable::stat_data.$2}}')
         .replace(/<%-\s*getvar\(\s*(['"])stat_data\.([^'"]+)\1\s*\)\s*%>/g, '{{format_message_variable::stat_data.$2}}')
         // {{getvar::}} -> {{format_message_variable::}}（AI 可能生成 getvar 宏）
         .replace(/\{\{getvar::(stat_data\.[^}]+)\}\}/g, '{{format_message_variable::$1}}')
         // 旧版写卡站自定义 __MVU_VAR::...__ 标记 -> ST 内置 format_message_variable 宏
-        .replace(/__MVU_VAR::(stat_data\.[^_]+)__/g, '{{format_message_variable::$1}}')
+        .replace(/__MVU_VAR::(stat_data\..+?)__/g, '{{format_message_variable::$1}}')
         // CSS 中的 calc(... * 1%) 替换为直接使用宏输出的百分比
         .replace(/width:\s*max\s*\(\s*0%\s*,\s*calc\s*\(\s*\{\{format_message_variable::([^}]+)\}\}\s*\*\s*1%\s*\)\s*\)/gi, 'width:{{format_message_variable::$1}}%');
       // 确保 ```html 围栏存在：SillyTavern 只在 ```html 代码块中执行 <script type="module">
       // （与参考卡「二十一人会」状态栏美化脚本一致）
-      const cleanHtml = /^```html/i.test(cleanedBase.trim())
+      const trimmedBase = cleanedBase.trim();
+      const cleanHtml = /^```html/i.test(trimmedBase) && /```\s*$/.test(trimmedBase)
         ? cleanedBase
         : '```html\n' + cleanedBase + '\n```';
       // 注意：状态栏的 findRegex 写成不带斜杠的裸串（非 /.../gi 形式），
@@ -679,7 +680,7 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
       regexScripts.push({
         id: 'd6f8b9e0-2345-4b6c-ad7e-8f9a0b1c2d3e',
         scriptName: OWN_REGEX_SCRIPT_NAMES.hideStatusBar,
-        findRegex: STATUS_BAR_PLACEHOLDER,
+        findRegex: '\\n?' + STATUS_BAR_PLACEHOLDER,
         replaceString: '',
         trimStrings: [],
         placement: [2],
@@ -1365,7 +1366,9 @@ function reconstructMvuConfig(
   const regexScripts = (ext.regex_scripts || []) as Array<Record<string, unknown>>;
   for (const script of regexScripts) {
     if ((script.scriptName as string) === REGEX_SCRIPT_NAMES.statusBar) {
-      statusBarHtml = (script.replaceString as string) || '';
+      statusBarHtml = ((script.replaceString as string) || '')
+        .replace(/^```html\s*/i, '')
+        .replace(/\s*```\s*$/i, '');
       break;
     }
   }
