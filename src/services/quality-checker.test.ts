@@ -247,7 +247,7 @@ describe('buildQualityGuidance', () => {
   });
 
   it('无失败时状态为 ready', () => {
-    const report = { results: [], score: 100, passedCount: 0, failedCount: 0, applicableCount: 0 };
+    const report = { results: [], score: 100, passedCount: 0, failedCount: 0, applicableCount: 0, hardFails: [] };
     const guidance = buildQualityGuidance(report);
     expect(guidance.status).toBe('ready');
   });

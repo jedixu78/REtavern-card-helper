@@ -5,7 +5,11 @@ import {
   parseCardChatEdits,
   computeCardChatDiffs,
   applyCardChatPatch,
+  applySingleChange,
   applyPatchesToCardData,
+  filterByWriteGate,
+  buildChangeProposal,
+  WRITE_GATE_ALLOWED_FIELDS,
 } from './card-chat-optimizer';
 
 function emptyDraft(overrides: Partial<WizardDraft> = {}): WizardDraft {
@@ -223,5 +227,87 @@ describe('applyCardChatPatch', () => {
     const proposals = { proposedChanges: [{ field: 'lorebookEntries' as const, action: 'delete' as const, comment: 'Background' }] };
     const next = applyCardChatPatch(draft, proposals);
     expect(next.lorebookEntries).toHaveLength(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// governed-write 写入门禁（Write Gate）
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('filterByWriteGate - governed-write 字段白名单', () => {
+  it('白名单内的字段全部保留', () => {
+    const changes = WRITE_GATE_ALLOWED_FIELDS.map((field) => ({
+      field,
+      value: 'test',
+    } as const));
+    const filtered = filterByWriteGate(changes);
+    expect(filtered).toHaveLength(WRITE_GATE_ALLOWED_FIELDS.length);
+  });
+
+  it('白名单外的字段被丢弃', () => {
+    const changes = [
+      { field: 'cardName' as const, value: '合法' },
+      { field: 'regex_scripts' as unknown as 'cardName', value: '越权' },
+      { field: 'character_book.name' as unknown as 'cardName', value: '越权' },
+      { field: 'extensions.world' as unknown as 'cardName', value: '越权' },
+      { field: '_passthrough' as unknown as 'cardName', value: '越权' },
+    ];
+    const filtered = filterByWriteGate(changes);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].field).toBe('cardName');
+  });
+
+  it('空列表返回空列表', () => {
+    expect(filterByWriteGate([])).toHaveLength(0);
+  });
+});
+
+describe('buildChangeProposal - governed-write 变更提案', () => {
+  it('自动过滤越权字段并设置审批状态为 pending', () => {
+    const proposals = {
+      proposedChanges: [
+        { field: 'firstMessage' as const, value: '你好' },
+        { field: 'regex_scripts' as unknown as 'cardName', value: '越权' },
+      ],
+    };
+    const proposal = buildChangeProposal(proposals);
+    expect(proposal.approvalState).toBe('pending');
+    expect(proposal.changes).toHaveLength(1);
+    expect(proposal.changes[0].field).toBe('firstMessage');
+    expect(proposal.targetPaths).toBe(WRITE_GATE_ALLOWED_FIELDS);
+    expect(typeof proposal.createdAt).toBe('number');
+  });
+
+  it('空提案也返回 valid ChangeProposal', () => {
+    const proposal = buildChangeProposal({ proposedChanges: [] });
+    expect(proposal.changes).toHaveLength(0);
+    expect(proposal.approvalState).toBe('pending');
+  });
+});
+
+describe('applyCardChatPatch - governed-write 越权补丁被丢弃', () => {
+  it('尝试通过越权字段修改 regex 名时被静默丢弃', () => {
+    const draft = emptyDraft();
+    // 模拟 AI 返回越权补丁（field 不在白名单）
+    const proposals = {
+      proposedChanges: [
+        { field: 'regex_scripts' as unknown as 'cardName', value: '恶意改名' },
+        { field: 'firstMessage' as const, value: '合法修改' },
+      ],
+    };
+    const next = applyCardChatPatch(draft, proposals);
+    // 越权字段被丢弃，合法字段被应用
+    expect(next.firstMessage).toBe('合法修改');
+  });
+
+  it('applySingleChange 对越权补丁返回原 draft', () => {
+    const draft = emptyDraft();
+    const originalFirstMessage = draft.firstMessage;
+    // 单条越权补丁
+    const change = { field: 'extensions.world' as unknown as 'cardName', value: '恶意改书名' };
+    const next = applySingleChange(draft, change);
+    // 越权补丁被丢弃，draft 不变
+    expect(next).toBe(draft);
+    expect(next.firstMessage).toBe(originalFirstMessage);
   });
 });

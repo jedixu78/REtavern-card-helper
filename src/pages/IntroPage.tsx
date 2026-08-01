@@ -131,7 +131,7 @@ export function IntroPage() {
                   ['--stack-y' as string]: `${(5 - i) * 2.5}px`,
                   ['--stack-r' as string]: `${(i - 2.5) * 2.2}deg`,
                   ['--card-tint' as string]: ['#10b981', '#8b5cf6', '#f59e0b', '#06b6d4', '#ec4899', '#6366f1'][i],
-                  ['--card-img' as string]: `url(/cards/${['card-emerald', 'card-violet', 'card-amber', 'card-sky', 'card-rose', 'card-indigo'][i]}.png)`,
+                  ['--card-img' as string]: `url(/cards/${['card-emerald', 'card-violet', 'card-amber', 'card-sky', 'card-rose', 'card-indigo'][i]}.webp)`,
                   animationDelay: `${[0, 90, 180, 300, 420, 560][i]}ms`,
                 }}
               />

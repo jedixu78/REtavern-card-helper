@@ -51,6 +51,7 @@ stagedog-tavern-helper-template/
 参考/
 
 .vercel
+.vercel-tmp
 .env*
 
 # Cloudflare

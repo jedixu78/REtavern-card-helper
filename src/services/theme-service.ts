@@ -28,6 +28,8 @@ export interface ThemeSettings {
   inputBorderColor: string;
   /** Card/content surface background color (hex) */
   cardBgColor: string;
+  /** Glassmorphism mode — forces translucent + blurred surfaces (CSS 门控 html[data-glass]) */
+  glass?: boolean;
 }
 
 export const DEFAULT_THEME: ThemeSettings = {
@@ -129,7 +131,7 @@ export const CARD_BG_PRESETS = [
 
 /**
  * Full theme presets — each bundles a wallpaper background + coordinated UI colors.
- * Background images are served from /themes/*.png (public/ directory).
+ * Background images are served from /themes/*.webp (public/ directory).
  */
 export interface ThemePreset {
   id: string;
@@ -143,7 +145,7 @@ export const THEME_PRESETS: ThemePreset[] = [
   {
     id: 'pastoral',
     name: '清新田园',
-    background: '/themes/pastoral.png',
+    background: '/themes/pastoral.webp',
     settings: {
       bgOverlayOpacity: 18,
       primaryColor: '#4ade80',
@@ -161,7 +163,7 @@ export const THEME_PRESETS: ThemePreset[] = [
   {
     id: 'summer-campus',
     name: '夏日校园',
-    background: '/themes/summer-campus.png',
+    background: '/themes/summer-campus.webp',
     settings: {
       bgOverlayOpacity: 25,
       primaryColor: '#fbbf24',
@@ -179,7 +181,7 @@ export const THEME_PRESETS: ThemePreset[] = [
   {
     id: 'silhouette-sky',
     name: '剪影天空',
-    background: '/themes/silhouette-sky.png',
+    background: '/themes/silhouette-sky.webp',
     settings: {
       bgOverlayOpacity: 40,
       primaryColor: '#ea580c',
@@ -197,7 +199,7 @@ export const THEME_PRESETS: ThemePreset[] = [
   {
     id: 'melancholy-profile',
     name: '忧郁侧脸',
-    background: '/themes/melancholy-profile.png',
+    background: '/themes/melancholy-profile.webp',
     settings: {
       bgOverlayOpacity: 34,
       primaryColor: '#38bdf8',
@@ -215,7 +217,7 @@ export const THEME_PRESETS: ThemePreset[] = [
   {
     id: 'starry-ink',
     name: '星夜墨韵',
-    background: '/themes/starry-ink.png',
+    background: '/themes/starry-ink.webp',
     settings: {
       bgOverlayOpacity: 28,
       primaryColor: '#d4a853',
@@ -228,6 +230,25 @@ export const THEME_PRESETS: ThemePreset[] = [
       inputBgColor: '#16162a',
       inputBorderColor: '#3d3d5c',
       cardBgColor: '#1a1a2e',
+    },
+  },
+  {
+    id: 'aurora-glass',
+    name: '玻璃幻境',
+    background: '/themes/aurora-glass.webp',
+    settings: {
+      bgOverlayOpacity: 10,
+      primaryColor: '#a78bfa',
+      surfaceOpacity: 20,
+      blurIntensity: 14,
+      textColor: '#f5f3ff',
+      textShadow: 1,
+      textShadowColor: '#1e1b4b',
+      cardShadow: 10,
+      inputBgColor: 'rgba(30, 27, 75, 0.35)',
+      inputBorderColor: 'auto',
+      cardBgColor: '#1e1b4b',
+      glass: true,
     },
   },
 ];
@@ -334,6 +355,9 @@ function updateDerivedTokens(settings: ThemeSettings): void {
  */
 export function applyTheme(settings: ThemeSettings): void {
   const root = document.documentElement;
+
+  // 玻璃拟态门控：开启时 CSS 强制所有面板半透明 + 背景模糊
+  root.toggleAttribute('data-glass', Boolean(settings.glass));
 
   // Apply primary color
   root.style.setProperty('--color-primary', settings.primaryColor);

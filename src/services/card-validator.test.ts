@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { validateCard } from './card-validator';
+import { validateCard, validateCardHardFails, hasHardFails } from './card-validator';
 import type { LorebookEntry } from '../constants/defaults';
-import { createEmptyLorebookEntry } from '../constants/defaults';
+import { createEmptyLorebookEntry, REGEX_SCRIPT_NAMES } from '../constants/defaults';
 
 function makeValidCard(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -205,5 +205,134 @@ describe('validateCard', () => {
     ];
     const result = validateCard(card);
     expect(result.warnings.some((w) => w.includes('空内容'))).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 硬失败校验层（validateCardHardFails）
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('validateCardHardFails', () => {
+  it('有效卡片无硬失败', () => {
+    expect(validateCardHardFails(makeValidCard())).toHaveLength(0);
+    expect(hasHardFails(makeValidCard())).toBe(false);
+  });
+
+  it('世界书名与 extensions.world 不一致时硬失败', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    (data.extensions as Record<string, unknown>).world = '另一个世界书';
+    const fails = validateCardHardFails(card);
+    expect(fails.some((f) => f.code === 'book_name_mismatch')).toBe(true);
+    expect(hasHardFails(card)).toBe(true);
+  });
+
+  it('世界书名一致时不报硬失败', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    const charBook = data.character_book as Record<string, unknown>;
+    (data.extensions as Record<string, unknown>).world = charBook.name;
+    expect(validateCardHardFails(card).some((f) => f.code === 'book_name_mismatch')).toBe(false);
+  });
+
+  it('调度条目 getWorldInfo 书名与世界书名不一致时硬失败', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    const charBook = data.character_book as Record<string, unknown>;
+    charBook.entries = [
+      {
+        ...makeEntry(),
+        name: '分阶段调度',
+        content: `<%= await getWorldInfo("错误书名", "人设分阶段：朋友") _%>`,
+      },
+    ];
+    const fails = validateCardHardFails(card);
+    expect(fails.some((f) => f.code === 'dispatcher_book_name_mismatch')).toBe(true);
+  });
+
+  it('调度条目 getWorldInfo 书名与世界书名一致时不报硬失败', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    const charBook = data.character_book as Record<string, unknown>;
+    charBook.entries = [
+      {
+        ...makeEntry(),
+        name: '分阶段调度',
+        content: `<%= await getWorldInfo("测试世界书", "人设分阶段：朋友") _%>`,
+      },
+    ];
+    expect(validateCardHardFails(card).some((f) => f.code === 'dispatcher_book_name_mismatch')).toBe(false);
+  });
+
+  it('MVU 启用但缺 [InitVar] 条目时硬失败', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    (data.extensions as Record<string, unknown>).mvu_enabled = true;
+    const charBook = data.character_book as Record<string, unknown>;
+    charBook.entries = [{ ...makeEntry(), name: '[mvu_update]变量更新规则', content: 'rules: []' }];
+    const fails = validateCardHardFails(card);
+    expect(fails.some((f) => f.code === 'mvu_missing_initvar')).toBe(true);
+  });
+
+  it('MVU 启用且 [InitVar] 内容为空时硬失败', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    (data.extensions as Record<string, unknown>).mvu_enabled = true;
+    const charBook = data.character_book as Record<string, unknown>;
+    charBook.entries = [{ ...makeEntry(), name: '[InitVar]请勿打开', content: '   ' }];
+    expect(validateCardHardFails(card).some((f) => f.code === 'mvu_missing_initvar')).toBe(true);
+  });
+
+  it('MVU 未启用时不检查 [InitVar]', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    const charBook = data.character_book as Record<string, unknown>;
+    charBook.entries = [{ ...makeEntry(), name: '[InitVar]请勿打开', content: '' }];
+    expect(validateCardHardFails(card).some((f) => f.code === 'mvu_missing_initvar')).toBe(false);
+  });
+
+  it('MVU 变量路径含 __proto__ 时硬失败', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    (data.extensions as Record<string, unknown>).mvu_enabled = true;
+    const charBook = data.character_book as Record<string, unknown>;
+    charBook.entries = [
+      {
+        ...makeEntry(),
+        name: '[InitVar]请勿打开',
+        content: 'stat_data:\n  __proto__:\n    bad: true',
+      },
+    ];
+    const fails = validateCardHardFails(card);
+    expect(fails.some((f) => f.code === 'mvu_forbidden_path')).toBe(true);
+  });
+
+  it('正则脚本名缺少「界面」后缀时硬失败', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    (data.extensions as Record<string, unknown>).regex_scripts = [
+      { scriptName: '状态栏', replaceString: '<div></div>' },
+    ];
+    const fails = validateCardHardFails(card);
+    expect(fails.some((f) => f.code === 'regex_script_name_typo')).toBe(true);
+  });
+
+  it('正则脚本名正确时不报硬失败', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    (data.extensions as Record<string, unknown>).regex_scripts = [
+      { scriptName: REGEX_SCRIPT_NAMES.statusBar, replaceString: '<div></div>' },
+      { scriptName: REGEX_SCRIPT_NAMES.liveChat, replaceString: '<div></div>' },
+    ];
+    expect(validateCardHardFails(card).some((f) => f.code === 'regex_script_name_typo')).toBe(false);
+  });
+
+  it('第三方正则脚本名不受影响', () => {
+    const card = makeValidCard();
+    const data = card.data as Record<string, unknown>;
+    (data.extensions as Record<string, unknown>).regex_scripts = [
+      { scriptName: '第三方美化脚本', replaceString: '<div></div>' },
+    ];
+    expect(validateCardHardFails(card).some((f) => f.code === 'regex_script_name_typo')).toBe(false);
   });
 });

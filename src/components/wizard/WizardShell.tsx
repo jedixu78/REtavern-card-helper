@@ -42,7 +42,7 @@ export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, 
       <div className="relative z-10 flex flex-col flex-1 min-h-0">
         {/* Step indicator bar */}
         <div className="mb-4 sm:mb-8 shrink-0">
-          <div className="overflow-x-auto scrollbar-none -mx-3 sm:mx-0 px-3 sm:px-0 pb-2 sm:pb-0">
+          <div className="overflow-x-auto scrollbar-none -mx-3 sm:mx-0 px-3 sm:px-0 py-1.5 pb-2 sm:pb-0">
             <div className="flex items-center justify-between min-w-[360px] sm:min-w-0">
               {WIZARD_STEPS.map((step, i) => {
                 const isCompleted = step.id < currentStep;
@@ -57,10 +57,10 @@ export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, 
                         disabled={!onStepClick || isCurrent}
                         aria-label={t(stepKeys[step.id - 1])}
                         aria-current={isCurrent ? 'step' : undefined}
-                        className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-semibold transition-all duration-300
+                        className={`wizard-step-dot w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-semibold transition-all duration-300
                           ${onStepClick && !isCurrent ? 'cursor-pointer hover:scale-110 hover:shadow-md' : ''}
                           ${isCurrent
-                            ? 'bg-gradient-primary text-inverse shadow-lg shadow-primary-glow scale-110'
+                            ? 'bg-primary text-inverse shadow-md scale-110'
                             : isCompleted
                               ? 'bg-gradient-success text-inverse shadow-md'
                               : 'text-[var(--color-text-muted)]'

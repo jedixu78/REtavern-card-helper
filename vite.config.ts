@@ -20,7 +20,7 @@ export default defineConfig({
   },
   build: {
     // Target modern browsers — project already requires ES2023 + dynamic import.
-    target: 'es2020',
+    target: 'es2022',
     rollupOptions: {
       output: {
         // Split large vendor libs into separate chunks for better caching.

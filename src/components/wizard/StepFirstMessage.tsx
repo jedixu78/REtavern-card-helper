@@ -185,25 +185,6 @@ export function StepFirstMessage({
               {t('firstMessage.subtitle')}
             </p>
           </div>
-          <div className="flex gap-2 flex-wrap">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => handleStreamGenerate(false)}
-              disabled={aiStatus === 'generating'}
-            >
-              {aiStatus === 'generating'
-                ? (retryCount > 0 ? `⏳ ${t('firstMessage.retrying', { current: String(retryCount), max: String(MAX_AUTO_RETRIES) })}` : `⏳ ${t('common.generating')}`)
-                : `✨ ${t('firstMessage.aiGenerate')}`
-              }
-            </Button>
-            {pendingResult && (
-              <>
-                <Button size="sm" onClick={handleAccept}>✅ {t('firstMessage.accept')}</Button>
-                <Button size="sm" variant="ghost" onClick={handleReject}>{t('firstMessage.reject')}</Button>
-              </>
-            )}
-          </div>
         </div>
 
         {/* Tabs */}
@@ -263,11 +244,6 @@ export function StepFirstMessage({
             <span className="text-[10px] px-2 py-0.5 rounded bg-[color-mix(in_srgb,var(--color-status-success)_40%,transparent)] text-[var(--color-status-success)]">✅ {t('firstMessage.reqFilled')}</span>
           )}
         </div>
-        <div className="rounded-lg bg-[color-mix(in_srgb,var(--color-status-warning)_20%,transparent)] border border-[color-mix(in_srgb,var(--color-status-warning)_30%,transparent)] px-3 py-2">
-          <p className="text-[11px] text-[var(--color-status-warning)] leading-relaxed">
-            {t('firstMessage.writingReqHint')}
-          </p>
-        </div>
         <textarea
           value={writingRequirements}
           onChange={(e) => setWritingRequirements(e.target.value)}
@@ -282,6 +258,26 @@ export function StepFirstMessage({
             <span className="text-[10px] text-[var(--color-text-muted)] shrink-0">{writingRequirements.length}{t('common.words')}</span>
           )}
         </div>
+      </div>
+
+      {/* AI 生成按钮 — 开场白内容要求下方居中 */}
+      <div className="flex justify-center gap-2 mb-4">
+        <Button
+          variant="secondary"
+          onClick={() => handleStreamGenerate(false)}
+          disabled={aiStatus === 'generating'}
+        >
+          {aiStatus === 'generating'
+            ? (retryCount > 0 ? `⏳ ${t('firstMessage.retrying', { current: String(retryCount), max: String(MAX_AUTO_RETRIES) })}` : `⏳ ${t('common.generating')}`)
+            : `✨ ${t('firstMessage.aiGenerate')}`
+          }
+        </Button>
+        {pendingResult && (
+          <>
+            <Button onClick={handleAccept}>✅ {t('firstMessage.accept')}</Button>
+            <Button variant="ghost" onClick={handleReject}>{t('firstMessage.reject')}</Button>
+          </>
+        )}
       </div>
 
       {/* Word count presets */}

@@ -36,6 +36,89 @@ export type CardChatEditableField =
   | 'mvu.statusBarHtml'
   | 'liveStreamChat.html';
 
+// ════════════════════════════════════════════════════════════════════════════
+// governed-write 写入门禁（Write Gate）
+// ────────────────────────────────────────────────────────────────────────────
+// 灵感来自 AFV 的三档路由（direct / research / governed-write）：
+//   AI 改稿是 governed-write——任何修改 WizardDraft 的 AI 调用都必须经过门禁。
+//   门禁用白名单限定 AI 可改的字段子集，越权补丁被静默丢弃。
+//
+// 受保护字段（AI 不得触碰）：
+//   - regex_scripts 名字（REGEX_SCRIPT_NAMES）—— 改名会断开状态栏/直播间接线
+//   - character_book.name / extensions.world —— 改名会触发「阶段不切换」
+//   - staged dispatcher 的 getWorldInfo 书名参数 —— 同上
+//   - MVU [InitVar] 结构 —— 改结构会导致运行时崩
+//   - _passthrough 字段 —— 导入直通层，AI 不得改
+//
+// 这些字段不在 CardChatEditableField 联合类型里（类型层已禁止），
+// 但 AI 返回的 JSON 可能包含任意字段，运行时必须兜底过滤。
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * AI 允许修改的字段白名单（governed-write write_gate 的 target_paths）。
+ * 任何不在此列表的 field 值会被 filterByWriteGate 丢弃。
+ */
+export const WRITE_GATE_ALLOWED_FIELDS: readonly CardChatEditableField[] = [
+  'cardName',
+  'tags',
+  'firstMessage',
+  'scenario',
+  'system_prompt',
+  'post_history_instructions',
+  'creator_notes',
+  'characters',
+  'lorebookEntries',
+  'mvu.statusBarHtml',
+  'liveStreamChat.html',
+];
+
+const WRITE_GATE_ALLOWED_SET = new Set<string>(WRITE_GATE_ALLOWED_FIELDS);
+
+/**
+ * 按写入门禁过滤补丁列表。丢弃任何 field 不在白名单的补丁。
+ *
+ * 这是 governed-write 的运行时兜底：即使 AI prompt 越界返回了越权字段
+ * （如尝试改 regex 名、书名等治理字段），也会被静默丢弃，不会应用到 draft。
+ */
+export function filterByWriteGate(changes: ProposedChange[]): ProposedChange[] {
+  return changes.filter((c) => WRITE_GATE_ALLOWED_SET.has(c.field));
+}
+
+/**
+ * governed-write 变更提案：包装 AI 补丁为带审批状态的提案。
+ *
+ * 灵感来自 AFV 的 task-envelope schema：
+ *   - target_paths: 允许修改的字段路径（= write_gate 白名单）
+ *   - approval_state: pending → approved/rejected
+ *   - rollback: 如何回滚（= 重新应用 diff 的 before 值）
+ *
+ * UI 已有 diff 预览 + 批准/拒绝流程（ChangeDiff + applySingleDiff/discardSingleDiff），
+ * 本类型为将来扩展（如记录审批历史、evidence-ledger）预留。
+ */
+export interface ChangeProposal {
+  /** 经 write_gate 过滤后的补丁列表 */
+  changes: ProposedChange[];
+  /** 允许修改的字段路径（白名单快照） */
+  targetPaths: readonly CardChatEditableField[];
+  /** 审批状态：pending = 等待用户批准，approved = 已批准，rejected = 已拒绝 */
+  approvalState: 'pending' | 'approved' | 'rejected';
+  /** 创建时间戳（便于审计） */
+  createdAt: number;
+}
+
+/**
+ * 从 AI 返回的原始补丁构建 governed-write 变更提案。
+ * 自动过滤越权字段，设置审批状态为 pending。
+ */
+export function buildChangeProposal(proposals: CardChatProposals): ChangeProposal {
+  return {
+    changes: filterByWriteGate(proposals.proposedChanges),
+    targetPaths: WRITE_GATE_ALLOWED_FIELDS,
+    approvalState: 'pending',
+    createdAt: Date.now(),
+  };
+}
+
 export interface ProposedChange {
   field: CardChatEditableField;
   /** For scalar fields (cardName, firstMessage, scenario, etc.) */
@@ -358,13 +441,21 @@ export function computeCardChatDiffs(draft: WizardDraft, proposals: CardChatProp
 
 /** Apply a single proposed change to a draft (returns a new draft). */
 export function applySingleChange(draft: WizardDraft, change: ProposedChange): WizardDraft {
-  return applyCardChatPatch(draft, { proposedChanges: [change] });
+  // governed-write 防线：单条应用也要过滤，与批量应用保持一致
+  const gated = filterByWriteGate([change]);
+  if (gated.length === 0) return draft; // 越权补丁被丢弃，返回原 draft
+  return applyCardChatPatch(draft, { proposedChanges: gated });
 }
 
 export function applyCardChatPatch(draft: WizardDraft, proposals: CardChatProposals): WizardDraft {
   const next: WizardDraft = { ...draft };
 
-  for (const change of proposals.proposedChanges) {
+  // governed-write 防线：过滤掉任何尝试修改受保护字段的补丁。
+  // AI prompt 已要求只改用户提及的字段，这里是运行时兜底——即使 AI
+  // 返回了越权补丁（如尝试改 regex 名、书名等治理字段），也会被静默丢弃。
+  const gatedChanges = filterByWriteGate(proposals.proposedChanges);
+
+  for (const change of gatedChanges) {
     if (change.field === 'cardName' && typeof change.value === 'string') {
       next.cardName = change.value;
     } else if (change.field === 'tags' && Array.isArray(change.value)) {

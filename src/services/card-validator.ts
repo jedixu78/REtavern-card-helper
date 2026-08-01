@@ -7,7 +7,14 @@ import { MVU_LOREBOOK_ENTRY_NAMES, REGEX_SCRIPT_NAMES } from '../constants/defau
  * V3 Spec: https://github.com/malfoyslastname/character-card-spec-v3
  *
  * Returns errors (blocking) and warnings (non-blocking).
+ *
+ * `validateCardHardFails` 是更上层的「零分否决」层：命中任一规则即整卡不可发布，
+ * 与 `validateCard` 的 errors/warnings 评分解耦。它专防 CLAUDE.md 反复警告的
+ * 「阶段不切换」「MVU 运行时崩」「正则名断线」等根因类 bug。
  */
+
+/** 原型污染防御：MVU 路径中禁止出现的键（与 mvu-sim.ts 的 FORBIDDEN_KEYS 同源）。 */
+const HARD_FAIL_FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 const ACCEPTABLE_SPECS = ['chara_card_v2', 'chara_card_v3'];
 const ACCEPTABLE_SPEC_VERSIONS = ['2.0', '3.0'];
@@ -248,4 +255,181 @@ export function validateCard(card: Record<string, unknown>, options: ValidationO
   }
 
   return { valid: errors.length === 0, errors, warnings };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 硬失败校验层（零分否决）
+// ────────────────────────────────────────────────────────────────────────────
+// 与 `validateCard` 的 errors/warnings 评分解耦。命中任一规则即整卡不可发布。
+// 灵感来自 AFV 的 rubric.md「硬失败」概念：某些错误无视总分直接阻断发布。
+// 专防 CLAUDE.md 反复点名的根因类 bug：
+//   - 世界书名三处不一致 → ST 里 loadWorldInfo 精确匹配失败 →「阶段不切换」
+//   - MVU 启用但缺 [InitVar] → 运行时报「没有找到 InitVar 数据」
+//   - MVU 路径命中原型污染键 → __proto__ 逃逸
+//   - 状态栏/直播间正则名拼写错误 → 界面接线静默断开
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 硬失败规则标识符（稳定 ID，便于 UI/测试引用） */
+export type HardFailCode =
+  | 'book_name_mismatch'
+  | 'dispatcher_book_name_mismatch'
+  | 'mvu_missing_initvar'
+  | 'mvu_forbidden_path'
+  | 'regex_script_name_typo';
+
+export interface HardFail {
+  code: HardFailCode;
+  /** 面向用户的中文说明 */
+  message: string;
+  /** 修复提示 */
+  fixHint: string;
+}
+
+/**
+ * 在已组装的卡片 JSON 上执行硬失败校验。
+ *
+ * 与 `validateCard` 不同，这里只检查「命中即不可发布」的根因类问题，
+ * 不检查字段类型/缺失等常规规范错误（那些由 `validateCard` 的 errors 负责）。
+ *
+ * 返回空数组 = 无硬失败，可以发布；非空 = 整卡不可发布。
+ */
+export function validateCardHardFails(card: Record<string, unknown>): HardFail[] {
+  const fails: HardFail[] = [];
+  const data = (card.data ?? card) as Record<string, unknown>;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return fails;
+
+  const ext = (data.extensions ?? {}) as Record<string, unknown>;
+  const charBook = data.character_book as Record<string, unknown> | undefined;
+  const bookName = typeof charBook?.name === 'string' ? charBook.name : '';
+  const worldName = typeof ext.world === 'string' ? ext.world : '';
+
+  // ── 1. 世界书名三处一致：character_book.name === extensions.world ──────
+  // ST 用 extensions.world 关联世界书文件；character_book.name 是书本身的名字。
+  // 两者不一致时 ST 不会自动加载世界书，调度条目也拉不到子条目。
+  if (bookName && worldName && bookName !== worldName) {
+    fails.push({
+      code: 'book_name_mismatch',
+      message: `世界书名不一致：character_book.name="${bookName}" 但 extensions.world="${worldName}"`,
+      fixHint: '两者必须完全一致（含大小写/空格）。请在导出前统一书名。',
+    });
+  }
+
+  // ── 2. 分阶段调度条目的 getWorldInfo("书名", ...) 与书名一致 ──────────
+  // 这是「阶段不切换」的根因：ST 的 loadWorldInfo 按书名精确匹配，
+  // 调度条目里写错一个字就拉不到子条目，阶段永远停在第一个。
+  if (charBook && Array.isArray(charBook.entries)) {
+    for (const entry of charBook.entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      const content = (entry as Record<string, unknown>).content;
+      if (typeof content !== 'string') continue;
+      // 匹配 getWorldInfo("...", ...) 或 getWorldInfo('...', ...) 的第一个参数
+      const matches = content.matchAll(/getWorldInfo\(\s*(['"])([^'"]+?)\1/g);
+      for (const m of matches) {
+        const dispatcherBookName = m[2];
+        if (bookName && dispatcherBookName !== bookName) {
+          fails.push({
+            code: 'dispatcher_book_name_mismatch',
+            message: `分阶段调度条目里 getWorldInfo("${dispatcherBookName}", ...) 与世界书名 "${bookName}" 不一致`,
+            fixHint: '调度条目的书名参数必须与世界书名完全一致。这是「阶段不切换」的最常见根因。',
+          });
+          break; // 每条 entry 只报一次
+        }
+      }
+    }
+  }
+
+  // ── 3. MVU 启用但缺 [InitVar] 初始变量条目 ──────────────────────────
+  // 运行时报「没有找到 InitVar 数据」的直接原因。
+  const mvuEnabled = ext.mvu_enabled === true;
+  if (mvuEnabled && charBook && Array.isArray(charBook.entries)) {
+    const initvarEntry = (charBook.entries as Record<string, unknown>[]).find(
+      (e) => e && (e.name === '[InitVar]请勿打开' || e.comment === '[InitVar]请勿打开'),
+    );
+    const initvarContent = typeof initvarEntry?.content === 'string' ? initvarEntry.content : '';
+    if (!initvarEntry || !initvarContent.trim()) {
+      fails.push({
+        code: 'mvu_missing_initvar',
+        message: 'MVU 已启用但缺少 [InitVar]请勿打开 条目或其内容为空',
+        fixHint: '运行时会报「没有找到 InitVar 数据」。请到第 5 步（MVU变量）重新生成或补全初始变量。',
+      });
+    }
+  }
+
+  // ── 4. MVU 变量路径命中原型污染键 ───────────────────────────────────
+  // 扫描 [InitVar] 内容里的 YAML 路径与 schema 里的变量路径。
+  // FORBIDDEN_KEYS 命中会导致 __proto__ 逃逸成容器，是安全边界。
+  if (mvuEnabled && charBook && Array.isArray(charBook.entries)) {
+    const initvarEntry = (charBook.entries as Record<string, unknown>[]).find(
+      (e) => e && (e.name === '[InitVar]请勿打开' || e.comment === '[InitVar]请勿打开'),
+    );
+    const initvarContent = typeof initvarEntry?.content === 'string' ? initvarEntry.content : '';
+    if (initvarContent) {
+      // 扫描 YAML 里的路径段：形如 "角色:" / "  好感度:" 的键名
+      // 也扫描点分路径 stat_data.角色.__proto__
+      const yamlKeys = initvarContent.match(/^[ \t]*([^\s:#][^:]*?):/gm) ?? [];
+      const dotPaths = initvarContent.match(/[\w\u4e00-\u9fff.]+/g) ?? [];
+      const allSegments = new Set<string>();
+      for (const k of yamlKeys) {
+        const seg = k.replace(/^[ \t]*|:/g, '').trim();
+        if (seg) allSegments.add(seg);
+      }
+      for (const p of dotPaths) {
+        for (const seg of p.split('.')) {
+          if (seg) allSegments.add(seg);
+        }
+      }
+      for (const seg of allSegments) {
+        if (HARD_FAIL_FORBIDDEN_KEYS.has(seg)) {
+          fails.push({
+            code: 'mvu_forbidden_path',
+            message: `MVU 变量路径中包含禁止键 "${seg}"（原型污染风险）`,
+            fixHint: `路径段 "${seg}" 会被写入对象原型链，可能导致安全漏洞。请重命名该变量。`,
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  // ── 5. 正则脚本名拼写错误（状态栏/直播间界面）──────────────────────
+  // 常见 typo：写成「状态栏」少个「界面」，导致按名匹配的导入/校验/补丁全断。
+  const regexScripts = Array.isArray(ext.regex_scripts) ? (ext.regex_scripts as Record<string, unknown>[]) : [];
+  if (regexScripts.length > 0) {
+    for (const s of regexScripts) {
+      if (!s || typeof s !== 'object') continue;
+      const name = typeof s.scriptName === 'string' ? s.scriptName : '';
+      // 精确捕获常见错误形态：缺「界面」、缺空格、加了多余空格
+      const isStatusBarTypo = name.length > 0 &&
+        name !== REGEX_SCRIPT_NAMES.statusBar &&
+        name.replace(/\s/g, '') === REGEX_SCRIPT_NAMES.statusBar.replace(/\s/g, '');
+      const isLiveChatTypo = name.length > 0 &&
+        name !== REGEX_SCRIPT_NAMES.liveChat &&
+        name.replace(/\s/g, '') === REGEX_SCRIPT_NAMES.liveChat.replace(/\s/g, '');
+      // 只在「去掉空格后相等但原始不等」时报（捕获空格差异）
+      // 或在「名字是状态栏/直播间的严格前缀且不等」时报（捕获缺「界面」）
+      const isPrefixStatusBar = name.length > 0 &&
+        name !== REGEX_SCRIPT_NAMES.statusBar &&
+        (REGEX_SCRIPT_NAMES.statusBar.startsWith(name) || name.startsWith('状态栏')) &&
+        name.length >= 3 && name.length < REGEX_SCRIPT_NAMES.statusBar.length;
+      const isPrefixLiveChat = name.length > 0 &&
+        name !== REGEX_SCRIPT_NAMES.liveChat &&
+        (REGEX_SCRIPT_NAMES.liveChat.startsWith(name) || name.startsWith('直播间')) &&
+        name.length >= 3 && name.length < REGEX_SCRIPT_NAMES.liveChat.length;
+      if (isStatusBarTypo || isLiveChatTypo || isPrefixStatusBar || isPrefixLiveChat) {
+        fails.push({
+          code: 'regex_script_name_typo',
+          message: `正则脚本名 "${name}" 与工具注册名不完全一致（应为「${REGEX_SCRIPT_NAMES.statusBar}」或「${REGEX_SCRIPT_NAMES.liveChat}」）`,
+          fixHint: '按名匹配的导入/校验/补丁会静默断开。请勿手动改名。',
+        });
+        break; // 只报一次
+      }
+    }
+  }
+
+  return fails;
+}
+
+/** 便捷方法：是否存在任一硬失败 */
+export function hasHardFails(card: Record<string, unknown>): boolean {
+  return validateCardHardFails(card).length > 0;
 }

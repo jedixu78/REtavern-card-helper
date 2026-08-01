@@ -9,7 +9,7 @@
  * costs tokens, and is invoked separately from the UI panel.
  */
 import type { WizardDraft } from '../constants/defaults';
-import { validateCard } from './card-validator';
+import { validateCard, validateCardHardFails, type HardFail } from './card-validator';
 import { assembleCard } from './card-exporter';
 import { findStagedLorebookEntryIndices, isProtectedLorebookEntry } from './lorebook-predicates';
 import {
@@ -64,6 +64,8 @@ export interface QualityReport {
   passedCount: number;
   failedCount: number;
   applicableCount: number;
+  /** 硬失败列表（命中即不可发布，与评分解耦） */
+  hardFails: HardFail[];
 }
 
 interface CheckItem {
@@ -347,6 +349,38 @@ const CHECK_ITEMS: CheckItem[] = [
     },
   },
   {
+    // 硬失败层：命中即不可发布，与评分解耦。
+    // 专防「阶段不切换」「MVU 运行时崩」「EJS 注入」「正则名断线」等根因类 bug。
+    // 灵感来自 AFV rubric.md 的「硬失败」概念。
+    id: 'hardFails',
+    category: 'spec',
+    label: '致命错误（不可发布）',
+    weight: 20,
+    severity: 'critical',
+    threshold: '0 项硬失败',
+    applicable: () => true,
+    check: (d) => {
+      try {
+        const card = getAssembledCard(d);
+        const fails = validateCardHardFails(card);
+        return {
+          passed: fails.length === 0,
+          actual: fails.length === 0 ? '0 项' : `${fails.length} 项`,
+          fixHint:
+            fails.length === 0
+              ? ''
+              : `${fails[0].message}${fails.length > 1 ? `（共 ${fails.length} 项）` : ''}`,
+        };
+      } catch {
+        return {
+          passed: false,
+          actual: '校验异常',
+          fixHint: '卡片数据异常，无法完成硬失败校验',
+        };
+      }
+    },
+  },
+  {
     id: 'specWarnings',
     category: 'spec',
     label: 'V2 规范警告',
@@ -434,12 +468,21 @@ export function runQualityCheck(draft: WizardDraft): QualityReport {
   const passedCount = applicableResults.filter((r) => r.passed).length;
   const failedCount = applicableResults.filter((r) => !r.passed).length;
 
+  // 硬失败列表独立计算：无论评分如何，命中即不可发布。
+  let hardFails: HardFail[] = [];
+  try {
+    hardFails = validateCardHardFails(getAssembledCard(draft));
+  } catch {
+    hardFails = [];
+  }
+
   return {
     results,
     score,
     passedCount,
     failedCount,
     applicableCount: applicableResults.length,
+    hardFails,
   };
 }
 
@@ -469,6 +512,17 @@ export function buildQualityGuidance(report: QualityReport): QualityGuidance {
   const suggestions = failed.filter((r) => r.severity === 'suggestion');
   const optional = failed.filter((r) => r.severity === 'optional');
   const nextActions = [...critical, ...suggestions, ...optional].slice(0, 3);
+  // 硬失败优先阻断：无论评分如何，命中即不可发布。
+  if (report.hardFails.length > 0) {
+    return {
+      status: 'blocked',
+      headline: `存在 ${report.hardFails.length} 项致命错误，整卡不可发布`,
+      nextActions,
+      criticalCount: critical.length,
+      suggestionCount: suggestions.length,
+      optionalCount: optional.length,
+    };
+  }
   if (critical.length > 0) {
     return {
       status: 'blocked',
