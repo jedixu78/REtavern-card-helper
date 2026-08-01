@@ -381,13 +381,17 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
           {mvu.updateRules.map((rule, idx) => (
             <div key={idx} className={cardCls}>
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
-                <div className="sm:col-span-4">
+                <div className="sm:col-span-3">
                   <label className={labelCls}>变量路径</label>
                   <TextInput value={rule.path} onChange={(e) => updateRule(idx, { path: e.target.value })} className={inputCls} placeholder="角色.好感度" />
                 </div>
-                <div className="sm:col-span-3">
+                <div className="sm:col-span-2">
                   <label className={labelCls}>类型</label>
                   <TextInput value={rule.type ?? ''} onChange={(e) => updateRule(idx, { type: e.target.value })} className={inputCls} placeholder="number / string" />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className={labelCls}>格式</label>
+                  <TextInput value={rule.format ?? ''} onChange={(e) => updateRule(idx, { format: e.target.value })} className={inputCls} placeholder="replace / delta" />
                 </div>
                 <div className="sm:col-span-3">
                   <label className={labelCls}>范围</label>

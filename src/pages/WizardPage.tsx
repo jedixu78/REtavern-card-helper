@@ -455,7 +455,7 @@ ${e.content || ''}`)
     if (!error && crossing) {
       injectCharacterEntries();
     }
-  }, [currentStep, addToast, injectCharacterEntries, goToStep, t]);
+  }, [currentStep, injectCharacterEntries, goToStep]);
 
   /**
    * 页内「前往步骤 X」快捷按钮（骨架↔细节来回翻、导出页回跳修改）：
@@ -470,7 +470,7 @@ ${e.content || ''}`)
     }
     setCurrentStep(step);
     setStepError(null);
-  }, [currentStep, addToast, injectCharacterEntries, setCurrentStep, t]);
+  }, [currentStep, injectCharacterEntries, setCurrentStep]);
 
   const handleSave = async () => {
     // 保存不经过「下一步」，所以这里必须自己做一次角色→世界书同步。

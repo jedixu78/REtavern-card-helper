@@ -538,6 +538,14 @@ function buildCompactRules(rules: MvuUpdateRule[]): string {
 
 function appendCompactRuleFields(lines: string[], r: MvuUpdateRule, indent: number) {
   const pad = ' '.repeat(indent);
+  // 非数值类型（string/boolean/record/object/array）必须保留 type 和 format，
+  // 否则 AI 不知道该用 replace 还是 delta。数值类型（number）可省略 type/format。
+  if (r.type && r.type !== 'number') {
+    lines.push(`${pad}type: ${r.type}`);
+  }
+  if (r.format) {
+    lines.push(`${pad}format: ${r.format}`);
+  }
   if (r.range) {
     lines.push(`${pad}range: ${r.range}`);
     if (r.category && Object.keys(r.category).length > 0) {

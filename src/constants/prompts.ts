@@ -1092,7 +1092,7 @@ ${characters.map((c, i) => `${i + 1}. ${c.name}：${c.summary}`).join('\n')}${wo
   ],
   "updateRules": [
     { "path": "${firstCharName}.${axisVarName}", "type": "number", "range": "0~100", "check": ["..."] },
-    ...
+    { "path": "角色名.内心独白", "type": "string", "format": "replace", "check": ["当角色产生新的内心想法时更新", "格式为角色的内心独白文本"] }
   ],
   "statusBar": {
     "title": "状态栏标题（纯中文，不含 emoji）",
@@ -1105,6 +1105,7 @@ ${characters.map((c, i) => `${i + 1}. ${c.name}：${c.summary}`).join('\n')}${wo
 - 严格按模板蓝图的变量结构生成，只是把通用前缀替换为角色名
 - 阶段轴变量必须用 number 类型 + categories 字段：categories 是阈值分段数组，每段含 {"range": ">= 阈值" 或 "<= 阈值", "label": "阶段名"}，顺序从高到低（或从极端到初始）
 - updateRules 的 check 规则中要把模板蓝图里的分区名替换为对应角色名
+- 对于字符串（string）、布尔（boolean）或其他非数值类型的变量，必须生成对应的 updateRule，并指定 format 字段（字符串通常为 replace，布尔根据具体逻辑可能为 replace 或 delta）
 ${hiddenFlagsRule}
 - statusBar.showVariables 只显示可见变量，隐藏标记（"$"前缀）不显示；每个角色显示最关键的 1-2 个可见变量
 - 若角色超过 3 个，状态栏只显示前 3 个角色的关键变量
