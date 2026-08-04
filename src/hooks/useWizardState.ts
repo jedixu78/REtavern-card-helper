@@ -73,6 +73,12 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
   // Track whether the initial load has completed (prevents auto-save during load)
   const initialized = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Refs mirroring state so the auto-save cleanup always reads the latest values
+  // instead of the snapshot captured when the effect was scheduled.
+  const draftRef = useRef(draft);
+  const stepRef = useRef(currentStep);
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+  useEffect(() => { stepRef.current = currentStep; }, [currentStep]);
 
   // ── Load state on mount ────────────────────────────────────────────────────
   // Edit mode: load from cards table.
@@ -156,7 +162,7 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
       try {
-        await saveAutoDraft(draft, currentStep);
+        await saveAutoDraft(draftRef.current, stepRef.current);
         setIsDraftDirty(false);
       } catch {
         // Silently ignore save failures (non-critical)
@@ -169,7 +175,8 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = undefined;
       if (pending) {
-        saveAutoDraft(draft, currentStep).catch(() => {});
+        // Use refs to save the latest state, not the stale closure snapshot
+        saveAutoDraft(draftRef.current, stepRef.current).catch(() => {});
       }
     };
   }, [draft, currentStep, loading, editId]);
@@ -223,7 +230,7 @@ export function useWizardState(editId?: number, initialDraftId?: string) {
       case 1:
         return draft.cardName?.trim() ? null : '卡片名称不能为空';
       case 2:
-        // Step 2: Skeleton world book — always optional
+        // Step 2: 锚定世界观 — always optional
         return null;
       case 3: {
         // Step 3: Characters — at least one named character required

@@ -34,6 +34,7 @@ interface WorldAnchorPanelProps {
   onEntriesGenerated: (entries: LorebookEntry[]) => void;
   /** 是否允许 NSFW 内容生成 */
   nsfw?: boolean;
+  onNsfwChange?: (nsfw: boolean) => void;
   /** 默认展开 */
   defaultExpanded?: boolean;
 }
@@ -45,6 +46,7 @@ export function WorldAnchorPanel({
   existingEntries,
   onEntriesGenerated,
   nsfw,
+  onNsfwChange,
   defaultExpanded = true,
 }: WorldAnchorPanelProps) {
   const { t } = useTranslation();
@@ -352,6 +354,25 @@ export function WorldAnchorPanel({
 
       {expanded && (
         <div className="px-4 pb-4" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {/* NSFW 开关 */}
+          <div className="flex items-center gap-3 pb-2 border-b" style={{ borderColor: themeAlpha('warning', 20) }}>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={nsfw ?? false}
+                onChange={(e) => onNsfwChange?.(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-[var(--input-bg)] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-[var(--text-color)] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[var(--text-color)] after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[var(--color-status-danger)]" />
+            </label>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs" style={{ color: C.secondary }}>{t('common.nsfw')}</span>
+              <span className="text-[10px]" style={{ color: C.muted }}>
+                {nsfw ? t('aiPanel.nsfwAllowed') : t('aiPanel.nsfwDisabled')}
+              </span>
+            </div>
+          </div>
+
           {/* ① 类型（最宏观） */}
           <div>
             <label style={labelStyle}><span style={stepBadge}>1</span>{t('worldAnchor.typeLabel')}</label>

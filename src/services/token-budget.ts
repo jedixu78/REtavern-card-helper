@@ -13,7 +13,7 @@
  * 也就是 `estimatePromptTokens` 背后的同一个函数：
  *     CJK 字符 × 1.35 + 其余字符 ÷ 4，向上取整。
  * 项目里此前有两套口径：novel-workshop 的 1.35/4，以及若干组件内联的
- * `length * 1.3`（LorebookEntryEditor / SkeletonEntryCard / StepPolishExport
+ * `length * 1.3`（LorebookEntryEditor / StepPolishExport
  * 的展示用粗算）。这里统一到前者，不新造第三套。
  *
  * 依赖方向说明：`services/` 反向 import 了 `components/novel-workshop/utils`。

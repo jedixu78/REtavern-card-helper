@@ -8,7 +8,7 @@
  * Reuses the collapse pattern from AIProgressPanel and validateCard/diagnoseCard
  * from existing services.
  */
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { Check, X, AlertTriangle, ChevronDown, Sparkles, Wrench, RefreshCw } from 'lucide-react';
 import { useTranslation } from '../../i18n/I18nContext';
 import { useAIGenerate } from '../../hooks/useAIGenerate';
@@ -48,7 +48,16 @@ export function QualityCheckPanel({ draft, onJumpToStep, onOpenOptimize }: Quali
   const { t } = useTranslation();
   const { diagnoseCard } = useAIGenerate();
 
-  const report: QualityReport = useMemo(() => runQualityCheck(draft), [draft]);
+  // Debounced quality check: avoids running expensive validation on every keystroke
+  const [report, setReport] = useState<QualityReport>(() => runQualityCheck(draft));
+  const reportTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    clearTimeout(reportTimerRef.current);
+    reportTimerRef.current = setTimeout(() => {
+      setReport(runQualityCheck(draft));
+    }, 300);
+    return () => clearTimeout(reportTimerRef.current);
+  }, [draft]);
   const grouped = useMemo(() => groupByCategory(report.results), [report]);
   const guidance = useMemo(() => buildQualityGuidance(report), [report]);
 

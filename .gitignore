@@ -67,3 +67,6 @@ _weicheng_card.json
 debug-worldbook-empty-stream.md
 _analyze*.mts
 _gen_test_card.mts
+
+# Temporary test output
+test_output*.txt

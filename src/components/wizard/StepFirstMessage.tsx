@@ -132,7 +132,7 @@ export function StepFirstMessage({
         if (currentRetry <= MAX_AUTO_RETRIES) {
           // Auto-retry
           setAiText(t('firstMessage.tooShortRetry', { length: String(trimmed.length), current: String(currentRetry), max: String(MAX_AUTO_RETRIES) }));
-          retryTimeoutRef.current = setTimeout(() => handleStreamGenerate(true), 1000);
+          retryTimeoutRef.current = setTimeout(() => handleStreamGenerateRef.current(true), 1000);
           return;
         } else {
           // Exhausted retries
@@ -149,6 +149,10 @@ export function StepFirstMessage({
       setAiError(err instanceof Error ? err.message : t('common.error'));
     }
   }, [cardName, characterDescriptions, generateFirstMessageStreaming, targetWordCount, worldbookContext, writingRequirements, t]);
+
+  // Ref so the 1s retry setTimeout always invokes the latest handleStreamGenerate
+  const handleStreamGenerateRef = useRef(handleStreamGenerate);
+  useEffect(() => { handleStreamGenerateRef.current = handleStreamGenerate; });
 
   const handleAccept = useCallback(() => {
     if (pendingResult) {

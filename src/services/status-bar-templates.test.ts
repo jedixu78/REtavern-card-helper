@@ -153,4 +153,23 @@ describe('generateStatusBarHtml 输出', () => {
     expect(html).toContain('新通知');
     expect(html).toContain('sb-notice');
   });
+
+  it('运行时脚本包含动态分区发现逻辑', () => {
+    const html = generateStatusBarHtml('character-panel', simpleSchema, { themeId: 'terminal' });
+    // 动态分区核心函数
+    expect(html).toContain('sbDiscoverDynamicSections');
+    expect(html).toContain('sbCreateDynamicSection');
+    expect(html).toContain('sbClassifyValue');
+    expect(html).toContain('sbCreatedSections');
+    // 动态分区标记
+    expect(html).toContain('data-sb-dynamic');
+    // sbPopulate 末尾调用动态发现
+    expect(html).toContain('sbDiscoverDynamicSections(all)');
+  });
+
+  it('动态分区代码使用 sbGet 读取值（兼容预览覆盖）', () => {
+    const html = generateStatusBarHtml('character-panel', simpleSchema, { themeId: 'terminal' });
+    // 动态分区创建时使用 sbGet 而非直接访问，确保 previewValues 优先生效
+    expect(html).toContain("sbGet(all, jsPath, val)");
+  });
 });

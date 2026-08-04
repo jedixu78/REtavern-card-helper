@@ -875,6 +875,17 @@ select {
   line-height: var(--leading-normal);
 }
 
+/* Dark-theme dropdown options so the list isn't white on dark UI */
+select option {
+  background-color: var(--input-bg);
+  color: var(--text-color);
+}
+
+select option:checked {
+  background-color: color-mix(in srgb, var(--color-primary) 35%, var(--input-bg));
+  color: #ffffff;
+}
+
 /* Remove border from inputs inside tag input containers */
 .flex.flex-wrap.gap-1\.5 > input,
 .flex.flex-wrap > input {

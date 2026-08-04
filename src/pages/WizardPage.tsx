@@ -240,6 +240,10 @@ export function WizardPage() {
   const characterHistoryRef = useRef<Record<string, CharacterVersion[]>>({});
   useEffect(() => { characterHistoryRef.current = characterHistory; }, [characterHistory]);
 
+  // Keep a ref in sync so import effects read the latest draft without re-running on every change
+  const draftRef = useRef(draft);
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+
   /** Add a version to a character's history and make it the active description */
   const addToCharacterHistory = useCallback((charId: string, content: string, isOriginal: boolean) => {
     setCharacterHistory(prev => {
@@ -291,6 +295,9 @@ export function WizardPage() {
     const payload = consumeAnalysisLorebookImport();
     if (!payload || payload.entries.length === 0) return;
 
+    // Read latest draft from ref to avoid stale closure and unnecessary re-runs
+    const currentDraft = draftRef.current;
+
     // Resolve a stable card name first — used both for the draft and as the
     // bookName argument in the staged-lorebook dispatcher (which we generated
     // with a __NOVEL_ANALYSIS__ placeholder in novel-analysis-service).
@@ -298,9 +305,9 @@ export function WizardPage() {
     // loadWorldInfo 精确匹配，调度条目书名与导出书名不一致时「阶段不切换」。
     // Escape per EJS double-quoted JS string rules so a `"` or `\` in the card
     // name can't break out of getWorldInfo("bookName", ...) in the dispatcher.
-    const resolvedCardName = draft.cardName || payload.title || t('wizard.cardNameFallback');
+    const resolvedCardName = currentDraft.cardName || payload.title || t('wizard.cardNameFallback');
     const sanitizedBookName = escapeEjsDoubleQuoted(
-      resolveBookName({ cardName: resolvedCardName || t('wizard.cardNameFallback'), bookName: draft.bookName }),
+      resolveBookName({ cardName: resolvedCardName || t('wizard.cardNameFallback'), bookName: currentDraft.bookName }),
     );
     const finalEntries = payload.entries.map((entry) => ({
       ...entry,
@@ -310,12 +317,12 @@ export function WizardPage() {
 
     // Convert any MVU variable blueprints (剧情.进度 enum, 彩蛋.{id} booleans)
     // into MvuSchemaSections and merge into the existing MVU config.
-    const currentMvu = draft.mvu ?? createEmptyMvuConfig();
+    const currentMvu = currentDraft.mvu ?? createEmptyMvuConfig();
     const mergedMvu = mergeVariableBlueprintsIntoMvu(currentMvu, payload.variableBlueprints);
 
     updateDraft({
       cardName: resolvedCardName,
-      lorebookEntries: [...draft.lorebookEntries, ...finalEntries],
+      lorebookEntries: [...currentDraft.lorebookEntries, ...finalEntries],
       mvu: mergedMvu,
     });
     setCurrentStep(4); // Jump to world book detail (step 4)
@@ -326,7 +333,7 @@ export function WizardPage() {
     // catches, causing WizardPage to unmount and remount fresh (losing the draft
     // update, since debounced auto-save hasn't flushed to IndexedDB yet).
     window.history.replaceState({}, '', '/wizard');
-  }, [loading, editId, location.search, draft.cardName, draft.bookName, draft.lorebookEntries, draft.mvu, updateDraft, setCurrentStep, addToast, t]);
+  }, [loading, editId, location.search, updateDraft, setCurrentStep, addToast, t]);
 
   // ── Consume Workshop lorebook import on mount ──
   useEffect(() => {
@@ -336,15 +343,18 @@ export function WizardPage() {
     const payload = consumeWorkshopLorebookImport();
     if (!payload || payload.entries.length === 0) return;
 
-    const mergedEntries = [...draft.lorebookEntries, ...payload.entries];
-    const currentMvu = draft.mvu ?? createEmptyMvuConfig();
+    // Read latest draft from ref to avoid stale closure and unnecessary re-runs
+    const currentDraft = draftRef.current;
+
+    const mergedEntries = [...currentDraft.lorebookEntries, ...payload.entries];
+    const currentMvu = currentDraft.mvu ?? createEmptyMvuConfig();
     const mergedMvu = mergeVariableBlueprintsIntoMvu(currentMvu, payload.variableBlueprints);
 
     const wsParams = new URLSearchParams(location.search);
     const targetStep = wsParams.get('step') ? parseInt(wsParams.get('step')!) : 5; // Default to MVU step (step 5)
 
     updateDraft({
-      cardName: draft.cardName || payload.title || t('wizard.cardNameFallback'),
+      cardName: currentDraft.cardName || payload.title || t('wizard.cardNameFallback'),
       lorebookEntries: mergedEntries,
       mvu: mergedMvu,
     });
@@ -353,7 +363,7 @@ export function WizardPage() {
     // Use replaceState instead of navigate() — see comment in the novel-analysis effect above.
     const targetStepParam = wsParams.get('step');
     window.history.replaceState({}, '', targetStepParam ? `/wizard?step=${targetStepParam}` : '/wizard');
-  }, [loading, editId, location.search, draft.cardName, draft.lorebookEntries, draft.mvu, updateDraft, setCurrentStep, addToast, t]);
+  }, [loading, editId, location.search, updateDraft, setCurrentStep, addToast, t]);
 
   // Clear draftId from URL once the draft has been loaded so that auto-save takes over on refresh.
   // Use replaceState instead of navigate() — navigate() would change the router location,
@@ -688,6 +698,7 @@ ${e.content || ''}`)
             entries={draft.lorebookEntries}
             onEntriesChange={(entries) => updateDraft({ lorebookEntries: entries })}
             nsfw={draft.worldbookNsfw}
+            onNsfwChange={(nsfw) => updateDraft({ worldbookNsfw: nsfw })}
           />
         );
       case 3:
@@ -718,6 +729,12 @@ ${e.content || ''}`)
           <StepWorldBook
             entries={draft.lorebookEntries}
             onEntriesChange={(entries) => updateDraft({ lorebookEntries: entries })}
+            worldRules={draft.worldRules ?? ''}
+            onWorldRulesChange={(worldRules) => updateDraft({ worldRules })}
+            topicValue={draft.worldbookTopic ?? ''}
+            onTopicChangePersist={(topic) => updateDraft({ worldbookTopic: topic })}
+            batchCountValue={draft.worldbookBatchCount ?? 8}
+            onBatchCountPersist={(count) => updateDraft({ worldbookBatchCount: count })}
             nsfw={draft.worldbookNsfw}
             onNsfwChange={(nsfw) => updateDraft({ worldbookNsfw: nsfw })}
             characterContext={characterContext}

@@ -119,16 +119,19 @@ export async function rollbackToVersion(versionId: number): Promise<Record<strin
   const card = (await db.cards.get(version.cardId)) as Record<string, unknown> | undefined;
   if (!card) return null;
 
-  // 1. 为当前状态保底存一条版本
-  await saveVersion(version.cardId, card, 'rollback');
-
-  // 2. 用快照覆盖内容字段，保留库级元数据
   const restored: Record<string, unknown> = {
     ...card,           // 保留 id / createdAt / coverImageBlob / deletedAt 等
     ...version.snapshot, // 覆盖 spec / data / _meta / name
     updatedAt: new Date(),
   };
 
-  await db.cards.put(restored);
+  // Transaction: 保底版本 + 卡片回滚 原子执行，任一失败则全部回滚
+  await db.transaction('rw', db.cards, db.card_versions, async () => {
+    // 1. 为当前状态保底存一条版本
+    await saveVersion(version.cardId, card, 'rollback');
+    // 2. 用快照覆盖内容字段
+    await db.cards.put(restored);
+  });
+
   return restored;
 }

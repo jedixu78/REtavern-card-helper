@@ -469,7 +469,11 @@ export async function importPresetFile(file: File): Promise<LoadedPreset> {
 
 /** Save preset to localStorage */
 function savePresets(preset: LoadedPreset) {
-  localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(preset));
+  try {
+    localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(preset));
+  } catch {
+    console.warn('预设保存失败：存储空间不足');
+  }
   localStorage.removeItem(PRESET_DISABLED_KEY);
 }
 

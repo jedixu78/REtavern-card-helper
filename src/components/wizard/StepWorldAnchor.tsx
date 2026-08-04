@@ -27,6 +27,7 @@ interface StepWorldAnchorProps {
   onEntriesChange: (entries: LorebookEntry[]) => void;
   /** NSFW 开关 */
   nsfw?: boolean;
+  onNsfwChange?: (nsfw: boolean) => void;
 }
 
 export function StepWorldAnchor({
@@ -36,6 +37,7 @@ export function StepWorldAnchor({
   entries,
   onEntriesChange,
   nsfw,
+  onNsfwChange,
 }: StepWorldAnchorProps) {
   const { t } = useTranslation();
   const [expandLevels, setExpandLevels] = useState<Map<string, EntryExpandLevel>>(new Map());
@@ -97,6 +99,7 @@ export function StepWorldAnchor({
         existingEntries={entries}
         onEntriesGenerated={handleEntriesGenerated}
         nsfw={nsfw}
+        onNsfwChange={onNsfwChange}
         defaultExpanded={true}
       />
 

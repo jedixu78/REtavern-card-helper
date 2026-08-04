@@ -31,7 +31,7 @@ export function WizardShell({ currentStep, onPrev, onNext, onStepClick, onSave, 
   const { t } = useTranslation();
   const isFirst = currentStep === 1;
   const isLast = currentStep === WIZARD_STEPS.length;
-  const stepKeys = ['wizard.stepName','wizard.stepWorldSkeleton','wizard.stepCharacters','wizard.stepWorldBook','wizard.stepMvu','wizard.stepStagedMode','wizard.stepFirstMessage','wizard.stepLiveStreamChat','wizard.stepExport'];
+  const stepKeys = ['wizard.stepName','wizard.stepWorldAnchor','wizard.stepCharacters','wizard.stepWorldBook','wizard.stepMvu','wizard.stepStagedMode','wizard.stepFirstMessage','wizard.stepLiveStreamChat','wizard.stepExport'];
 
   return (
     <div className="relative flex flex-col flex-1 min-h-0">

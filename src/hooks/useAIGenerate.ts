@@ -12,6 +12,7 @@ import { callAIWithPrompt, callAIWithPromptStreaming, cancelActiveAIRequests, ty
 import {
   CHARACTER_GENERATE_PROMPT,
   LOREBOOK_GENERATE_PROMPT,
+  LOREBOOK_ENTRY_FROM_TEXT_PROMPT,
   WORLD_ANCHOR_EXPAND_PROMPT,
   LOREBOOK_REVISE_PROMPT,
   EXPAND_ENTRY_PROMPT,
@@ -281,8 +282,8 @@ export function useAIGenerate() {
    * Generate lorebook entries in batch (Step 4 - 世界书细节).
    * @returns Raw text response
    */
-  const generateLorebook = useCallback(async (cardName: string, characterSummaries: string, topic: string, batchCount: number, nsfw?: boolean, worldAnchor?: string, existingEntriesContext?: string): Promise<string> => {
-    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, nsfw, worldAnchor, lang, existingEntriesContext);
+  const generateLorebook = useCallback(async (cardName: string, characterSummaries: string, topic: string, batchCount: number, nsfw?: boolean, worldAnchor?: string, existingEntriesContext?: string, rules?: string): Promise<string> => {
+    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, nsfw, worldAnchor, lang, existingEntriesContext, rules);
     return callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.8, presetMode: 'force' });
   }, [lang]);
 
@@ -298,8 +299,9 @@ export function useAIGenerate() {
     nsfw?: boolean,
     worldAnchor?: string,
     existingEntriesContext?: string,
+    rules?: string,
   ): Promise<string> => {
-    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, nsfw, worldAnchor, lang, existingEntriesContext);
+    const prompts = LOREBOOK_GENERATE_PROMPT(cardName, characterSummaries, topic, batchCount, nsfw, worldAnchor, lang, existingEntriesContext, rules);
     return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.8, presetMode: 'force' });
   }, [lang]);
 
@@ -307,8 +309,8 @@ export function useAIGenerate() {
    * Generate lorebook entries and parse as JSON array.
    * Returns entries with all V2 spec + SillyTavern runtime fields.
    */
-  const generateLorebookParsed = useCallback(async (cardName: string, characterSummaries: string, topic: string, batchCount: number, nsfw?: boolean, worldAnchor?: string, existingEntriesContext?: string) => {
-    const text = await generateLorebook(cardName, characterSummaries, topic, batchCount, nsfw, worldAnchor, existingEntriesContext);
+  const generateLorebookParsed = useCallback(async (cardName: string, characterSummaries: string, topic: string, batchCount: number, nsfw?: boolean, worldAnchor?: string, existingEntriesContext?: string, rules?: string) => {
+    const text = await generateLorebook(cardName, characterSummaries, topic, batchCount, nsfw, worldAnchor, existingEntriesContext, rules);
     const parsed = parseAIJson(text) as AIGeneratedLorebookEntry[] | null;
     return parsed || [];
   }, [generateLorebook]);
@@ -325,8 +327,9 @@ export function useAIGenerate() {
     nsfw?: boolean,
     worldAnchor?: string,
     existingEntriesContext?: string,
+    rules?: string,
   ) => {
-    const text = await generateLorebookStreaming(cardName, characterSummaries, topic, batchCount, onChunk, nsfw, worldAnchor, existingEntriesContext);
+    const text = await generateLorebookStreaming(cardName, characterSummaries, topic, batchCount, onChunk, nsfw, worldAnchor, existingEntriesContext, rules);
     const parsed = parseAIJson(text) as AIGeneratedLorebookEntry[] | null;
     return parsed || [];
   }, [generateLorebookStreaming]);
@@ -395,6 +398,23 @@ export function useAIGenerate() {
     const text = await callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.5, presetMode: 'none' });
     const parsed = parseAIJson(text) as AIGeneratedKeys[] | null;
     return parsed || [];
+  }, [lang]);
+
+  /**
+   * Generate a single complete world book entry from brief user description.
+   * User provides a short text, AI generates full entry with all fields.
+   */
+  const generateEntryFromText = useCallback(async (
+    cardName: string,
+    userDescription: string,
+    characterContext?: string,
+    nsfw?: boolean,
+    worldAnchor?: string,
+  ): Promise<AIGeneratedLorebookEntry | null> => {
+    const prompts = LOREBOOK_ENTRY_FROM_TEXT_PROMPT(cardName, userDescription, characterContext, nsfw, worldAnchor, lang);
+    const text = await callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.7, presetMode: 'force' });
+    const parsed = parseAIJson(text) as AIGeneratedLorebookEntry | null;
+    return parsed;
   }, [lang]);
 
   /**
@@ -519,6 +539,7 @@ export function useAIGenerate() {
     generateLorebookStreaming,
     generateLorebookParsed,
     generateLorebookParsedStreaming,
+    generateEntryFromText,
     generateFirstMessage,
     generateFirstMessageStreaming,
     organizeEntries,

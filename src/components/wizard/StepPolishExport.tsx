@@ -231,6 +231,10 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
     }
   }, [draft, addToast]);
 
+  // Ref so setTimeout callbacks in fix handlers always invoke the latest runValidation
+  const runValidationRef = useRef(runValidation);
+  useEffect(() => { runValidationRef.current = runValidation; });
+
   // ── Auto-fix ─────────────────────────────────────────────────────────────
   const handleAutoFix = useCallback(() => {
     if (!onFixEntries) return;
@@ -242,7 +246,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
         setAppliedFixes(result.fixes);
         addToast('success', `已修复 ${result.fixes.length} 个问题`);
         // Re-run validation after fix
-        setTimeout(() => runValidation(), 100);
+        setTimeout(() => runValidationRef.current(), 100);
       } else {
         addToast('info', '没有发现可自动修复的问题');
       }
@@ -251,7 +255,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
     } finally {
       setFixing(false);
     }
-  }, [draft.lorebookEntries, onFixEntries, addToast, runValidation]);
+  }, [draft.lorebookEntries, onFixEntries, addToast]);
 
   // ── AI fix per issue ─────────────────────────────────────────────────────
   const handleAiFix = useCallback(async (issue: ConsistencyIssue, index: number) => {
@@ -280,7 +284,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
           onFixEntries?.([...draft.lorebookEntries, ...newEntries]);
           setAppliedFixes(prev => [...prev, `为 ${fix.varPath} 生成 ${newEntries.length} 个世界书条目`]);
           addToast('success', `已生成 ${newEntries.length} 个世界书条目`);
-          setTimeout(() => runValidation(), 100);
+          setTimeout(() => runValidationRef.current(), 100);
         } else {
           addToast('info', 'AI 未返回有效的世界书条目');
         }
@@ -295,7 +299,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
           onUpdateDraft?.({ firstMessage: newFirstMessage });
           setAppliedFixes(prev => [...prev, '已用 AI 改写开场白以体现场景变量']);
           addToast('success', '开场白已改写');
-          setTimeout(() => runValidation(), 100);
+          setTimeout(() => runValidationRef.current(), 100);
         } else {
           addToast('info', 'AI 未返回有效开场白');
         }
@@ -305,7 +309,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
     } finally {
       setAiFixingIndex(null);
     }
-  }, [draft, characterDescriptions, worldbookContext, generateText, onFixEntries, onUpdateDraft, addToast, runValidation]);
+  }, [draft, characterDescriptions, worldbookContext, generateText, onFixEntries, onUpdateDraft, addToast]);
 
   // ── Export ────────────────────────────────────────────────────────────────
   const handleExport = useCallback(async (format: 'json' | 'png') => {

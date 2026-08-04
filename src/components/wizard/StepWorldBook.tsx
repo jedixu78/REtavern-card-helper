@@ -3,7 +3,7 @@
  * Full SillyTavern V2 + runtime parameter support (CardForge reference).
  *
  * 重构后只有 detail 模式（骨架模式已与「锚定世界观」步骤合并移除）。
- * worldRules 也已移除，AI 生成约束只通过 worldAnchor 注入。
+ * worldRules（世界观约束与运行规则内容）保留为生成输入，与 worldAnchor 共同约束 AI。
  */
 import { useMemo, useState } from 'react';
 import { Button } from '../shared/Button';
@@ -87,6 +87,15 @@ function getProtectedEntryLabel(entry: LorebookEntry, idx: number, stagedIndices
 interface StepWorldBookProps {
   entries: LorebookEntry[];
   onEntriesChange: (entries: LorebookEntry[]) => void;
+  /** 世界观约束与运行规则内容输入（跨步骤持久化，AI 生成时作为硬约束注入） */
+  worldRules?: string;
+  onWorldRulesChange?: (rules: string) => void;
+  /** 主题/方向输入（跨步骤持久化，避免用户重复输入） */
+  topicValue?: string;
+  onTopicChangePersist?: (topic: string) => void;
+  /** 批量生成条数（跨步骤持久化，避免用户重复输入） */
+  batchCountValue?: number;
+  onBatchCountPersist?: (count: number) => void;
   /** Character context for AI generation (full descriptions) */
   characterContext?: string;
   /** Whether NSFW content generation is allowed for world book entries */
@@ -109,8 +118,15 @@ interface StepWorldBookProps {
 export function StepWorldBook({
   entries,
   onEntriesChange,
+  worldRules: worldRulesProp = '',
+  onWorldRulesChange,
+  topicValue: externalTopic,
+  onTopicChangePersist,
+  batchCountValue: externalBatchCount,
+  onBatchCountPersist,
   characterContext,
   nsfw,
+  onNsfwChange,
   worldAnchor,
   mvu,
   // Legacy
@@ -122,11 +138,14 @@ export function StepWorldBook({
   const { t } = useTranslation();
   const [generating, setGenerating] = useState(false);
   const [localTopic, setLocalTopic] = useState('');
-  const topic = localTopic;
-  const setTopic = setLocalTopic;
+  const topic = onTopicChangePersist ? (externalTopic ?? '') : localTopic;
+  const setTopic = onTopicChangePersist || setLocalTopic;
+  const [localWorldRules, setLocalWorldRules] = useState('');
+  const worldRules = onWorldRulesChange ? worldRulesProp : localWorldRules;
+  const setWorldRules = onWorldRulesChange || setLocalWorldRules;
   const [localBatchCount, setLocalBatchCount] = useState(8);
-  const batchCount = localBatchCount;
-  const setBatchCount = setLocalBatchCount;
+  const batchCount = onBatchCountPersist ? (externalBatchCount ?? 8) : localBatchCount;
+  const setBatchCount = onBatchCountPersist || setLocalBatchCount;
   // AI organize state
   const [organizing, setOrganizing] = useState(false);
   const [organizeResults, setOrganizeResults] = useState<AIOrganizeSuggestion[] | null>(null);
@@ -145,7 +164,7 @@ export function StepWorldBook({
   const [pendingSnapshot, setPendingSnapshot] = useState<LorebookEntry[] | null>(null);
   // Collapse state: Map of entry ID → expand level
   const [expandLevels, setExpandLevels] = useState<Map<string, EntryExpandLevel>>(new Map());
-  const { generateLorebookParsedStreaming, organizeEntries, generateEntryKeys, expandLorebookEntry } = useAIGenerate();
+  const { generateLorebookParsedStreaming, organizeEntries, generateEntryKeys, expandLorebookEntry, generateEntryFromText } = useAIGenerate();
   const { addToast } = useToast();
 
   // Unified entry update handler (supports both new and legacy APIs)
@@ -234,6 +253,7 @@ export function StepWorldBook({
       nsfw,
       formatWorldAnchorForPrompt(worldAnchor) || undefined,
       existingContext || undefined,
+      worldRules.trim() || undefined,
     );
     if (!Array.isArray(result) || result.length === 0) return null;
 
@@ -525,6 +545,68 @@ export function StepWorldBook({
     addToast('success', t('worldBook.enabledAll'));
   };
 
+  // ── AI Generate single entry from text ──────────────────────────────
+  const [generatingEntryFromText, setGeneratingEntryFromText] = useState(false);
+  const [entryFromText, setEntryFromText] = useState('');
+
+  const handleGenerateEntryFromText = async () => {
+    if (!entryFromText.trim()) {
+      addToast('error', t('worldBook.entryFromTextEmpty'));
+      return;
+    }
+    setGeneratingEntryFromText(true);
+    try {
+      const result = await generateEntryFromText(
+        effectiveCardName,
+        entryFromText,
+        effectiveCharacterContext,
+        nsfw,
+        formatWorldAnchorForPrompt(worldAnchor) || undefined,
+      );
+      if (result) {
+        const base = createEmptyLorebookEntry();
+        const secondaryKeys = result.secondary_keys || [];
+        const newEntry: LorebookEntry = {
+          ...base,
+          name: result.name || '',
+          keys: result.keys || [],
+          secondary_keys: secondaryKeys,
+          content: result.content || '',
+          comment: result.comment || result.name || '',
+          constant: result.constant ?? false,
+          selective: secondaryKeys.length > 0 ? result.selective ?? false : false,
+          insertion_order: result.insertion_order ?? 100,
+          position: (result.position ?? 'before_char') as LorebookPosition,
+          priority: result.priority ?? 50,
+          probability: result.probability ?? 100,
+          group: result.group || '',
+          group_weight: result.group_weight ?? 100,
+          selectiveLogic: result.selectiveLogic ?? 0,
+          role: result.role ?? 0,
+          depth: result.depth ?? 4,
+          exclude_recursion: result.exclude_recursion ?? false,
+          prevent_recursion: result.prevent_recursion ?? false,
+          use_regex: result.use_regex ?? false,
+          match_whole_words: result.match_whole_words ?? true,
+          sticky: result.sticky ?? 0,
+          cooldown: result.cooldown ?? 0,
+          delay: result.delay ?? 0,
+          ignore_budget: result.ignore_budget ?? false,
+        };
+        handleUpdateEntries([...entries, newEntry]);
+        setEntryFromText('');
+        addToast('success', t('worldBook.entryFromTextSuccess', { name: newEntry.name }));
+      } else {
+        addToast('error', t('worldBook.parseFailedToast'));
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : t('common.unknownError');
+      addToast('error', t('worldBook.generateFailedToast', { message: msg }));
+    } finally {
+      setGeneratingEntryFromText(false);
+    }
+  };
+
   const q = searchQuery.trim().toLowerCase();
   const visibleEntries = q
     ? entries.map((entry, index) => ({ entry, index })).filter(({ entry }) => {
@@ -677,12 +759,46 @@ export function StepWorldBook({
       {/* AI Generate Panel - always visible */}
       <AIGeneratePanel
         topic={topic}
+        worldRules={worldRules}
+        nsfw={nsfw}
+        onNsfwChange={onNsfwChange}
         generating={generating}
         batchCount={batchCount}
+        minBatchCount={4}
         onTopicChange={setTopic}
+        onWorldRulesChange={setWorldRules}
         onBatchCountChange={setBatchCount}
         onGenerate={handleBatchGenerate}
       />
+
+      {/* Single entry generation from text */}
+      <div className="mb-6 rounded-xl border border-primary-tint-light bg-primary-tint-light p-4 space-y-3">
+        <h3 className="text-sm font-medium" style={{ color: 'var(--color-primary)' }}>
+          {t('worldBook.entryFromTextTitle')}
+        </h3>
+        <p className="text-[11px]" style={{ color: 'var(--color-text-muted)' }}>
+          {t('worldBook.entryFromTextHint')}
+        </p>
+        <textarea
+          value={entryFromText}
+          onChange={(e) => setEntryFromText(e.target.value)}
+          placeholder={t('worldBook.entryFromTextPlaceholder')}
+          rows={3}
+          className="w-full rounded-lg border px-3 py-2 text-xs focus:border-[var(--color-primary)] focus:outline-none resize-none"
+          style={{ borderColor: 'var(--input-border)', backgroundColor: 'var(--input-bg)', color: 'var(--text-color)' }}
+        />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleGenerateEntryFromText}
+            disabled={generatingEntryFromText || !entryFromText.trim()}
+            className="inline-flex items-center justify-center gap-2 rounded-lg font-medium px-4 py-1.5 text-xs
+              bg-gradient-success text-[var(--text-color)] shadow-lg transition-all duration-200 hover:scale-105 active:scale-95
+              disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 cursor-pointer"
+          >
+            {generatingEntryFromText ? `⏳ ${t('common.generating')}` : `✨ ${t('worldBook.generateEntryFromText')}`}
+          </button>
+        </div>
+      </div>
 
       {/* Streaming progress panel */}
       {aiStatus !== 'idle' && (

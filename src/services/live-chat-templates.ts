@@ -75,24 +75,52 @@ function buildThemeVarsCss(theme: StatusBarTheme): string {
   return `.lc-root{${entries}}`;
 }
 
-function buildBodyHtml(opts: LiveChatGenerateOptions): string {
+function buildBodyHtml(opts: LiveChatGenerateOptions, comments: string[]): string {
   const title = opts.title || '直播间';
   const maxVisible = opts.maxVisible ?? 10;
+  const hasComments = comments.some((c) => typeof c === 'string' && c.trim());
+  const validCount = comments.filter((c) => typeof c === 'string' && c.trim()).length;
+  const online = hasComments ? Math.min(validCount, 99) + 1 : 0;
   return `<div class="lc-root" id="lc-root" data-max="${maxVisible}">
   <div class="lc-header" id="lc-header">
     <span class="lc-dot"></span>
     <span class="lc-title">${escapeHtml(title, { quotes: true })}</span>
-    <span class="lc-count" id="lc-count">0 人在线</span>
+    <span class="lc-count" id="lc-count">${online} 人在线</span>
     <span class="lc-arrow">▼</span>
   </div>
   <div class="lc-body" id="lc-body">
-    <div class="lc-empty">等待直播开始…</div>
+    ${buildStaticComments(comments, maxVisible)}
   </div>
 </div>`;
 }
 
+/**
+ * 预渲染初始评论为静态 HTML（服务端/模板生成），保证即使运行时 <script> 未执行，
+ * 面板也能直接显示评论，不会只剩"等待直播开始…"空态。
+ * 运行时脚本会在此基础上覆盖为带随机昵称/染色/时间的动态版本。
+ */
+function buildStaticComments(comments: string[], maxVisible: number): string {
+  const list = comments
+    .filter((c) => typeof c === 'string' && c.trim())
+    .slice(0, maxVisible);
+  if (list.length === 0) return '<div class="lc-empty">等待直播开始…</div>';
+  const names = ['路人甲','吃瓜群众','老司机','柠檬精','潜水员','键盘侠','催更党','剧透怪','萌新','大佬','铁粉','黑粉','路人乙','围观人士','吃瓜侠','沙发党','前排就坐','路过','匿名观众','潜水怪','杠精','佛系观众','气氛组','电灯泡'];
+  const total = list.length;
+  const baseTs = Date.now();
+  return list.map((text, i) => {
+    const name = names[i % names.length];
+    const color = `hsl(${(i * 47) % 360},65%,55%)`;
+    const offset = (total - i) * 3;
+    const d = new Date(baseTs - offset * 1000);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `<div class="lc-msg"><div class="lc-avatar" style="background:${color}">${escapeHtml(name.charAt(0))}</div><div class="lc-bubble"><div class="lc-meta"><span class="lc-name">${escapeHtml(name)}</span><span class="lc-time">${hh}:${mm}</span></div><div class="lc-text">${escapeHtml(text)}</div></div></div>`;
+  }).join('');
+}
+
 function buildRuntimeScript(initialComments: string[]): string {
-  const commentsJson = JSON.stringify(initialComments);
+  // 转义 < 为 \u003c，避免评论内容里的 </script> 提前闭合脚本标签、破坏注入的 HTML
+  const commentsJson = JSON.stringify(initialComments).replace(/</g, '\\u003c');
   return `<script type="module">
 // ── 内置初始评论（无需 MVU，立即渲染） ──
 var LC_INITIAL = ${commentsJson};
@@ -234,8 +262,13 @@ function lcPopulate() {
 
 // ── 初始化：立即渲染内置评论，再尝试订阅 MVU 动态更新 ──
 async function lcInit() {
-  // 1. 立即渲染内置评论（无需任何外部依赖）
+  // 1. 等待面板挂载完成（注入的 HTML 可能尚未附着到 DOM，此时 lc-body 不存在）
   //    即使 LC_INITIAL 为空也调用 lcRender，让面板进入"等待直播开始"状态
+  var tries = 0;
+  while (!document.getElementById('lc-body') && tries < 50) {
+    await new Promise(function (r) { setTimeout(r, 50); });
+    tries++;
+  }
   lcRender(LC_INITIAL);
 
   // 2. 可选：等待 MVU 运行时就绪后订阅变量更新事件实现动态刷新
@@ -266,9 +299,10 @@ if (typeof document !== 'undefined') {
 </script>`;
 }
 
-function buildDocument(theme: StatusBarTheme, bodyHtml: string, initialComments: string[]): string {
+function buildDocument(theme: StatusBarTheme, opts: LiveChatGenerateOptions, initialComments: string[]): string {
   const css = `${buildThemeVarsCss(theme)}\n${COMPONENT_CSS}`;
   const script = buildRuntimeScript(initialComments);
+  const bodyHtml = buildBodyHtml(opts, initialComments);
   return '```html\n<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n<style>\n'
     + css
     + '\n</style>\n'
@@ -288,7 +322,6 @@ const DEFAULT_COMMENTS = ['开播了开播了！', '前排吃瓜', '这次什么
 /** 生成直播间评论面板 HTML 文档（```html 代码块） */
 export function generateLiveChatHtml(opts: LiveChatGenerateOptions = {}): string {
   const theme = getStatusBarThemeById(opts.themeId || 'terminal');
-  const bodyHtml = buildBodyHtml(opts);
   const comments = opts.initialComments ?? DEFAULT_COMMENTS;
-  return buildDocument(theme, bodyHtml, comments);
+  return buildDocument(theme, opts, comments);
 }

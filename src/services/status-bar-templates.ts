@@ -294,6 +294,64 @@ function buildRuntimeScript(reflected: ReflectedSection[], opts: StatusBarGenera
   const allVars = reflected.flatMap(s => s.vars);
   const populateBody = allVars.map(populateJsForVar).join('\n');
   const previewValues = JSON.stringify(opts.previewValues ?? {}).replace(/<\/script/gi, '<\\/script');
+
+  // 动态分区发现逻辑：扫描 stat_data 顶层 key，为 schema 中未定义的分区创建 DOM
+  const dynamicSectionCode = `
+// ── 动态分区支持：自动发现并渲染 schema 之外的 stat_data 分区 ──
+var sbCreatedSections = {};
+function sbClassifyValue(val) {
+  if (typeof val === 'number') return Number.isFinite(val) ? 'number' : 'text';
+  if (typeof val === 'boolean') return 'boolean';
+  if (Array.isArray(val)) return 'list';
+  if (val !== null && typeof val === 'object') return 'list';
+  return 'text';
+}
+function sbEscapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function sbCreateDynamicSection(sectionName, sectionData, all) {
+  var safeId = 'sb-dyn-' + sectionName.replace(/[^a-zA-Z0-9\\u4e00-\\u9fff]/g, '-');
+  if (document.getElementById(safeId)) return; // 已存在，跳过
+  var bodyHtml = '';
+  Object.keys(sectionData).forEach(function(varName) {
+    var val = sectionData[varName];
+    var kind = sbClassifyValue(val);
+    var jsPath = 'stat_data.' + sectionName + '.' + varName;
+    var displayVal = sbGet(all, jsPath, val);
+    switch (kind) {
+      case 'number':
+        bodyHtml += '<div class="sb-row"><span class="sb-label">' + sbEscapeHtml(varName) + '</span><span class="sb-val">' + sbEscapeHtml(String(displayVal)) + '</span></div>';
+        break;
+      case 'boolean':
+        bodyHtml += '<div class="sb-row"><span class="sb-label">' + sbEscapeHtml(varName) + '</span><span class="sb-badge ' + (displayVal ? 'sb-ok' : 'sb-bad') + '">' + (displayVal ? '是' : '否') + '</span></div>';
+        break;
+      case 'list':
+        bodyHtml += '<div class="sb-row-block"><div class="sb-label" style="margin-bottom:3px">' + sbEscapeHtml(varName) + '</div><ul class="sb-list"><li>' + sbEscapeHtml(JSON.stringify(displayVal)) + '</li></ul></div>';
+        break;
+      default:
+        bodyHtml += '<div class="sb-row"><span class="sb-label">' + sbEscapeHtml(varName) + '</span><span class="sb-val">' + sbEscapeHtml(String(displayVal)) + '</span></div>';
+    }
+  });
+  var sectionHtml = '<div class="sb-section" id="' + safeId + '" data-sb-dynamic="true">';
+  sectionHtml += '<div class="sb-section-title"><span>▸ ' + sbEscapeHtml(sectionName) + '</span><span class="sb-arrow">▼</span></div>';
+  sectionHtml += '<div class="sb-section-body">' + bodyHtml + '</div></div>';
+  document.querySelector('.sb-root').insertAdjacentHTML('beforeend', sectionHtml);
+  // 绑定折叠/展开事件
+  var titleEl = document.getElementById(safeId).querySelector('.sb-section-title');
+  if (titleEl) titleEl.addEventListener('click', function() { titleEl.parentElement.classList.toggle('sb-collapsed'); });
+  sbCreatedSections[sectionName] = true;
+}
+function sbDiscoverDynamicSections(all) {
+  var statData = (all && all.stat_data) ? all.stat_data : {};
+  if (!statData || typeof statData !== 'object') return;
+  Object.keys(statData).forEach(function(sectionName) {
+    if (sbCreatedSections[sectionName]) return; // 已创建过，跳过
+    var sectionData = statData[sectionName];
+    if (sectionData === null || typeof sectionData !== 'object' || Array.isArray(sectionData)) return; // 只处理对象类型分区
+    var hasVisibleVars = Object.keys(sectionData).some(function(k) { return !k.startsWith('$'); });
+    if (!hasVisibleVars) return; // 无可见变量，跳过
+    sbCreateDynamicSection(sectionName, sectionData, all);
+  });
+}`;
+
   return `<script type="module">
 var sbPreviewValues = ${previewValues};
 function escH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -308,9 +366,11 @@ function sbGet(obj, path, def) {
   }
   return cur === undefined ? def : cur;
 }
+${dynamicSectionCode}
 function sbPopulate() {
   var all = (typeof getAllVariables === 'function') ? getAllVariables() : {};
 ${populateBody}
+  sbDiscoverDynamicSections(all);
 }
 function sbSetPreviewValues(values) {
   sbPreviewValues = values || {};

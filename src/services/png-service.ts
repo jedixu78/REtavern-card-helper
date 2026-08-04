@@ -329,6 +329,9 @@ export function downloadPng(pngData: Uint8Array, filename: string) {
   const a = document.createElement('a');
   a.href = url;
   a.download = filename.endsWith('.png') ? filename : `${filename}.png`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  // 部分浏览器若在 click 后立即 revoke 会中断下载，延后释放
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

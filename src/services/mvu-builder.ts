@@ -481,7 +481,8 @@ function getDefaultForDefine(path: string, sections: MvuSchemaSection[]): string
  * Replaces // SCHEMA_CONTENT placeholder with actual schema.ts content.
  */
 export function buildZodTxt(schemaTsContent: string): string {
-  const template = `import { registerMvuSchema } from 'https://testingcf.jsdelivr.net/gh/StageDog/tavern_resource/dist/util/mvu_zod.js';
+  // 锁定 tavern_resource main 分支提交 f05b8058（2026-07-31），避免无版本引用漂移
+  const template = `import { registerMvuSchema } from 'https://testingcf.jsdelivr.net/gh/StageDog/tavern_resource@f05b80586fe05d775dfeb9fe7546e4a26fc5f677/dist/util/mvu_zod.js';
 // SCHEMA_CONTENT
 
 $(() => {
@@ -526,7 +527,12 @@ function buildCompactRules(rules: MvuUpdateRule[]): string {
     } else {
       lines.push(`  ${key}:`);
       for (const r of subRules) {
-        const subKey = r.path.split('.').slice(1).join('.') || key;
+        // 根路径规则（path 无 '.'）：字段直接挂在 rootKey 下，避免 `关系: → 关系:` 的重复嵌套
+        if (!r.path.includes('.')) {
+          appendCompactRuleFields(lines, r, 4);
+          continue;
+        }
+        const subKey = r.path.split('.').slice(1).join('.');
         lines.push(`    ${subKey}:`);
         appendCompactRuleFields(lines, r, 6);
       }
@@ -609,12 +615,13 @@ format: |-
   </Analysis>
   <JSONPatch>
   [
-    { "op": "replace", "path": "/stat_data/\${section/variable}", "value": \${new_value} },
-    { "op": "delta", "path": "/stat_data/\${section/number_variable}", "value": \${positive_or_negative_delta} },
-    { "op": "insert", "path": "/stat_data/\${section/object}/newKey", "value": \${content} },
-    { "op": "insert", "path": "/stat_data/\${section/array}/-", "value": \${new_value} },
-    { "op": "remove", "path": "/stat_data/\${section/object/key}" },
-    { "op": "move", "from": "/stat_data/\${section/variable}", "to": "/stat_data/\${section/another/path}" },
+    { "op": "replace", "path": "\${/path/to/variable}", "value": "\${new_value}" },
+    { "op": "delta", "path": "\${/path/to/number/variable}", "value": "\${positive_or_negative_delta}" },
+    { "op": "insert", "path": "\${/path/to/object/new_key}", "value": "\${new_value}" },
+    { "op": "insert", "path": "\${/path/to/array/-}", "value": "\${new_value}" },
+    { "op": "remove", "path": "\${/path/to/object/key}" },
+    { "op": "remove", "path": "\${/path/to/array/0}" },
+    { "op": "move", "from": "\${/path/to/variable}", "to": "\${/path/to/another/path}" },
     ...
   ]
   </JSONPatch>

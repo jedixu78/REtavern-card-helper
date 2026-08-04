@@ -30,10 +30,10 @@ describe('migrateDraftRecord', () => {
   });
 
   it('V4 迁移补默认 worldAnchor（新字段）', () => {
-    const result = migrateDraftRecord({ version: 4, data: {}, currentStep: 1 });
+    const result = migrateDraftRecord({ version: 4, data: { worldRules: 'legacy rules' }, currentStep: 1 });
     // V7：worldAnchor 默认值由 normalizeDraft 在加载时填充，迁移函数本身不补默认
-    // 这里只验证旧字段（era/hardConstraints/worldRules）不会残留
-    expect((result?.data as Record<string, unknown>).worldRules).toBeUndefined();
+    // 这里只验证旧字段（era/hardConstraints）不会残留，worldRules 内容保留
+    expect((result?.data as Record<string, unknown>).worldRules).toBe('legacy rules');
     // 旧字段 hardConstraints 作为键名不应残留（已重命名为 constraints）
     expect((result?.data.worldAnchor as Record<string, unknown> | undefined)?.hardConstraints).toBeUndefined();
     // 已有 worldAnchor.era 时迁移到新结构的 era 字段
@@ -45,7 +45,7 @@ describe('migrateDraftRecord', () => {
     expect(withEra?.data.worldAnchor).toEqual({ type: '', era: '近未来', culture: '', humanity: '', constraints: '无魔法' });
   });
 
-  it('V6 迁移到 V7：worldAnchor 字段重命名 + worldRules/skeleton* 移除', () => {
+  it('V6 迁移到 V7：worldAnchor 字段重命名 + worldRules 保留 + skeleton* 移除', () => {
     const v6Data = {
       worldAnchor: { era: '近未来', coreRules: 'r', hardConstraints: 'hc', tone: 't' },
       worldRules: 'legacy rules',
@@ -61,9 +61,9 @@ describe('migrateDraftRecord', () => {
     expect(result?.migratedFrom).toBe('V6');
     // era → era, hardConstraints → constraints; coreRules/tone 丢弃; type/culture/humanity 补空
     expect(result?.data.worldAnchor).toEqual({ type: '', era: '近未来', culture: '', humanity: '', constraints: 'hc' });
-    // worldRules / skeleton* 字段被删除
+    // worldRules 内容保留；skeleton* 字段被删除
     const dataAsRecord = result?.data as Record<string, unknown>;
-    expect(dataAsRecord.worldRules).toBeUndefined();
+    expect(dataAsRecord.worldRules).toBe('legacy rules');
     expect(dataAsRecord.skeletonTopic).toBeUndefined();
     expect(dataAsRecord.skeletonCount).toBeUndefined();
     expect(dataAsRecord.skeletonModeEnabled).toBeUndefined();
@@ -81,9 +81,23 @@ describe('migrateDraftRecord', () => {
     expect(migrateDraftRecord({ version: 5, data: {}, currentStep: 8 })?.migratedFrom).toBe('V5');
   });
 
-  it('无迁移路径的旧版本返回 null', () => {
-    expect(migrateDraftRecord({ version: 3, data: {}, currentStep: 2 })).toBeNull();
-    expect(migrateDraftRecord({ version: 0, data: {}, currentStep: 1 })).toBeNull();
+  it('未知版本不再丢弃数据：原样透传并标记来源', () => {
+    // 极旧版本（V3）
+    const v3Result = migrateDraftRecord({ version: 3, data: { cardName: 'test' }, currentStep: 2 });
+    expect(v3Result).not.toBeNull();
+    expect(v3Result?.data.cardName).toBe('test');
+    expect(v3Result?.migratedFrom).toBe('V3');
+    expect(v3Result?.currentStep).toBe(2);
+
+    // 未来版本（应用降级场景，如 V99）
+    const v99Result = migrateDraftRecord({ version: 99, data: { cardName: 'future' }, currentStep: 5 });
+    expect(v99Result).not.toBeNull();
+    expect(v99Result?.data.cardName).toBe('future');
+    expect(v99Result?.migratedFrom).toBe('V99');
+    expect(v99Result?.currentStep).toBe(5);
+
+    // 无 data 的极端情况仍返回 null
+    expect(migrateDraftRecord({ version: 0, data: undefined as any, currentStep: 1 })).toBeNull();
   });
 
   it('currentStep 缺失时回退到 1', () => {

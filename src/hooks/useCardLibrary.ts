@@ -148,23 +148,28 @@ export function useCardLibrary() {
 
   /** Permanently delete a card from trash */
   const permanentDelete = useCallback(async (id: number) => {
-    await db.cards.delete(id);
-    // Also delete associated chat sessions and version history
-    await db.chat_sessions.where('cardId').equals(id).delete();
-    await deleteAllVersions(id);
+    // Use a transaction so a failure in any step rolls back the others
+    await db.transaction('rw', db.cards, db.chat_sessions, async () => {
+      await db.cards.delete(id);
+      await db.chat_sessions.where('cardId').equals(id).delete();
+      await deleteAllVersions(id);
+    });
     await loadCards();
   }, [loadCards]);
 
   /** Empty the trash (permanently delete all trashed cards) */
   const emptyTrash = useCallback(async () => {
     const trashed = await db.cards.where('deletedAt').above(new Date(0)).toArray();
-    for (const card of trashed) {
-      if (card.id) {
-        await db.cards.delete(card.id);
-        await db.chat_sessions.where('cardId').equals(card.id).delete();
-        await deleteAllVersions(card.id);
+    // Wrap all deletions in a single transaction for atomicity
+    await db.transaction('rw', db.cards, db.chat_sessions, async () => {
+      for (const card of trashed) {
+        if (card.id) {
+          await db.cards.delete(card.id);
+          await db.chat_sessions.where('cardId').equals(card.id).delete();
+          await deleteAllVersions(card.id);
+        }
       }
-    }
+    });
     await loadCards();
   }, [loadCards]);
 

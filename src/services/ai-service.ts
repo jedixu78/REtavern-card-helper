@@ -980,14 +980,20 @@ export async function fetchModels(
   apiUrl: string,
   apiKey: string,
 ): Promise<Array<{ id: string; owned_by: string }>> {
-  const response = await fetch('/api/ai/models', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      apiUrl: deriveModelsUrl(apiUrl),
-      apiKey,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch('/api/ai/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiUrl: deriveModelsUrl(apiUrl),
+        apiKey,
+      }),
+    });
+  } catch (err) {
+    // Network-level error (DNS, connection refused, CORS block)
+    throw new Error(`网络请求失败：${err instanceof Error ? err.message : '无法连接到后端代理服务'}`);
+  }
 
   if (!response.ok) {
     const message = await readProxyError(response, `获取模型列表失败 (${response.status})`);

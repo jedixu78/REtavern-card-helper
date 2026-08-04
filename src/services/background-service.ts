@@ -41,7 +41,12 @@ export function getStoredBackground(): string | null {
  * Store a new background image and apply it.
  */
 export function setBackground(imageDataUrl: string): void {
-  localStorage.setItem(STORAGE_KEY, imageDataUrl);
+  try {
+    localStorage.setItem(STORAGE_KEY, imageDataUrl);
+  } catch {
+    // QuotaExceededError: storage full or private browsing limit reached
+    console.warn('背景图片保存失败：存储空间不足');
+  }
   applyBackground(imageDataUrl);
 }
 

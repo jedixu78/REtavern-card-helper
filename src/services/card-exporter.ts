@@ -128,7 +128,7 @@ const LIVE_CHAT_PROMPT_RULE = `---
 ### 你的任务
 1. 在每条回复末尾、<UpdateVariable> 之后（若有），输出字面量 \`<LiveStreamChatImpl/>\` 占位符（独占一行）
 2. 若 MVU 启用，在 <UpdateVariable> 的 <JSONPatch> 里 **替换** \`stat_data.直播间.评论\` 数组：
-   - 用 \`{ "op": "replace", "path": "/stat_data/直播间/评论", "value": [...] }\`
+   - 用 \`{ "op": "replace", "path": "/直播间/评论", "value": [...] }\`
    - 根据当前剧情进展，生成 3-8 条观众评论（**替换整个数组**，不是 insert 追加）
    - 评论应反映"观众"视角：吃瓜、吐槽、玩梗、站队、猜测走向、情绪宣泄
    - 评论风格口语化、碎片化，像真实直播间弹幕（短句、表情、梗）
@@ -140,7 +140,7 @@ const LIVE_CHAT_PROMPT_RULE = `---
 ### 示例 JSONPatch
 \`\`\`json
 [
-  { "op": "replace", "path": "/stat_data/直播间/评论", "value": ["卧槽这剧情", "主播快跑", "吃瓜吃瓜", "反转了？", "6666"] }
+  { "op": "replace", "path": "/直播间/评论", "value": ["卧槽这剧情", "主播快跑", "吃瓜吃瓜", "反转了？", "6666"] }
 ]
 \`\`\`
 
@@ -541,11 +541,12 @@ function buildCardExtensions(draft: WizardDraft, zodScript?: string): Record<str
 
   if (mvuEnabled && draft.mvu) {
     // MVU 主脚本：从 CDN 加载 MagVarUpdate bundle
-    // 使用 @beta 分支（与参考卡「二十一人会」一致），支持 delta/move 操作
+    // 锁定到 beta 分支提交 b428179（2026-07-20，与本地 magvarupdate 参考一致），
+    // 避免 @beta 浮动引用导致已导出卡片的运行时行为漂移，支持 delta/move 操作
     tavernHelperScripts.push({
       type: 'script',
       name: 'MVU',
-      content: "import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@beta/artifact/bundle.js'",
+      content: "import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@b42817925d0391c15fa242a8238d2bbe28eb6319/artifact/bundle.js'",
       enabled: true,
       id: 'd0311ca6-5e9a-498e-a777-f74dc4dc6b12',
       info: '',
@@ -1726,7 +1727,12 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
     creator_notes: (data.creator_notes as string) || '',
     creator: (data.creator as string) || '',
     character_version: (data.character_version as string) || '',
-    tags: (data.tags as string[]) || [],
+    // tags 归一化为字符串数组：第三方卡可能存成字符串，避免下游 .map/.includes 崩溃
+    tags: Array.isArray(data.tags)
+      ? (data.tags as unknown[]).map(String)
+      : typeof data.tags === 'string' && data.tags.trim()
+        ? data.tags.split(',').map((s) => s.trim()).filter(Boolean)
+        : [],
     bookScanDepth: (charBook?.scan_depth as number) ?? 200,
     bookTokenBudget: (charBook?.token_budget as number) ?? 40000,
     bookRecursiveScanning: (charBook?.recursive_scanning as boolean) ?? false,

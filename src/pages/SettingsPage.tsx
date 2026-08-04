@@ -2,7 +2,7 @@
  * SettingsPage - API configuration page.
  * Features: API URL presets, API key management, model selection, parameters.
  */
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { getAISettings, saveAISettings, maskApiKey, type AISettings } from '../db/database';
 import { fetchModels } from '../services/ai-service';
 import { downloadBackup, restoreBackup, validateBackup, type BackupFile } from '../services/backup-service';
@@ -24,6 +24,7 @@ export function SettingsPage() {
   ];
   const [settings, setSettings] = useState<AISettings | null>(null);
   const [modelList, setModelList] = useState<Array<{ id: string; owned_by: string }>>([]);
+  const [modelSearch, setModelSearch] = useState('');
   const [fetchingModels, setFetchingModels] = useState(false);
   const [editingKey, setEditingKey] = useState(false);
   const [tempKey, setTempKey] = useState('');
@@ -78,6 +79,7 @@ export function SettingsPage() {
       if (cancelled) return;
       setSettings(s);
       setTempKey(s.apiKey);
+      setModelList(s.modelList || []);
     }).catch((err) => {
       if (cancelled) return;
       console.error('Failed to load AI settings:', err);
@@ -119,6 +121,7 @@ export function SettingsPage() {
           apiKey: key,
           model: modelToSave,
           keyVerified: true,
+          modelList: models,
         });
         setSettings(updated);
         setEditingKey(false);
@@ -149,6 +152,27 @@ export function SettingsPage() {
     setSettings(updated);
     addToast('success', t('settings.saveSuccess'));
   };
+
+  // 不拉取，直接保存手动填写的模型 ID
+  const handleSaveModel = async () => {
+    if (!settings) return;
+    const model = settings.model.trim();
+    if (!model) {
+      addToast('error', t('settings.modelRequired'));
+      return;
+    }
+    await handleSaveSettings({ model });
+    addToast('success', t('settings.modelSaved'));
+  };
+
+  // 拉取模型列表的检索过滤
+  const filteredModels = useMemo(() => {
+    const q = modelSearch.trim().toLowerCase();
+    if (!q) return modelList;
+    return modelList.filter(
+      (m) => m.id.toLowerCase().includes(q) || (m.owned_by || '').toLowerCase().includes(q),
+    );
+  }, [modelList, modelSearch]);
 
   const keyIsLocked = settings?.keyVerified && !editingKey;
 
@@ -245,37 +269,68 @@ export function SettingsPage() {
               <label className="block text-sm font-medium mb-1" style={{ color: 'color-mix(in srgb, var(--text-color) 80%, transparent)' }}>
                 {t('settings.model')}
               </label>
-              {modelList.length > 0 ? (
-                <select
-                  value={settings.model}
-                  onChange={(e) => handleSaveSettings({ model: e.target.value })}
-                  className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]"
-                  style={{ borderColor, backgroundColor: inputBg, color: 'var(--text-color)' }}
-                >
-                  {modelList.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.id}{m.owned_by ? ` (${m.owned_by})` : ''}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]"
-                  style={{ borderColor, backgroundColor: inputBg, color: 'var(--text-color)' }}
-                  value={settings.model}
-                  onChange={(e) => setSettings({ ...settings, model: e.target.value })}
-                  placeholder={t('settings.modelPlaceholder')}
-                />
-              )}
+              <input
+                className="w-full rounded-lg border px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]"
+                style={{ borderColor, backgroundColor: inputBg, color: 'var(--text-color)' }}
+                value={settings.model}
+                onChange={(e) => setSettings({ ...settings, model: e.target.value })}
+                placeholder={t('settings.modelPlaceholder')}
+              />
             </div>
+            <Button variant="secondary" size="sm" onClick={handleSaveModel} className="shrink-0">
+              💾 {t('settings.saveModel')}
+            </Button>
             <Button variant="secondary" size="sm" onClick={handleFetchModels} disabled={fetchingModels} className="shrink-0">
               {fetchingModels ? `⏳ ${t('settings.fetching')}` : `🔄 ${t('settings.fetchModels')}`}
             </Button>
           </div>
           {modelList.length > 0 && (
-            <p className="text-[11px] mt-1" style={{ color: faintText }}>
-              {t('settings.fetchSuccess', { count: String(modelList.length) })} · {t('settings.keyHidden')}
-            </p>
+            <div className="mt-3">
+              <p className="text-[11px] mb-1.5" style={{ color: faintText }}>
+                {t('settings.pulledModels')} · {t('settings.fetchSuccess', { count: String(modelList.length) })} · {t('settings.keyHidden')}
+              </p>
+              <div className="flex items-center gap-2 mb-1.5">
+                <div className="relative flex-1">
+                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs" style={{ color: faintText }}>🔍</span>
+                  <input
+                    className="w-full rounded-lg border pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]"
+                    style={{ borderColor, backgroundColor: inputBg, color: 'var(--text-color)' }}
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                    placeholder={t('settings.searchModel')}
+                    autoFocus
+                  />
+                </div>
+                <span className="text-[11px] shrink-0" style={{ color: faintText }}>
+                  {t('settings.modelCount', { count: String(filteredModels.length) })}
+                </span>
+              </div>
+              <div className="max-h-56 overflow-y-auto rounded-lg border" style={{ borderColor, backgroundColor: 'rgba(var(--card-bg-r), var(--card-bg-g), var(--card-bg-b), 0.4)' }}>
+                {filteredModels.length === 0 ? (
+                  <p className="px-3 py-3 text-xs" style={{ color: faintText }}>{t('settings.noMatch')}</p>
+                ) : (
+                  filteredModels.map((m) => {
+                    const active = settings.model === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setSettings({ ...settings, model: m.id })}
+                        className={`w-full text-left px-3 py-1.5 text-sm transition-colors ${
+                          active
+                            ? 'bg-primary-tint text-primary-bright'
+                            : 'hover:bg-[color-mix(in_srgb,var(--color-surface-elevated)_60%,transparent)]'
+                        }`}
+                        style={{ color: active ? undefined : 'var(--text-color)' }}
+                      >
+                        <span className="font-mono">{m.id}</span>
+                        {m.owned_by ? <span className="text-[11px] ml-1.5" style={{ color: faintText }}>({m.owned_by})</span> : null}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           )}
         </div>
 

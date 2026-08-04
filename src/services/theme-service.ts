@@ -274,7 +274,11 @@ export function getThemeSettings(): ThemeSettings {
 export function saveThemeSettings(settings: Partial<ThemeSettings>): ThemeSettings {
   const current = getThemeSettings();
   const updated = { ...current, ...settings };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  } catch {
+    console.warn('主题设置保存失败：存储空间不足');
+  }
   applyTheme(updated);
   return updated;
 }

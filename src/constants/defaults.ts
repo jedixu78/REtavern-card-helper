@@ -457,6 +457,10 @@ export interface WizardDraft {
   /** 世界观锚定 — 锚定创作方向的风格/地点/约束。既作 AI 生成约束注入，
    *  也是「锚定世界观」步骤的输入，AI 据此扩写出总纲+子条目加入世界书。 */
   worldAnchor?: WorldAnchor;
+  /** Step 4 世界书细节 AI 生成时的「世界观约束与运行规则」内容输入，跨步骤保留 */
+  worldRules?: string;
+  /** Shared UI state — Step 4 世界书细节的主题/方向输入，跨步骤保留以免用户重复输入 */
+  worldbookTopic?: string;
   /** Shared UI state — Step 4 世界书细节的批量生成数量，跨步骤保留以免用户重复输入。 */
   worldbookBatchCount?: number;
   /** MVU + EJS configuration */
@@ -482,7 +486,7 @@ export function createEmptyCharacter(): WizardCharacter {
 }
 
 /**
- * Empty lorebook entry template for Step 2/4 (World Book skeleton + detail).
+ * Empty lorebook entry template for Step 2/4 (锚定世界观 + 世界书细节).
  * Aligned with SillyTavern runtime format (CardForge reference).
  *
  * V2 Spec fields (embedded in PNG):
@@ -576,7 +580,7 @@ export const LOREBOOK_ROLE_OPTIONS = [
  * V6 → V7：合并「世界观锚定」+「世界书骨架」为「锚定世界观」步骤。
  * - worldAnchor 重构为从大到小漏斗字段（type/era/culture/humanity/constraints），
  *   旧字段映射 era→era、hardConstraints→constraints（coreRules/tone 丢弃）
- * - 移除 worldRules / skeletonTopic / skeletonCount / skeletonModeEnabled
+ * - 移除 skeletonTopic / skeletonCount / skeletonModeEnabled（worldRules 保留为第四步内容输入）
  * - lorebookEntries 内 fromSkeleton/skeletonExpanded → fromAnchor
  */
 export const WIZARD_DRAFT_VERSION = 7;
@@ -669,6 +673,8 @@ export function createEmptyDraft(): WizardDraft {
     bookRecursiveScanning: false,
     worldbookNsfw: false,
     worldAnchor: { type: '', era: '', culture: '', humanity: '', constraints: '' },
+    worldRules: '',
+    worldbookTopic: '',
     worldbookBatchCount: 8,
   };
 }

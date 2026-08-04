@@ -8,7 +8,7 @@
  *
  * 本步骤与「分阶段模式」并存且都可选：此处定义的变量会与分阶段模板的变量合并。
  */
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Button } from '../shared/Button';
 import { TextInput } from '../shared/TextInput';
 import { TextArea } from '../shared/TextArea';
@@ -16,6 +16,7 @@ import type { MvuConfig, MvuSchemaSection, MvuVariable, MvuUpdateRule, MvuPrefix
 import { createEmptyMvuConfig } from '../../constants/defaults';
 import { buildSchemaTs, buildInitvarYaml, buildUpdateRulesYaml, buildEjsPreprocess } from '../../services/mvu-builder';
 import { BeginnerModePanel } from './BeginnerModePanel';
+import { StatusBarConfigPanel } from './StatusBarConfigPanel';
 
 // ════════════════════════════════════════════════════════════════════════════
 // 游戏元素模型（技能 / 功法）—— 映射为 MVU record 变量
@@ -94,6 +95,25 @@ const PREFIX_OPTIONS: { value: MvuPrefix; label: string }[] = [
   { value: '$', label: '隐藏' },
 ];
 
+/** 路径格式校验：非空、无首尾/连续点。 */
+function validatePathFormat(path: string): string | null {
+  const trimmed = path.trim();
+  if (!trimmed) return '路径不能为空';
+  if (trimmed.startsWith('.') || trimmed.endsWith('.')) return '路径不能以点开头或结尾';
+  if (trimmed.includes('..')) return '路径段不能为空';
+  return null;
+}
+
+/** 变量路径校验：格式 + 不与其它变量重名。 */
+function validateVariablePath(path: string, allPaths: string[], currentPath: string): string | null {
+  const formatError = validatePathFormat(path);
+  if (formatError) return formatError;
+  const trimmed = path.trim();
+  const dupCount = allPaths.filter((p) => p === trimmed).length;
+  if (dupCount > 1 || (dupCount === 1 && trimmed !== currentPath)) return '该路径已被其他变量使用';
+  return null;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 主组件
 // ════════════════════════════════════════════════════════════════════════════
@@ -110,9 +130,12 @@ const inputCls = 'w-full rounded-lg border border-[var(--input-border)] bg-[var(
 const labelCls = 'text-xs font-medium text-[var(--color-text-secondary)] mb-1 block';
 const cardCls = 'rounded-xl border border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] p-3';
 
+// Module-level constant: avoids creating a new empty config object on every render
+const EMPTY_MVU_CONFIG = createEmptyMvuConfig();
+
 export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterContext, worldbookContext }: StepMvuVariablesProps) {
-  const mvu = mvuProp ?? createEmptyMvuConfig();
-  const [activeTab, setActiveTab] = useState<'variables' | 'elements' | 'rules'>('variables');
+  const mvu = mvuProp ?? EMPTY_MVU_CONFIG;
+  const [activeTab, setActiveTab] = useState<'variables' | 'elements' | 'rules' | 'statusBar'>('variables');
 
   // ── schema 自动生成（防抖）──────────────────────────────────
   const firstRun = useRef(true);
@@ -186,6 +209,10 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
   };
 
   const totalVars = mvu.schemaSections.reduce((n, s) => n + s.variables.length, 0);
+  const allPaths = useMemo(
+    () => mvu.schemaSections.flatMap((s) => s.variables.map((v) => v.path)),
+    [mvu.schemaSections],
+  );
   const mode = mvu.mode ?? 'beginner';
 
   return (
@@ -236,7 +263,7 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
       {mode === 'expert' && (<>
       {/* Tab 切换 */}
       <div className="flex gap-2 border-b border-[var(--color-border-default)]">
-        {([['variables', '📊 变量分区'], ['elements', '🎮 游戏元素'], ['rules', '📝 更新规则']] as const).map(([key, label]) => (
+        {([['variables', '📊 变量分区'], ['elements', '🎮 游戏元素'], ['rules', '📝 更新规则'], ['statusBar', '🖥️ 状态栏']] as const).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setActiveTab(key)}
@@ -250,6 +277,11 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
           </button>
         ))}
       </div>
+
+      {/* 变量路径下拉候选（变量分区与更新规则两个 tab 共用） */}
+      <datalist id="mvu-variable-paths">
+        {allPaths.map((p, i) => <option key={i} value={p} />)}
+      </datalist>
 
       {/* ── Tab 1: 变量分区 ── */}
       {activeTab === 'variables' && (
@@ -270,7 +302,14 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
                       <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
                         <div className="sm:col-span-4">
                           <label className={labelCls}>变量路径</label>
-                          <TextInput value={v.path} onChange={(e) => updateVariable(sIdx, vIdx, { path: e.target.value })} className={inputCls} placeholder="角色.好感度" />
+                          <TextInput
+                            value={v.path}
+                            onChange={(e) => updateVariable(sIdx, vIdx, { path: e.target.value })}
+                            className={inputCls}
+                            placeholder="角色.好感度"
+                            list="mvu-variable-paths"
+                            error={validateVariablePath(v.path, allPaths, v.path) ?? undefined}
+                          />
                         </div>
                         <div className="sm:col-span-3">
                           <label className={labelCls}>类型</label>
@@ -383,7 +422,14 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
                 <div className="sm:col-span-3">
                   <label className={labelCls}>变量路径</label>
-                  <TextInput value={rule.path} onChange={(e) => updateRule(idx, { path: e.target.value })} className={inputCls} placeholder="角色.好感度" />
+                  <TextInput
+                    value={rule.path}
+                    onChange={(e) => updateRule(idx, { path: e.target.value })}
+                    className={inputCls}
+                    placeholder="角色.好感度"
+                    list="mvu-variable-paths"
+                    error={validatePathFormat(rule.path) ?? undefined}
+                  />
                 </div>
                 <div className="sm:col-span-2">
                   <label className={labelCls}>类型</label>
@@ -414,6 +460,16 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
             </div>
           ))}
           <Button variant="secondary" size="sm" onClick={addRule}>+ 添加规则</Button>
+        </div>
+      )}
+
+      {/* ── Tab 4: 状态栏 ── */}
+      {activeTab === 'statusBar' && (
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            基于当前变量分区生成实时状态栏，配置与新手模式共用，支持模板、主题与实时预览。
+          </p>
+          <StatusBarConfigPanel mvu={mvu} onChange={onChange} />
         </div>
       )}
       </>)}

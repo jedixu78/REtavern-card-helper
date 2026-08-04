@@ -28,7 +28,7 @@ function migrateStepV5ToV6(oldStep: number): number {
  * V6 → V7：合并「世界观锚定」+「世界书骨架」为「锚定世界观」步骤。
  * - worldAnchor 重构为「从大到小」漏斗字段：type/era/culture/humanity/constraints
  *   旧 V6 字段映射：era → era，hardConstraints → constraints（coreRules/tone 丢弃）
- * - 移除 worldRules / skeletonTopic / skeletonCount / skeletonModeEnabled 字段
+ * - 移除 skeletonTopic / skeletonCount / skeletonModeEnabled 字段（worldRules 保留）
  * - lorebookEntries 内的 fromSkeleton/skeletonExpanded 标记替换为 fromAnchor
  * - 步号不变（仍是 8 步），但 step 2 的语义从「骨架」改为「锚定世界观」
  */
@@ -48,7 +48,6 @@ function migrateDataV6ToV7(data: Partial<WizardDraft>): Partial<WizardDraft> {
     };
   }
   // 移除已删除字段（直接 delete，避免后续 normalizeDraft 把它们当成有效字段透传）
-  delete (next as Record<string, unknown>).worldRules;
   delete (next as Record<string, unknown>).skeletonTopic;
   delete (next as Record<string, unknown>).skeletonCount;
   delete (next as Record<string, unknown>).skeletonModeEnabled;
@@ -75,7 +74,10 @@ export interface MigratedDraftPayload {
 
 /**
  * 把任意历史版本的草稿记录迁移到当前 WIZARD_DRAFT_VERSION。
- * 返回 null 表示版本过旧无迁移路径（调用方自行决定丢弃或报错）。
+ *
+ * 降级策略：遇到未知版本（应用降级或极旧版本）时，不再返回 null 丢弃数据，
+ * 而是原样透传 data，由调用方的 normalizeDraft() 补齐缺失字段。
+ * 仅当 record 本身为空/无 data 字段时才返回 null。
  *
  * 注意：V4 草稿必须**链式**走 V4→V5→V6→V7 多段步号/数据映射。
  */
@@ -102,6 +104,15 @@ export function migrateDraftRecord(
   if (record.version === 6) {
     const v7Data = migrateDataV6ToV7(data);
     return { data: v7Data, currentStep: step, migratedFrom: 'V6' };
+  }
+  // 未知版本（应用降级 / 极旧版本）：原样透传，normalizeDraft 补齐缺失字段，
+  // 避免直接丢弃用户数据。migratedFrom 标记来源版本供调用方提示。
+  if (data && typeof data === 'object') {
+    return {
+      data,
+      currentStep: Math.min(step, 9),
+      migratedFrom: `V${record.version}`,
+    };
   }
   return null;
 }

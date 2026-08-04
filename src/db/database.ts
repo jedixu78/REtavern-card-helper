@@ -44,6 +44,8 @@ export interface AISettings {
   keyVerified: boolean;
   /** Max retry attempts for transient API failures (0 = no retry) */
   retryCount: number;
+  /** 已拉取并缓存的模型列表（非索引字段，无需 schema 升级） */
+  modelList?: Array<{ id: string; owned_by: string }>;
 }
 
 /** Auto-saved or manually-saved wizard draft (survives page navigation) */

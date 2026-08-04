@@ -3,7 +3,7 @@
  * Lists all saved cards as a responsive card grid with search, sort,
  * edit, delete, JSON/PNG export/import, and replaceable card covers.
  */
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCardLibrary } from '../hooks/useCardLibrary';
 import { useViewPrefs } from '../hooks/useViewPrefs';
@@ -19,8 +19,11 @@ import { WIZARD_DRAFT_VERSION } from '../constants/defaults';
 import { cardToDraft, assembleCard, exportAsJson, exportAsPng, importFromPng } from '../services/card-exporter';
 import { resizeImageToPngBuffer } from '../services/image-processing';
 import { saveVersion, listVersions, rollbackToVersion, deleteVersion } from '../services/version-service';
-import type { CardVersion } from '../db/database';
-import { Trash2, Edit2, MoreVertical, Image as ImageIcon } from 'lucide-react';
+import { listManualDrafts, deleteDraft } from '../services/draft-service';
+import { parseWorldInfoJson, downloadWorldbookJson, mergeLorebookEntries } from '../services/worldbook-io';
+import type { CardVersion, WizardDraftRecord } from '../db/database';
+import type { LorebookEntry } from '../constants/defaults';
+import { Trash2, Edit2, MoreVertical, Image as ImageIcon, FileText } from 'lucide-react';
 
 export function LibraryPage() {
   const { t } = useTranslation();
@@ -37,7 +40,24 @@ export function LibraryPage() {
   const [versionHistoryCardId, setVersionHistoryCardId] = useState<number | null>(null);
   const [versions, setVersions] = useState<CardVersion[]>([]);
   const [versionLoading, setVersionLoading] = useState(false);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [showDrafts, setShowDrafts] = useState(false);
+  const [drafts, setDrafts] = useState<WizardDraftRecord[]>([]);
+  const [importDedupe, setImportDedupe] = useState<{ card: Record<string, unknown>; name: string; existingId: number } | null>(null);
+  const [pendingWorldbook, setPendingWorldbook] = useState<{ card: Record<string, unknown>; entries: LorebookEntry[]; bookName: string } | null>(null);
   const { mode: viewMode, size: viewSize, setMode: setViewMode, setSize: setViewSize } = useViewPrefs('library');
+
+  const refreshDrafts = useCallback(async () => {
+    try {
+      setDrafts(await listManualDrafts());
+    } catch {
+      setDrafts([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshDrafts();
+  }, [refreshDrafts]);
 
   // Grid column classes per size — bigger size = fewer columns.
   const gridColsBySize = {
@@ -52,6 +72,9 @@ export function LibraryPage() {
       const q = searchQuery.toLowerCase();
       result = result.filter((c) => ((c.name as string) || '').toLowerCase().includes(q));
     }
+    if (selectedTag) {
+      result = result.filter((c) => (((c.data as Record<string, unknown>)?.tags as string[]) || []).includes(selectedTag));
+    }
     result.sort((a, b) => {
       let cmp = 0;
       if (sortBy === 'name') {
@@ -64,7 +87,17 @@ export function LibraryPage() {
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return result;
-  }, [cards, searchQuery, sortBy, sortDir]);
+  }, [cards, searchQuery, sortBy, sortDir, selectedTag]);
+
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of cards) {
+      for (const tag of (((c.data as Record<string, unknown>)?.tags as string[]) || [])) {
+        if (tag.trim()) set.add(tag.trim());
+      }
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, 'zh'));
+  }, [cards]);
 
   const handleDelete = async (id: number) => {
     await deleteCard(id);
@@ -178,7 +211,10 @@ export function LibraryPage() {
 
   const handleExportPng = async (card: Record<string, unknown>) => {
     try {
-      await exportAsPng(card as Parameters<typeof exportAsPng>[0]);
+      // 优先使用卡片库封面作为 PNG 底图，其次用内置占位图
+      const coverBlob = card.coverImageBlob as Blob | undefined;
+      const buffer = coverBlob ? await coverBlob.arrayBuffer() : undefined;
+      await exportAsPng(card as Parameters<typeof exportAsPng>[0], buffer);
       addToast('success', t('library.exportPngSuccess'));
     } catch {
       addToast('error', t('library.exportPngError'));
@@ -235,6 +271,103 @@ export function LibraryPage() {
     }
   }, [updateCardCover, addToast, t]);
 
+  /** 落库一张导入的卡片：existingId 为空 = 新建，否则覆盖同名卡。 */
+  const persistImportedCard = useCallback(async (cardToSave: Record<string, unknown>, existingId?: number) => {
+    const name = String(cardToSave.name ?? '');
+    if (existingId) {
+      const existing = await db.cards.get(existingId);
+      const updated = {
+        ...cardToSave,
+        id: existingId,
+        name,
+        createdAt: existing?.createdAt ?? new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        coverImageBlob: (cardToSave.coverImageBlob as Blob | undefined) ?? existing?.coverImageBlob ?? null,
+      };
+      await db.cards.update(existingId, updated);
+      try { await saveVersion(existingId, updated, 'import'); } catch { /* 版本快照失败不影响导入 */ }
+      addToast('success', t('library.importOverwritten', { name }));
+    } else {
+      const newId = await db.cards.add(cardToSave as Record<string, unknown>);
+      try { await saveVersion(newId as number, cardToSave as Record<string, unknown>, 'import'); } catch { /* 版本快照失败不影响导入 */ }
+      addToast('success', t('library.importSuccess', { name }));
+    }
+    await loadCards();
+  }, [loadCards, addToast, t]);
+
+  /** 导出卡片的世界书为独立 SillyTavern World Info JSON。 */
+  const handleExportWorldbook = (card: Record<string, unknown>) => {
+    try {
+      const draft = cardToDraft(card);
+      const bookName = draft.bookName?.trim() || `${draft.cardName || t('library.untitled')}的世界书`;
+      downloadWorldbookJson(draft.lorebookEntries, bookName);
+      addToast('success', t('library.worldbookExportSuccess', { count: String(draft.lorebookEntries.length) }));
+    } catch {
+      addToast('error', t('library.worldbookExportError'));
+    }
+    setExportMenuCard(null);
+  };
+
+  /** 选择世界书 JSON 文件并进入合并确认。 */
+  const handlePickWorldbook = (card: Record<string, unknown>) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = parseWorldInfoJson(text);
+        setPendingWorldbook({
+          card,
+          entries: parsed.entries,
+          bookName: parsed.name || file.name.replace(/\.json$/i, ''),
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : t('library.worldbookImportError');
+        addToast('error', t('library.worldbookImportError', { message: msg }));
+      }
+    };
+    input.click();
+    setExportMenuCard(null);
+  };
+
+  /** 确认后把世界书条目合并进目标卡片并落库。 */
+  const handleApplyWorldbook = async () => {
+    if (!pendingWorldbook) return;
+    const { card, entries, bookName } = pendingWorldbook;
+    try {
+      const draft = cardToDraft(card);
+      const merged = mergeLorebookEntries(draft.lorebookEntries, entries);
+      const updatedCard = assembleCard(
+        { ...draft, lorebookEntries: merged, bookName: bookName || draft.bookName },
+        card.id as number,
+      );
+      const cardId = card.id as number;
+      const existing = await db.cards.get(cardId);
+      const toSave = {
+        ...updatedCard,
+        id: cardId,
+        name: card.name ?? updatedCard.name,
+        createdAt: existing?.createdAt ?? new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        coverImageBlob: (card.coverImageBlob as Blob | undefined) ?? null,
+      };
+      await db.cards.update(cardId, toSave);
+      try { await saveVersion(cardId, toSave, 'library-edit'); } catch { /* 版本快照失败不影响合并 */ }
+      await loadCards();
+      addToast('success', t('library.worldbookImported', { count: String(entries.length) }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : t('common.unknownError');
+      addToast('error', t('library.worldbookImportError', { message: msg }));
+    } finally {
+      setPendingWorldbook(null);
+    }
+  };
+
   const handleImport = async () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -275,12 +408,16 @@ export function LibraryPage() {
           updatedAt: new Date(),
           ...(coverBlob ? { coverImageBlob: coverBlob } : {}),
         };
-        const newId = await db.cards.add(cardToSave as Record<string, unknown>);
-        try {
-          await saveVersion(newId as number, cardToSave as Record<string, unknown>, 'import');
-        } catch { /* 版本快照失败不影响导入 */ }
-        await loadCards();
-        addToast('success', t('library.importSuccess', { name: String(cardToSave.name) }));
+        // 同名去重：存在未删除的同名卡时让用户选择 覆盖 / 另存新卡 / 跳过
+        const name = String(cardToSave.name ?? '');
+        const dup = name
+          ? await db.cards.where('name').equals(name).filter((c) => !c.deletedAt).first()
+          : undefined;
+        if (dup?.id) {
+          setImportDedupe({ card: cardToSave, name, existingId: dup.id });
+          return;
+        }
+        await persistImportedCard(cardToSave);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : t('common.unknownError');
         addToast('error', t('library.importError', { message: msg }));
@@ -298,6 +435,64 @@ export function LibraryPage() {
       return 'Unknown';
     }
   };
+
+  /** 卡片菜单项（网格/列表两种布局共用，避免两份维护漂移）。 */
+  const renderExportMenuItems = (card: Record<string, unknown>, cardId: number) => (
+    <>
+      <button
+        className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+        style={{ color: 'var(--text-color)' }}
+        onClick={() => {
+          setExportMenuCard(null);
+          handleEditAsNewDraft(card);
+        }}
+      >
+        📝 {t('library.forkAsDraft')}
+      </button>
+      <button
+        className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+        style={{ color: 'var(--text-color)' }}
+        onClick={() => handleExportJson(card)}
+      >
+        📄 {t('library.exportJson')}
+      </button>
+      <button
+        className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+        style={{ color: 'var(--text-color)' }}
+        onClick={() => handleExportPng(card)}
+      >
+        🖼️ {t('library.exportPngAuto')}
+      </button>
+      <button
+        className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+        style={{ color: 'var(--text-color)' }}
+        onClick={() => handleExportPngWithImage(card)}
+      >
+        🎨 {t('library.exportPngChoose')}
+      </button>
+      <button
+        className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+        style={{ color: 'var(--text-color)' }}
+        onClick={() => handleExportWorldbook(card)}
+      >
+        📖 {t('library.worldbookExport')}
+      </button>
+      <button
+        className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+        style={{ color: 'var(--text-color)' }}
+        onClick={() => handlePickWorldbook(card)}
+      >
+        📥 {t('library.worldbookImport')}
+      </button>
+      <button
+        className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
+        style={{ color: 'var(--text-color)' }}
+        onClick={() => handleOpenVersionHistory(cardId)}
+      >
+        📜 历史版本
+      </button>
+    </>
+  );
 
   const mutedText = 'color-mix(in srgb, var(--text-color) 60%, transparent)';
   const faintText = 'color-mix(in srgb, var(--text-color) 40%, transparent)';
@@ -323,6 +518,11 @@ export function LibraryPage() {
               <Button variant="secondary" onClick={handleImport}>📥 {t('library.importButton')}</Button>
               <Button onClick={() => navigate('/wizard')}>✨ {t('library.createNewCard')}</Button>
             </>
+          )}
+          {!showTrash && (
+            <Button variant={showDrafts ? 'secondary' : 'ghost'} onClick={() => setShowDrafts(!showDrafts)}>
+              📝 {showDrafts ? t('library.hideDrafts') : `${t('library.showDrafts')} (${drafts.length})`}
+            </Button>
           )}
           <Button
             variant={showTrash ? 'secondary' : 'ghost'}
@@ -421,6 +621,38 @@ export function LibraryPage() {
         />
       </div>
 
+      {/* Tag filter chips */}
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-5 -mt-2">
+          <span className="text-xs mr-1" style={{ color: faintText }}>{t('library.tagsLabel')}</span>
+          <button
+            type="button"
+            onClick={() => setSelectedTag(null)}
+            className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+              selectedTag === null
+                ? 'border-[var(--color-primary)] bg-primary-tint text-primary-bright'
+                : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-primary)]'
+            }`}
+          >
+            {t('library.allTags')}
+          </button>
+          {allTags.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
+              className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                selectedTag === tag
+                  ? 'border-[var(--color-primary)] bg-primary-tint text-primary-bright'
+                  : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-primary)]'
+              }`}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Loading state */}
       {loading && (
         <div className="text-center py-12" style={{ color: faintText }}>{t('library.loading')}</div>
@@ -509,44 +741,7 @@ export function LibraryPage() {
                     style={{ borderColor, backgroundColor: 'var(--color-surface-raised)' }}
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <button
-                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                      style={{ color: 'var(--text-color)' }}
-                      onClick={() => {
-                        setExportMenuCard(null);
-                        handleEditAsNewDraft(card as unknown as Record<string, unknown>);
-                      }}
-                    >
-                      📝 {t('library.forkAsDraft')}
-                    </button>
-                    <button
-                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                      style={{ color: 'var(--text-color)' }}
-                      onClick={() => handleExportJson(card as unknown as Record<string, unknown>)}
-                    >
-                      📄 {t('library.exportJson')}
-                    </button>
-                    <button
-                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                      style={{ color: 'var(--text-color)' }}
-                      onClick={() => handleExportPng(card as unknown as Record<string, unknown>)}
-                    >
-                      🖼️ {t('library.exportPngAuto')}
-                    </button>
-                    <button
-                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                      style={{ color: 'var(--text-color)' }}
-                      onClick={() => handleExportPngWithImage(card as unknown as Record<string, unknown>)}
-                    >
-                      🎨 {t('library.exportPngChoose')}
-                    </button>
-                    <button
-                      className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                      style={{ color: 'var(--text-color)' }}
-                      onClick={() => handleOpenVersionHistory(cardId)}
-                    >
-                      📜 历史版本
-                    </button>
+                    {renderExportMenuItems(card as unknown as Record<string, unknown>, cardId)}
                   </div>
                 )}
               </div>
@@ -708,56 +903,92 @@ export function LibraryPage() {
               </div>
 
               {/* Inline export dropdown */}
-              {exportMenuCard?.id === card.id && (
-                <div
-                  className="absolute right-4 top-12 w-44 rounded-lg border shadow-xl z-20 py-1"
-                  style={{ borderColor, backgroundColor: 'var(--color-surface-raised)' }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                    style={{ color: 'var(--text-color)' }}
-                    onClick={() => {
-                      setExportMenuCard(null);
-                      handleEditAsNewDraft(card as unknown as Record<string, unknown>);
-                    }}
+                {exportMenuCard?.id === card.id && (
+                  <div
+                    className="absolute right-4 top-12 w-44 rounded-lg border shadow-xl z-20 py-1"
+                    style={{ borderColor, backgroundColor: 'var(--color-surface-raised)' }}
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    📝 {t('library.forkAsDraft')}
-                  </button>
-                  <button
-                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                    style={{ color: 'var(--text-color)' }}
-                    onClick={() => handleExportJson(card as unknown as Record<string, unknown>)}
-                  >
-                    📄 {t('library.exportJson')}
-                  </button>
-                  <button
-                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                    style={{ color: 'var(--text-color)' }}
-                    onClick={() => handleExportPng(card as unknown as Record<string, unknown>)}
-                  >
-                    🖼️ {t('library.exportPngAuto')}
-                  </button>
-                  <button
-                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                    style={{ color: 'var(--text-color)' }}
-                    onClick={() => handleExportPngWithImage(card as unknown as Record<string, unknown>)}
-                  >
-                    🎨 {t('library.exportPngChoose')}
-                  </button>
-                  <button
-                    className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[color-mix(in_srgb,var(--text-color)_5%,transparent)]"
-                    style={{ color: 'var(--text-color)' }}
-                    onClick={() => handleOpenVersionHistory(cardId)}
-                  >
-                    📜 历史版本
-                  </button>
-                </div>
-              )}
+                    {renderExportMenuItems(card as unknown as Record<string, unknown>, cardId)}
+                  </div>
+                )}
             </div>
           );
         })}
       </div>
+      )}
+
+      {/* 草稿箱聚合：与卡片同页展示，便于从创作到入库的连贯管理 */}
+      {showDrafts && (
+        <div className="mt-10">
+          <div className="flex items-center gap-2 mb-3">
+            <FileText size={16} className="text-primary" />
+            <h3 className="text-lg font-bold" style={{ color: 'var(--text-color)' }}>{t('library.draftsSection')}</h3>
+            <span
+              className="rounded-full border px-2 py-0.5 text-[10px]"
+              style={{ borderColor: borderColor, backgroundColor: surfaceBg, color: mutedText }}
+            >
+              {drafts.length}
+            </span>
+          </div>
+          {drafts.length === 0 ? (
+            <div className="text-center py-10 border border-dashed rounded-xl" style={{ borderColor }}>
+              <p className="text-sm" style={{ color: faintText }}>{t('library.draftsEmpty')}</p>
+            </div>
+          ) : (
+            <div className={`grid ${gridColsBySize[viewSize]} gap-4`}>
+              {drafts.map((draft) => {
+                const draftData = (draft.data as Record<string, unknown> | undefined) ?? {};
+                const draftName = draft.name || String(draftData.cardName ?? '') || t('library.untitled');
+                return (
+                  <div
+                    key={draft.id}
+                    className="rounded-xl border overflow-hidden flex flex-col"
+                    style={{ borderColor, backgroundColor: surfaceBg }}
+                  >
+                    <CardCover blob={draft.coverImageBlob ?? null} name={draftName} />
+                    <div className="p-3 flex-1 flex flex-col">
+                      <h4 className="text-sm font-semibold truncate" style={{ color: 'var(--text-color)' }} title={draftName}>
+                        {draftName}
+                      </h4>
+                      <p className="text-[10px] mt-1" style={{ color: faintText }}>
+                        🕐 {formatDate(draft.updatedAt)}
+                      </p>
+                      <div className="flex items-center gap-1.5 mt-3 pt-2 border-t" style={{ borderColor: 'color-mix(in srgb, var(--color-border-default) 50%, transparent)' }}>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="flex-1 text-xs"
+                          onClick={() => navigate(`/wizard?draftId=${draft.id}`)}
+                        >
+                          📂 {t('library.draftOpen')}
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          className="text-xs px-2"
+                          title={t('common.delete')}
+                          onClick={async () => {
+                            if (!window.confirm(t('library.draftDeleteConfirm'))) return;
+                            try {
+                              await deleteDraft(draft.id);
+                              addToast('success', t('wizard.draftDeleted'));
+                            } catch {
+                              addToast('error', t('wizard.draftDeleteFailed'));
+                            }
+                            await refreshDrafts();
+                          }}
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
 
       </>)}
@@ -846,6 +1077,50 @@ export function LibraryPage() {
           <Button variant="ghost" onClick={() => { setVersionHistoryCardId(null); setVersions([]); }}>
             {t('common.close')}
           </Button>
+        </div>
+      </Modal>
+
+      {/* 导入同名卡片去重：覆盖 / 另存新卡 / 跳过 */}
+      <Modal isOpen={importDedupe !== null} onClose={() => setImportDedupe(null)} title={t('library.importDedupeTitle')}>
+        <p className="mb-4" style={{ color: mutedText }}>
+          {t('library.importDedupeMessage', { name: importDedupe?.name ?? '' })}
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setImportDedupe(null)}>{t('library.importSkip')}</Button>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              if (importDedupe) void persistImportedCard(importDedupe.card);
+              setImportDedupe(null);
+            }}
+          >
+            {t('library.importKeepBoth')}
+          </Button>
+          <Button
+            onClick={() => {
+              if (importDedupe) void persistImportedCard(importDedupe.card, importDedupe.existingId);
+              setImportDedupe(null);
+            }}
+          >
+            {t('library.importOverwrite')}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* 世界书导入确认：合并到目标卡片 */}
+      <Modal isOpen={pendingWorldbook !== null} onClose={() => setPendingWorldbook(null)} title={t('library.worldbookImportTitle')}>
+        <p className="mb-3" style={{ color: mutedText }}>
+          {t('library.worldbookImportConfirm', {
+            count: String(pendingWorldbook?.entries.length ?? 0),
+            book: pendingWorldbook?.bookName || '',
+          })}
+        </p>
+        <p className="text-xs mb-4" style={{ color: faintText }}>
+          {t('library.worldbookImportHint')}
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setPendingWorldbook(null)}>{t('common.cancel')}</Button>
+          <Button onClick={handleApplyWorldbook}>{t('library.worldbookImportMerge')}</Button>
         </div>
       </Modal>
     </div>
