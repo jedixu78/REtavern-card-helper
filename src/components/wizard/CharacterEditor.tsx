@@ -280,6 +280,51 @@ export function CharacterEditor({
         </div>
       </details>
 
+      {/* 三面性面板（专家模式高级选项） */}
+      <details className="group">
+        <summary className="flex items-center gap-2 cursor-pointer select-none text-xs font-medium mb-1.5 transition-colors hover:text-[var(--text-color)] text-themed-muted">
+          <span className="transition-transform group-open:rotate-90">&#x25B6;</span>
+          三面性（角色多面表现）
+          <span className="text-themed-faint">定义不同压力下的表现层次</span>
+          {character.threeFaces?.some(f => f.trigger?.trim()) && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary-tint text-primary-bright border border-primary-tint-light">
+              {character.threeFaces.filter(f => f.trigger?.trim()).length}/3
+            </span>
+          )}
+        </summary>
+        <div className="space-y-2.5 mt-2">
+          {(['日常面', '压力面', '隐藏面'] as const).map((face, i) => {
+            const current = character.threeFaces?.[i] ?? { face, trigger: '', change: '', behavior: '' };
+            const colors = [
+              { border: 'rgba(59,130,246,0.3)', bg: 'rgba(59,130,246,0.08)', accent: '#3b82f6' },
+              { border: 'rgba(245,158,11,0.3)', bg: 'rgba(245,158,11,0.08)', accent: '#f59e0b' },
+              { border: 'rgba(139,92,246,0.3)', bg: 'rgba(139,92,246,0.08)', accent: '#8b5cf6' },
+            ][i];
+            const updateFace = (field: 'trigger' | 'change' | 'behavior', value: string) => {
+              const faces = [...(character.threeFaces ?? [{ face: '日常面', trigger: '', change: '', behavior: '' }, { face: '压力面', trigger: '', change: '', behavior: '' }, { face: '隐藏面', trigger: '', change: '', behavior: '' }])];
+              faces[i] = { ...faces[i], face, [field]: value };
+              onUpdate({ threeFaces: faces });
+            };
+            const placeholders = [
+              { trigger: '如：日常相处、平静对话时', change: '如：温和有礼、耐心细致', behavior: '如：主动倒茶、记住对方喜好' },
+              { trigger: '如：被威胁、遭遇背叛时', change: '如：冷静到冷酷、语速变慢', behavior: '如：不再称呼对方名字、措辞变得精准' },
+              { trigger: '如：深夜独处、面对特定对象时', change: '如：卸下防备、流露脆弱', behavior: '如：哼歌、说出平时绝不会说的话' },
+            ][i];
+            return (
+              <div className="rounded-lg border p-2.5 space-y-1.5" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="text-sm">{['☀️', '⚡', '🌙'][i]}</span>
+                  <span className="text-xs font-semibold" style={{ color: colors.accent }}>{face}</span>
+                </div>
+                <TextInput value={current.trigger} onChange={e => updateFace('trigger', e.target.value)} className="w-full rounded border px-2 py-1 text-[11px] border-themed text-themed" placeholder={placeholders.trigger} />
+                <TextInput value={current.change} onChange={e => updateFace('change', e.target.value)} className="w-full rounded border px-2 py-1 text-[11px] border-themed text-themed" placeholder={placeholders.change} />
+                <TextInput value={current.behavior} onChange={e => updateFace('behavior', e.target.value)} className="w-full rounded border px-2 py-1 text-[11px] border-themed text-themed" placeholder={placeholders.behavior} />
+              </div>
+            );
+          })}
+        </div>
+      </details>
+
       <div>
         <TextArea
           label={t('characterEditor.descLabel')}

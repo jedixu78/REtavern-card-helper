@@ -18,7 +18,7 @@ export function mapAiEntriesToLorebookEntries(items: AIGeneratedLorebookEntry[])
       content: item.content || '',
       comment: item.comment || item.name || '',
       constant: item.constant ?? false,
-      selective: secondaryKeys.length > 0 ? item.selective ?? false : false,
+      selective: secondaryKeys.length > 0 ? item.selective ?? true : false,
       insertion_order: item.insertion_order ?? 100,
       position: (item.position ?? 'after_char') as LorebookPosition,
       priority: item.priority ?? 50,

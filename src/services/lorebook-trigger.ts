@@ -98,9 +98,9 @@ export interface TriggerResult {
 const DEFAULT_SCAN_DEPTH = 4;
 const DEFAULT_MAX_RECURSION = 3;
 
-/** 是否含 CJK 字符——中文没有词边界，\b 对其无效，必须退化为子串匹配。 */
+/** 是否含 CJK 字符--中文/日文/韩文没有词边界，\b 对其无效，必须退化为子串匹配。 */
 function hasCJK(text: string): boolean {
-  return /[㐀-鿿豈-﫿぀-ヿ]/.test(text);
+  return /[㐀-鿿豈-﫿぀-ヿ\u3130-\u318F\uAC00-\uD7AF]/.test(text);
 }
 
 function escapeRegExp(text: string): string {

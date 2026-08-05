@@ -152,8 +152,9 @@ export function useAIGenerate() {
     otherCharactersContext?: string,
     alignment?: string,
     nsfw?: boolean,
+    threeFacesContext?: string,
   ): Promise<string> => {
-    const prompts = CHARACTER_GENERATE_PROMPT(characterName, hint, otherCharactersContext, alignment, nsfw, lang);
+    const prompts = CHARACTER_GENERATE_PROMPT(characterName, hint, otherCharactersContext, alignment, nsfw, lang, threeFacesContext);
     return callAIWithPromptStreaming(prompts.system, prompts.user, onChunk, { temperature: 0.85, presetMode: 'force', max_tokens: 12000 });
   }, [lang]);
 
@@ -205,8 +206,9 @@ export function useAIGenerate() {
     otherCharactersContext?: string,
     alignment?: string,
     nsfw?: boolean,
+    threeFacesContext?: string,
   ) => {
-    const text = await generateCharacterStreaming(characterName, hint, onChunk, otherCharactersContext, alignment, nsfw);
+    const text = await generateCharacterStreaming(characterName, hint, onChunk, otherCharactersContext, alignment, nsfw, threeFacesContext);
     const parsed = parseAIJson(text) as AIGeneratedCharacter | null;
 
     if (!parsed) {

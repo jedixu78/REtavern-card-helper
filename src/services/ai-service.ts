@@ -862,7 +862,10 @@ async function streamAIOnce(
                   }
                 }
               } catch (parseErr) {
-                if (parseErr instanceof Error && parseErr.message.startsWith('AI API 返回错误')) {
+                // JSON.parse 失败抛 SyntaxError，直接跳过畸形行；
+                // 业务错误（如内容审查拦截、API error）是 Error，必须向上抛出，
+                // 不能用消息前缀字符串匹配区分（maybeFormatPolicyError 会改写前缀）。
+                if (!(parseErr instanceof SyntaxError)) {
                   throw parseErr;
                 }
                 // skip other malformed JSON

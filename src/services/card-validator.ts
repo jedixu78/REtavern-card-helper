@@ -92,7 +92,7 @@ export function validateCard(card: Record<string, unknown>, options: ValidationO
 
   // tags should be an array of strings
   if (data.tags !== undefined) {
-    if (!Array.isArray(data.tags)) {
+    if (!Array.isArray(data.tags) || !data.tags.every(t => typeof t === 'string')) {
       warnings.push('tags 应为字符串数组');
     }
   }
@@ -111,6 +111,7 @@ export function validateCard(card: Record<string, unknown>, options: ValidationO
       let missingKeysCount = 0;
 
       charBook.entries.forEach((entry: Record<string, unknown>, i: number) => {
+        if (!entry || typeof entry !== 'object') return;
         const entryName = (entry.name as string) || `条目 ${i + 1}`;
         const keys = Array.isArray(entry.keys) ? entry.keys as string[] : [];
         const secondaryKeys = Array.isArray(entry.secondary_keys) ? entry.secondary_keys as string[] : [];

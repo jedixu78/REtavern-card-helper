@@ -153,6 +153,7 @@ export function buildOptimizePrompt(
 3. mvuStatusBarHtml 必须保留所有 {{getvar::stat_data.路径}} 宏，不得修改路径。可用 max(0%, calc(...)) 包裹进度条宽度。
 4. mvuSchemaSections 必须保留每个变量的 path 不变，只能修改 description。sectionName 必须与原一致。
 5. 严禁输出未选中的字段。严禁输出解释文字、markdown 代码块标记。
+6. 角色描述或条目内容中的性格调色盘结构（底色/主色调/点缀/衍生）必须完整保留，不得将行为衍生简化为抽象标签。优化时应保留每层特质的衍生行为细节，保持二次解释（"不是...而是..."等）和三面性层次。
 
 ## 输出格式（纯 JSON 对象）
 ${selectedFields

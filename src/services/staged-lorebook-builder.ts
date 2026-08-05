@@ -195,6 +195,9 @@ export function buildDispatcherContent(config: StagedLorebookConfig): string {
   // Escape axisPath so a `'` or `\` in user/AI-provided paths can't break out of
   // the single-quoted JS string literal in getvar('stat_data.{axisPath}').
   const escapedAxisPath = escapeEjsSingleQuoted(axisPath);
+  // escapedAxisPath 用于 EJS 标签内 JS 字符串字面量（getvar('...')），`<%` 无害；
+  // 但下面两条 HTML 注释落在 EJS 模板文本区，`<%` 会开标签，故额外中和。
+  const escapedAxisPathText = escapedAxisPath.replace(/<%/g, '<%%');
   const rawExpr = `getvar('stat_data.${escapedAxisPath}')`;
 
   // Each dispatcher needs its own EJS locals so multiple dispatchers can coexist
@@ -209,12 +212,14 @@ export function buildDispatcherContent(config: StagedLorebookConfig): string {
 
   const lines: string[] = [];
   if (description) {
-    lines.push(`--- ${description} ---`);
+    // description 是用户/AI 文本，落在 EJS 模板文本区，需中和 `<%`（开标签）防破坏模板
+    const safeDesc = description.replace(/<%/g, '<%%');
+    lines.push(`--- ${safeDesc} ---`);
   }
   lines.push(`<%_ const ${rawVar} = ${rawExpr}; _%>`);
   lines.push(`<%_ const ${valVar} = Array.isArray(${rawVar}) ? ${rawVar}[0] : ${rawVar}; _%>`);
   lines.push(`<%_ if (${valVar} === undefined) { _%>`);
-  lines.push(`<!-- 错误：阶段轴变量"${escapedAxisPath}"未定义，无法加载分阶段内容。 -->`);
+  lines.push(`<!-- 错误：阶段轴变量"${escapedAxisPathText}"未定义，无法加载分阶段内容。 -->`);
 
   stages.forEach((stage) => {
     const cond = stage.condition || autoCondition(
@@ -230,7 +235,7 @@ export function buildDispatcherContent(config: StagedLorebookConfig): string {
 
   // 兜底：变量有值但不在任何阶段范围内
   lines.push('<%_ } else { _%>');
-  lines.push(`<!-- 警告：阶段轴变量"${escapedAxisPath}"的值未匹配任何已定义阶段。 -->`);
+  lines.push(`<!-- 警告：阶段轴变量"${escapedAxisPathText}"的值未匹配任何已定义阶段。 -->`);
   lines.push('<%_ } _%>');
 
   return lines.join('\n');
@@ -316,16 +321,16 @@ export function parseDispatcherContent(
   content: string,
 ): { axisPath: string; bookName: string; childComments: string[] } | null {
   // 匹配 getvar('stat_data.XXX[0]') 与 getWorldInfo("YYY", "ZZZ")。
-  // 字符串参数用「转义感知」的 (?:[^"\\]|\\.)* 而非 [^"]+：卡名/阶段名里含 `"`
-  // 时 escapeEjsDoubleQuoted 会写出 \"，用 [^"]+ 会在转义引号处截断、整条解析失败，
-  // 导致该调度条目失去保护（MVU 关闭时被误导出、优化器把它当普通条目改写）。
-  const varMatch = content.match(/getvar\(\s*'stat_data\.([^[\]'"]+)(?:\[0\])?'\s*\)/);
+  // 字符串参数用「转义感知」模式而非 [^"]+：卡名/阶段名/轴路径含引号时 escaper 会
+  // 写出 \"，用 [^"]+ 会在转义引号处截断、整条解析失败，导致该调度条目失去保护
+  // （MVU 关闭时被误导出、优化器把它当普通条目改写）。axisPath 侧同理用 (?:[^'\\[\]]|\\.)。
+  const unescape = (s: string) => s.replace(/\\(.)/g, '$1');
+  const varMatch = content.match(/getvar\(\s*'stat_data\.((?:[^'\\[\]]|\\.)*)(?:\[0\])?'\s*\)/);
   if (!varMatch) return null;
-  const axisPath = varMatch[1];
+  const axisPath = unescape(varMatch[1]);
   const stringArg = '"((?:[^"\\\\]|\\\\.)*)"';
   const bookMatch = content.match(new RegExp(`getWorldInfo\\(\\s*${stringArg}\\s*,\\s*${stringArg}\\s*\\)`));
   if (!bookMatch) return null;
-  const unescape = (s: string) => s.replace(/\\(.)/g, '$1');
   const bookName = unescape(bookMatch[1]);
   const childComments = Array.from(
     content.matchAll(new RegExp(`getWorldInfo\\(\\s*${stringArg}\\s*,\\s*${stringArg}\\s*\\)`, 'g')),

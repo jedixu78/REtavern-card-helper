@@ -90,15 +90,17 @@ function serializeSchemaNode(node: SchemaNode, keyIndent: number): { expr: strin
 
   lines.push(`z.object({`);
   for (const [key, child] of node.children) {
+    // 路径段来自用户/AI 输入，作为 JS 对象键必须加引号并转义，避免注入 schema.ts
+    const safeKey = `'${escapeEjsSingleQuoted(key)}'`;
     if (child.children.size === 0 && child.variable) {
       const leafVar = { ...child.variable, path: key };
       const { expr, defLit } = buildLeafZod(leafVar);
-      lines.push(`${innerPad}${key}: ${expr},`);
-      defaultsEntries.push(`${innerPad}${key}: ${defLit}`);
+      lines.push(`${innerPad}${safeKey}: ${expr},`);
+      defaultsEntries.push(`${innerPad}${safeKey}: ${defLit}`);
     } else {
       const childResult = serializeSchemaNode(child, keyIndent + 2);
-      lines.push(`${innerPad}${key}: ${childResult.expr},`);
-      defaultsEntries.push(`${innerPad}${key}: ${childResult.defaults}`);
+      lines.push(`${innerPad}${safeKey}: ${childResult.expr},`);
+      defaultsEntries.push(`${innerPad}${safeKey}: ${childResult.defaults}`);
     }
   }
   lines.push(`${keyPad}})`);
@@ -226,13 +228,15 @@ export function buildSchemaTs(sections: MvuSchemaSection[]): string {
   const tree = buildSchemaTree(sections);
 
   for (const [rootKey, child] of tree.children) {
+    // 路径段来自用户/AI 输入，作为 JS 对象键必须加引号并转义
+    const safeKey = `'${escapeEjsSingleQuoted(rootKey)}'`;
     if (child.children.size === 0 && child.variable) {
       const leafVar = { ...child.variable, path: rootKey };
       const { expr } = buildLeafZod(leafVar);
-      lines.push(`  ${rootKey}: ${expr},`);
+      lines.push(`  ${safeKey}: ${expr},`);
     } else {
       const result = serializeSchemaNode(child, 2);
-      lines.push(`  ${rootKey}: ${result.expr}.prefault(${result.defaults}),`);
+      lines.push(`  ${safeKey}: ${result.expr}.prefault(${result.defaults}),`);
     }
   }
 
@@ -244,9 +248,24 @@ export function buildSchemaTs(sections: MvuSchemaSection[]): string {
 }
 
 /**
+ * 原型污染守卫：变量路径段含这些键时写成目标对象上的自有属性（defineProperty），
+ * 不触发 `__proto__` setter、不读出 Object.prototype。与 mvu-sim.ts 的 FORBIDDEN_KEYS
+ * 同义；本模块内联以保持零运行时依赖（mvu-sim 亦为零依赖，故未抽共享文件）。
+ */
+const MVU_FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+
+function mvuSafeSet(target: Record<string, unknown>, key: string, value: unknown): void {
+  if (MVU_FORBIDDEN_KEYS.has(key)) {
+    Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+    return;
+  }
+  target[key] = value;
+}
+
+/**
  * Build initvar content from MVU sections.
  * Uses YAML format matching reference card conventions (e.g. 「银帷骑士团」).
- * The InitVar entry is disabled by default — initial values are set via EJS setvar in first_mes.
+ * The InitVar entry is disabled by default - initial values are set via EJS setvar in first_mes.
  */
 export function buildInitvarYaml(sections: MvuSchemaSection[]): string {
   if (sections.length === 0) return '# MVU enabled but no variables defined\n_init: true';
@@ -262,17 +281,24 @@ export function buildInitvarYaml(sections: MvuSchemaSection[]): string {
       const parts = v.path.split('.');
       let current = root;
 
-      // Create nested structure for all parts except the last
+      // Create nested structure for all parts except the last.
+      // 原型污染防线：__proto__/constructor/prototype 段不可经 `in`/下标读写--
+      // `'__proto__' in root` 恒为 true 会读出 Object.prototype，leaf 写入即污染全站。
       for (let i = 0; i < parts.length - 1; i++) {
-        if (!(parts[i] in current)) {
-          current[parts[i]] = {};
+        const seg = parts[i];
+        let next = MVU_FORBIDDEN_KEYS.has(seg)
+          ? undefined
+          : (current[seg] as Record<string, unknown> | undefined);
+        if (!next || typeof next !== 'object') {
+          next = {};
+          mvuSafeSet(current, seg, next);
         }
-        current = current[parts[i]] as Record<string, unknown>;
+        current = next;
       }
 
       // Set the leaf value
       const leafKey = parts[parts.length - 1];
-      current[leafKey] = v.initialValue ?? '';
+      mvuSafeSet(current, leafKey, v.initialValue ?? '');
     }
   }
 
@@ -381,7 +407,9 @@ interface GroupedRule extends MvuUpdateRule {
 }
 
 function groupRulesByPath(rules: MvuUpdateRule[]): Record<string, GroupedRule[]> {
-  const result: Record<string, GroupedRule[]> = {};
+  // Object.create(null)：避免 `result['__proto__']` 读出 Object.prototype 后
+  // `push` 抛 TypeError（路径来自用户/AI 输入），且赋值不触发 __proto__ setter
+  const result: Record<string, GroupedRule[]> = Object.create(null) as Record<string, GroupedRule[]>;
   for (const r of rules) {
     const rootKey = r.path.split('.')[0];
     if (!result[rootKey]) result[rootKey] = [];

@@ -530,6 +530,11 @@ ${e.content || ''}`)
         .map(c => `### ${c.name}\n${c.description!.slice(0, 2000)}`)
         .join('\n\n');
 
+      // Build three-faces context if user has defined them
+      const threeFacesContext = char.threeFaces?.filter(f => f.trigger?.trim() || f.change?.trim() || f.behavior?.trim())
+        .map(f => `【${f.face}】触发条件：${f.trigger || '未设定'}；性格变化：${f.change || '未设定'}；具体行为：${f.behavior || '未设定'}`)
+        .join('\n');
+
       const result = await generateCharacterParsedStreaming(
         char.name,
         hint,
@@ -539,6 +544,7 @@ ${e.content || ''}`)
         otherCharsContext || undefined,
         char.alignment || undefined,
         char.nsfw ?? false,
+        threeFacesContext || undefined,
       );
       if (typeof result === 'object' && result !== null) {
         const parsed = result as Record<string, unknown>;

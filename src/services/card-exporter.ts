@@ -899,8 +899,10 @@ export function assembleCard(draft: WizardDraft, existingId?: number) {
   const exportedIdBySourceId = new Map<string, number>();
   const entries: ExportedLorebookEntry[] = fixedLorebookEntries
     .filter((entry, idx) => {
-      if (mvuEnabled) return true;
+      // MVU 系统条目无论是否启用 MVU 都剔除：启用时由 buildMvuScriptBundle 重新生成，
+      // 保留旧条目会导致同名条目重复（往返保真度 bug：导入的旧条目 + 重新生成的条目）。
       if (MVU_LOREBOOK_ENTRY_NAMES.includes(entry.name)) return false;
+      if (mvuEnabled) return true;
       // MVU 未启用时，分阶段世界书的调度条目和子阶段条目也不导出
       return !stagedIndices.has(idx);
     })
@@ -1757,9 +1759,15 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
     // Reconstruct MVU config from extensions + lorebook entries
     mvu: reconstructMvuConfig(data, rawEntries),
     // Reconstruct live stream chat config from regex scripts (independent of MVU)
-    liveStreamChat: reconstructLiveStreamChat(data),
-    // 导入字段直通层：卡片级未知字段（data / extensions / regex_scripts / character_book）
-    _passthrough: collectCardPassthrough(data, dataExt, charBook, mvuEnabled, Boolean(reconstructLiveStreamChat(data)?.enabled)),
+    // 复用一次 reconstructLiveStreamChat 结果，避免重复扫描正则脚本
+    ...(() => {
+      const liveStreamChat = reconstructLiveStreamChat(data);
+      return {
+        liveStreamChat,
+        // 导入字段直通层：卡片级未知字段（data / extensions / regex_scripts / character_book）
+        _passthrough: collectCardPassthrough(data, dataExt, charBook, mvuEnabled, Boolean(liveStreamChat?.enabled)),
+      };
+    })(),
     // Shared UI state — start with defaults when loading a card.
     // (This is draft-only UI state, not persisted in the card itself.)
     worldbookBatchCount: 8,

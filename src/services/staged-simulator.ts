@@ -141,8 +141,10 @@ export function simulateStageDispatch(input: SimulateStageDispatchInput): StageD
       numericDirection,
     );
 
-  // 轴变量未定义：EJS 的第一个 if 分支直接短路，任何阶段都不会被求值
-  if (axisValue === undefined || axisValue === null || axisValue === '') {
+  // 轴变量未定义：EJS 的第一个 if 分支（=== undefined）直接短路，任何阶段都不会被求值。
+  // 必须与 EJS 严格对齐：null/'' 在 ST 运行时会进入阶段匹配（通常落兜底 else），
+  // 模拟器若也短路会给出与运行时不一致的诊断结论。
+  if (axisValue === undefined) {
     return {
       outcome: 'undefined-axis',
       matchedStage: null,

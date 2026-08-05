@@ -139,9 +139,9 @@ describe('MVU Builder - .prefault() 修复验证', () => {
     const sections = makeTestSections();
     const schema = buildSchemaTs(sections);
     expect(schema).toContain('.prefault({');
-    expect(schema).toContain('力量: 10');
-    expect(schema).toContain('敏捷: 12');
-    expect(schema).toContain('智力: 14');
+    expect(schema).toContain("'力量': 10");
+    expect(schema).toContain("'敏捷': 12");
+    expect(schema).toContain("'智力': 14");
   });
 
   it('根级别z.object()不应该有.prefault()（匹配参考卡格式）', () => {

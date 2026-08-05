@@ -92,7 +92,7 @@ const WUXIA_TEMPLATE: BeginnerTemplate = {
         { path: '简介.称号', label: '江湖称号', generationHint: '生成一个霸气的江湖绰号，如"剑胆琴心"、"血手人屠"', generationType: 'single', aiGeneratable: true },
         { path: '简介.门派', label: '所属门派', generationHint: '生成一个武侠门派名称及简介', generationType: 'single', aiGeneratable: true },
         { path: '简介.身份', label: '江湖身份', generationHint: '描述角色在江湖中的地位与身份', generationType: 'single', aiGeneratable: true },
-        { path: '简介.性格', label: '性格特征', generationHint: '用武侠风格描述角色性格，如"外冷内热，嫉恶如仇"', generationType: 'single', aiGeneratable: true },
+        { path: '简介.性格', label: '性格特征', generationHint: '用性格调色盘结构描述：底色(核心1-2特质)+主色调(主导1-2特质)+点缀(反差0-2特质)，每个特质写3条具体行为衍生(日常/压力/隐藏场景)，而非抽象标签', generationType: 'single', aiGeneratable: true },
       ],
     },
     {
@@ -431,7 +431,7 @@ const MODERN_TEMPLATE: BeginnerTemplate = {
       variables: [
         { path: '档案.姓名', label: '姓名', generationHint: '生成一个现代风格的角色姓名', generationType: 'single', aiGeneratable: true },
         { path: '档案.职业', label: '职业', generationHint: '生成职业及工作描述', generationType: 'single', aiGeneratable: true },
-        { path: '档案.性格', label: '性格', generationHint: '用现代语境描述性格特征', generationType: 'single', aiGeneratable: true },
+        { path: '档案.性格', label: '性格', generationHint: '用性格调色盘结构描述：底色(核心1-2特质)+主色调(主导1-2特质)+点缀(反差0-2特质)，每个特质写3条具体行为衍生(日常/压力/隐藏场景)，而非抽象标签', generationType: 'single', aiGeneratable: true },
         { path: '档案.秘密', label: '隐藏秘密', generationHint: '生成一个角色隐藏的秘密，增加剧情张力', generationType: 'single', aiGeneratable: true },
       ],
     },

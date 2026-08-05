@@ -15,7 +15,7 @@ import { Modal } from '../components/shared/Modal';
 import { CardCover } from '../components/shared/CardCover';
 import { ViewToolbar } from '../components/shared/ViewToolbar';
 import { useTranslation } from '../i18n/I18nContext';
-import { WIZARD_DRAFT_VERSION } from '../constants/defaults';
+import { WIZARD_DRAFT_VERSION, resolveBookName } from '../constants/defaults';
 import { cardToDraft, assembleCard, exportAsJson, exportAsPng, importFromPng } from '../services/card-exporter';
 import { resizeImageToPngBuffer } from '../services/image-processing';
 import { saveVersion, listVersions, rollbackToVersion, deleteVersion } from '../services/version-service';
@@ -300,7 +300,7 @@ export function LibraryPage() {
   const handleExportWorldbook = (card: Record<string, unknown>) => {
     try {
       const draft = cardToDraft(card);
-      const bookName = draft.bookName?.trim() || `${draft.cardName || t('library.untitled')}的世界书`;
+      const bookName = resolveBookName(draft);
       downloadWorldbookJson(draft.lorebookEntries, bookName);
       addToast('success', t('library.worldbookExportSuccess', { count: String(draft.lorebookEntries.length) }));
     } catch {

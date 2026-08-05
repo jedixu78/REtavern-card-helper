@@ -389,10 +389,28 @@ function buildBeginnerGenSystem(template: BeginnerTemplate): string {
 6. 所有文本使用中文
 7. 输出纯 JSON，不要 markdown 代码块标记
 
+## 性格描述方法（性格调色盘）
+如果模板包含性格/人物描述类变量，必须使用「性格调色盘」结构而非抽象标签：
+- 底色：角色最深层的核心特质（1-2个），这是角色的本质
+- 主色调：日常最突出的特质（1-2个），这是别人眼中ta的样子
+- 点缀：特定条件下才出现的隐藏特质（0-2个），这是反差和惊喜
+- 衍生（关键！）：每个特质必须写3条具体行为衍生：
+  - 衍生一：日常场景下的典型行为（自然流露）
+  - 衍生二：压力/冲突场景下的反应（极端表现）
+  - 衍生三：特定对象面前的隐藏表现（多面性）
+示例：
+  底色：内敛克制
+  衍生一：被当众提问时会先沉默2秒，眼神向下看，然后才简短回答
+  衍生二：即使内心愤怒到极点，声音也不会提高，只会让手指关节微微发白
+  衍生三：只在深夜独处时才会对着镜子练习明天要说的话，反复调整语气
+
+这种写法让AI能"解开"行为压缩包，在不同场景自动推导合理反应，远比"外冷内热"这样的标签有效。
+
 输出格式示例：
 {
   "简介.姓名": "叶孤城",
   "简介.称号": "天外飞仙",
+  "简介.性格": "底色：孤高自许\\n衍生一：从不主动与人攀谈，独处时才会轻声哼曲\\n衍生二：被质疑剑法时不辩解，只是默默擦剑，眼神如霜\\n衍生三：对唯一认可的对手会露出极淡的笑意，主动邀其饮酒\\n主色调：重诺守信\\n衍生一：答应的事绝不食言，哪怕对方已忘记\\n衍生二：为守诺可以带伤赶路三天三夜\\n衍生三：对不理解自己的人的爽约会暗自失望，但绝不表露",
   "秘籍.列表": {"天外飞仙剑法": {"品阶": "天", "进度": "第七层", "效果": "剑气纵横三万里"}},
   "属性.武力": 75
 }`;
@@ -418,6 +436,19 @@ function buildBeginnerGenUser(cardName: string, blueprint: string, requirement: 
 }
 
 function buildSectionGenSystem(template: BeginnerTemplate, section: TemplateSectionBlueprint): string {
+  // Check if this section contains personality-related variables
+  const hasPersonalityVar = section.variables.some(
+    v => v.path.includes('性格') || v.path.includes('人设') || v.label.includes('性格')
+  );
+  const personalityInstruction = hasPersonalityVar
+    ? `\n\n## 性格描述方法（性格调色盘）
+该分区包含性格类变量，必须使用「性格调色盘」结构：
+- 底色：核心特质（1-2个）+ 3条行为衍生（日常/压力/隐藏）
+- 主色调：主导特质（1-2个）+ 3条行为衍生
+- 点缀：隐藏特质（0-2个）+ 3条行为衍生
+禁止只写抽象标签如"外冷内热"，必须写具体可感知的行为场景。`
+    : '';
+
   return `你是一位专业的 SillyTavern 角色卡内容生成器，专精「${template.name}」风格。
 现在需要为「${section.name}」分区生成变量内容。
 
@@ -430,7 +461,7 @@ function buildSectionGenSystem(template: BeginnerTemplate, section: TemplateSect
 6. 输出纯 JSON
 
 该分区包含的变量：
-${section.variables.map(v => `- ${v.path}（${v.label}）：${v.generationHint}`).join('\n')}`;
+${section.variables.map(v => `- ${v.path}（${v.label}）：${v.generationHint}`).join('\n')}${personalityInstruction}`;
 }
 
 function buildSectionGenUser(cardName: string, section: TemplateSectionBlueprint, requirement: string, characterContext?: string, worldbookContext?: string): string {

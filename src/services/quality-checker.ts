@@ -161,6 +161,107 @@ const CHECK_ITEMS: CheckItem[] = [
     },
   },
   {
+    // 性格调色盘检查：检测角色描述中是否存在抽象性格标签而无行为衍生
+    // 参考三明月教程：性格需要底色/主色调/点缀+具体行为衍生，而非"傲娇""温柔"等标签
+    id: 'personalityDepth',
+    category: 'character',
+    label: '性格深度',
+    weight: 6,
+    severity: 'suggestion',
+    jumpStep: 3,
+    optimizeFields: ['firstMessage'],
+    threshold: '性格描述含行为衍生而非纯标签',
+    applicable: (d) => (d.characters || []).some((c) => c.description?.trim()),
+    check: (d) => {
+      // 常见抽象性格标签（中文+日文来源）
+      const ABSTRACT_LABELS = [
+        '傲娇', '温柔', '冷酷', '腹黑', '病娇', '天然呆', '元气', '高冷',
+        '内向', '外向', '暴躁', '冷静', '善良', '邪恶', '乐观', '悲观',
+        '强势', '软弱', '活泼', '沉默', '热情', '冷漠', '勇敢', '胆小',
+      ];
+      const issues: string[] = [];
+      for (const c of d.characters || []) {
+        if (!c.description?.trim()) continue;
+        const desc = c.description;
+        // 检查是否有性格调色盘结构（底色/主色调/点缀/衍生）
+        const hasPaletteStructure = /底色|主色调|点缀|衍生[一二三1-3]/.test(desc);
+        // 检查是否只有抽象标签而没有行为衍生
+        const foundLabels = ABSTRACT_LABELS.filter(label => desc.includes(label));
+        // 如果有抽象标签但没有调色盘结构，说明可能只是标签化描述
+        if (foundLabels.length >= 2 && !hasPaletteStructure) {
+          issues.push(`${c.name || '角色'}使用了抽象标签(${foundLabels.slice(0, 3).join('、')}等)但缺少行为衍生`);
+        }
+      }
+      const passed = issues.length === 0;
+      return {
+        passed,
+        actual: issues.length === 0 ? '有行为衍生' : `${issues.length} 个角色纯标签化`,
+        fixHint: passed ? '' : `${issues.join('；')}。建议使用「性格调色盘」结构：底色(核心特质)+主色调(主导特质)+点缀(反差特质)，每个特质写3条具体行为衍生(日常/压力/隐藏场景)`,
+      };
+    },
+  },
+  {
+    // 二次解释检查：检测角色描述是否缺少二次解释（防止AI自动补全为刻板印象）
+    // 参考三明月教程：二次解释告诉AI"这个角色是这样的，不是你以为的那样"
+    id: 'secondaryExplanation',
+    category: 'character',
+    label: '二次解释',
+    weight: 4,
+    severity: 'optional',
+    jumpStep: 3,
+    threshold: '关键特质有二次解释',
+    applicable: (d) => (d.characters || []).some((c) => c.description?.trim()),
+    check: (d) => {
+      const issues: string[] = [];
+      for (const c of d.characters || []) {
+        if (!c.description?.trim()) continue;
+        const desc = c.description;
+        // 检测是否有二次解释结构（"不是...而是..."、"并非...而是..."等）
+        const hasSecondaryExplanation = /不是.{1,20}而是|并非.{1,20}而是|看似.{1,20}实则|表面.{1,20}实际|与其说.{1,20}不如说/.test(desc);
+        // 如果描述较长但没有二次解释，可能需要补充
+        if (desc.length > 500 && !hasSecondaryExplanation) {
+          issues.push(c.name || '角色');
+        }
+      }
+      const passed = issues.length === 0;
+      return {
+        passed,
+        actual: issues.length === 0 ? '有二次解释' : `${issues.join('、')}缺少`,
+        fixHint: passed ? '' : `${issues.join('、')}的角色描述建议加入二次解释，例如："她的温柔不是软弱，而是选择——她完全有能力伤害你，但她选择不"。这能防止AI将角色自动补全为刻板印象`,
+      };
+    },
+  },
+  {
+    // NSFW动机层检查：NSFW角色卡是否描述了行为动机而非仅行为本身
+    // 参考三明月教程NSFW调色盘：从"做什么"变成"为什么做"
+    id: 'nsfwMotivation',
+    category: 'character',
+    label: 'NSFW 动机层',
+    weight: 3,
+    severity: 'optional',
+    jumpStep: 3,
+    threshold: 'NSFW内容有心理动机描述',
+    applicable: (d) => (d.characters || []).some((c) => c.nsfw && c.description?.trim()),
+    check: (d) => {
+      const issues: string[] = [];
+      for (const c of d.characters || []) {
+        if (!c.nsfw || !c.description?.trim()) continue;
+        const desc = c.description;
+        // 检测是否有动机/心理层面的描述
+        const hasMotivation = /因为|源于|由于|渴望|需要|安全感|控制|依赖|恐惧|逃避|补偿|证明|渴望|追求|内心/.test(desc);
+        if (!hasMotivation) {
+          issues.push(c.name || '角色');
+        }
+      }
+      const passed = issues.length === 0;
+      return {
+        passed,
+        actual: issues.length === 0 ? '有动机描述' : `${issues.join('、')}缺少`,
+        fixHint: passed ? '' : `${issues.join('、')}的NSFW描述建议补充心理动机层：不是写"ta喜欢做什么"，而是写"ta为什么这样做"——把行为和人格连接。例如："她需要通过主导来获得安全感，因为成长环境让她相信失控等于危险"`,
+      };
+    },
+  },
+  {
     id: 'firstMessage',
     category: 'firstMessage',
     label: '开场白字数',

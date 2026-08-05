@@ -108,6 +108,13 @@ export interface WizardCharacter {
    * AI 生成时自动判断；用户可在角色卡片上手动切换。
    */
   constant?: boolean;
+  /** 三面性：角色在不同压力下的表现层次（专家模式高级选项） */
+  threeFaces?: Array<{
+    face: string;
+    trigger: string;
+    change: string;
+    behavior: string;
+  }>;
 }
 
 /** D&D nine-grid alignment options (optional personality constraint) */
