@@ -31,7 +31,7 @@ import {
   STAGE_REROLL_ANNOTATION_PROMPT,
   STAGE_ENTRY_GENERATE_PROMPT,
 } from '../constants/prompts';
-import { stripMarkdownFences, parseAIJson } from '../services/ai-json';
+import { stripMarkdownFences, parseAIJson, extractStringFieldFromRaw } from '../services/ai-json';
 import { type StageDefinition, sortStagesByDirection } from '../services/staged-lorebook-builder';
 import type {
   AIGeneratedCharacter,
@@ -175,27 +175,16 @@ export function useAIGenerate() {
     const parsed = parseAIJson(text) as AIGeneratedCharacter | null;
 
     if (!parsed) {
-      const descMatch = text.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)/);
-      if (descMatch?.[1]) {
-        const extracted = descMatch[1]
-          .replace(/\\(?:u([0-9a-fA-F]{4})|(.))/g, (_, hex, ch) => {
-            if (hex) return String.fromCharCode(parseInt(hex, 16));
-            switch (ch) {
-              case 'n': return '\n';
-              case 't': return '\t';
-              case 'r': return '\r';
-              case '"': return '"';
-              case '\\': return '\\';
-              case '/': return '/';
-              case 'b': return '\b';
-              case 'f': return '\f';
-              default: return '\\' + ch;
-            }
-          })
-          .trim();
-        if (extracted.length > 20) {
-          return sanitizeCharacterResult(characterName, { description: extracted });
-        }
+      // JSON 解析失败——尝试从截断/畸形文本中结构化提取 description 字段
+      // （处理 AI 在 JSON 字符串值中生成未转义引号的常见情况）
+      const extracted = extractStringFieldFromRaw(text, 'description');
+      if (extracted && extracted.length > 20) {
+        return sanitizeCharacterResult(characterName, { description: extracted });
+      }
+      // 最终兜底：剥离 markdown 围栏后保留全部原文，避免内容丢失
+      const cleanText = stripMarkdownFences(text).trim();
+      if (cleanText.length > 20) {
+        return sanitizeCharacterResult(characterName, { description: cleanText });
       }
       return { description: text };
     }
@@ -224,29 +213,16 @@ export function useAIGenerate() {
     const parsed = parseAIJson(text) as AIGeneratedCharacter | null;
 
     if (!parsed) {
-      // JSON 被截断且续写后仍不完整时，尝试从截断文本中提取 description 字段值
-      const descMatch = text.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)/);
-      if (descMatch?.[1]) {
-        // 反转义 JSON 字符串中的常见转义序列
-        const extracted = descMatch[1]
-          .replace(/\\(?:u([0-9a-fA-F]{4})|(.))/g, (_, hex, ch) => {
-            if (hex) return String.fromCharCode(parseInt(hex, 16));
-            switch (ch) {
-              case 'n': return '\n';
-              case 't': return '\t';
-              case 'r': return '\r';
-              case '"': return '"';
-              case '\\': return '\\';
-              case '/': return '/';
-              case 'b': return '\b';
-              case 'f': return '\f';
-              default: return '\\' + ch;
-            }
-          })
-          .trim();
-        if (extracted.length > 20) {
-          return sanitizeCharacterResult(characterName, { description: extracted });
-        }
+      // JSON 解析失败——尝试从截断/畸形文本中结构化提取 description 字段
+      // （处理 AI 在 JSON 字符串值中生成未转义引号的常见情况）
+      const extracted = extractStringFieldFromRaw(text, 'description');
+      if (extracted && extracted.length > 20) {
+        return sanitizeCharacterResult(characterName, { description: extracted });
+      }
+      // 最终兜底：剥离 markdown 围栏后保留全部原文，避免内容丢失
+      const cleanText = stripMarkdownFences(text).trim();
+      if (cleanText.length > 20) {
+        return sanitizeCharacterResult(characterName, { description: cleanText });
       }
       return { description: text };
     }

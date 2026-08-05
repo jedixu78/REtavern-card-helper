@@ -150,14 +150,164 @@ function extractBalancedJsonCandidates(text: string): string[] {
 }
 
 /**
+ * Attempt to fix unescaped double quotes inside JSON string values.
+ * Handles the common AI mistake of generating:
+ *   "description": "He said "hello" and left"
+ * where the inner quotes should be escaped as \".
+ *
+ * Strategy: walk the text tracking JSON structure. When inside a string and we
+ * encounter a `"`, check if it's a legitimate string terminator by looking ahead.
+ * If the next non-whitespace character is NOT a JSON structural character (: , } ]),
+ * the quote is likely unescaped content — escape it.
+ */
+export function fixUnescapedQuotesInStrings(raw: string): string {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+
+    if (!inString) {
+      result += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+
+    // Inside a string
+    if (escaped) {
+      result += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      result += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (ch !== '"') {
+      // Escape raw control characters that would break JSON
+      if (ch === '\n') { result += '\\n'; continue; }
+      if (ch === '\r') { result += '\\r'; continue; }
+      if (ch === '\t') { result += '\\t'; continue; }
+      if (ch < ' ') continue;
+      result += ch;
+      continue;
+    }
+
+    // ch === '"' — is this the real end of the string?
+    // Look ahead past whitespace to find the next significant character.
+    let j = i + 1;
+    while (j < raw.length && (raw[j] === ' ' || raw[j] === '\t' || raw[j] === '\n' || raw[j] === '\r')) j++;
+
+    const nextSig = j < raw.length ? raw[j] : '';
+    // A legitimate string terminator is followed by: , } ] : or end of input
+    if (nextSig === ',' || nextSig === '}' || nextSig === ']' || nextSig === ':' || nextSig === '') {
+      // Real end of string
+      result += ch;
+      inString = false;
+    } else {
+      // Unescaped quote inside string content — escape it
+      result += '\\"';
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Extract the value of a specific string field from raw (possibly truncated or
+ * malformed) JSON text. Uses structural walking to find the field, then tracks
+ * bracket depth to determine where the string value ends — handling unescaped
+ * quotes that would defeat a simple regex.
+ *
+ * Returns null if the field is not found.
+ */
+export function extractStringFieldFromRaw(text: string, fieldName: string): string | null {
+  // Locate the field name as a JSON key: "fieldName" followed by optional whitespace and colon
+  const keyPattern = new RegExp(`"${fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\s*:`);
+  const keyMatch = keyPattern.exec(text);
+  if (!keyMatch) return null;
+
+  // Find the opening quote of the value
+  let pos = keyMatch.index + keyMatch[0].length;
+  while (pos < text.length && text[pos] !== '"' && text[pos] !== '{' && text[pos] !== '[') pos++;
+  if (pos >= text.length || text[pos] !== '"') return null;
+  pos++; // skip opening quote
+
+  // Walk forward tracking escape sequences. Collect the string value.
+  let value = '';
+  let escaped = false;
+
+  for (let i = pos; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escaped) {
+      // Process escape sequence
+      switch (ch) {
+        case 'n': value += '\n'; break;
+        case 't': value += '\t'; break;
+        case 'r': value += '\r'; break;
+        case '"': value += '"'; break;
+        case '\\': value += '\\'; break;
+        case '/': value += '/'; break;
+        case 'b': value += '\b'; break;
+        case 'f': value += '\f'; break;
+        case 'u': {
+          const hex = text.slice(i + 1, i + 5);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+            value += String.fromCharCode(parseInt(hex, 16));
+            i += 4;
+          } else {
+            value += ch;
+          }
+          break;
+        }
+        default: value += ch;
+      }
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      // Is this the real end of the string?
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      const nextSig = j < text.length ? text[j] : '';
+
+      if (nextSig === ',' || nextSig === '}' || nextSig === ']' || nextSig === '') {
+        // Legitimate end of string
+        return value.trim();
+      }
+      // Unescaped quote inside content — include it
+      value += '"';
+      continue;
+    }
+
+    value += ch;
+  }
+
+  // Reached end of text without finding closing quote (truncated)
+  return value.trim() || null;
+}
+
+/**
  * Attempt to parse AI response as JSON with multi-layer fallback.
  *
  * Strategy:
  * 1. Strip markdown fences, direct parse
  * 2. Sanitize common AI quirks (trailing commas, single quotes), retry
- * 3. Extract first JSON object/array substring, sanitize and retry
- * 4. Try to find multiple JSON objects/arrays and return the largest
- * 5. Return null if all attempts fail
+ * 3. Fix unescaped quotes inside string values, retry
+ * 4. Extract first JSON object/array substring, sanitize and retry
+ * 5. Try to find multiple JSON objects/arrays and return the largest
+ * 6. Return null if all attempts fail
  */
 export function parseAIJson(text: string): unknown | null {
   const cleaned = stripMarkdownFences(text);
@@ -171,7 +321,18 @@ export function parseAIJson(text: string): unknown | null {
   const sanitizedResult = tryParseJson(sanitized);
   if (sanitizedResult !== null) return sanitizedResult;
 
-  // Attempt 3: Prefer JSON inside code fences, then balanced object/array spans.
+  // Attempt 3: Fix unescaped quotes (common AI mistake) and retry
+  const fixedQuotes = fixUnescapedQuotesInStrings(cleaned);
+  if (fixedQuotes !== cleaned) {
+    const fixedResult = tryParseJson(fixedQuotes);
+    if (fixedResult !== null) return fixedResult;
+    // Also try sanitize after fixing quotes
+    const fixedSanitized = sanitizeJsonString(fixedQuotes);
+    const fixedSanitizedResult = tryParseJson(fixedSanitized);
+    if (fixedSanitizedResult !== null) return fixedSanitizedResult;
+  }
+
+  // Attempt 4: Prefer JSON inside code fences, then balanced object/array spans.
   const allMatches = [
     ...extractFencedJsonCandidates(cleaned),
     ...extractBalancedJsonCandidates(cleaned),
@@ -180,6 +341,12 @@ export function parseAIJson(text: string): unknown | null {
   for (const m of allMatches.slice(0, 5)) {
     const parsed = tryParseJson(m);
     if (parsed !== null) return parsed;
+    // Also try with quote fix on each candidate
+    const fixedM = fixUnescapedQuotesInStrings(m);
+    if (fixedM !== m) {
+      const fixedParsed = tryParseJson(fixedM);
+      if (fixedParsed !== null) return fixedParsed;
+    }
   }
 
   return null;
