@@ -135,8 +135,9 @@ export function useAIGenerate() {
     otherCharactersContext?: string,
     alignment?: string,
     nsfw?: boolean,
+    threeFacesContext?: string,
   ): Promise<string> => {
-    const prompts = CHARACTER_GENERATE_PROMPT(characterName, hint, otherCharactersContext, alignment, nsfw, lang);
+    const prompts = CHARACTER_GENERATE_PROMPT(characterName, hint, otherCharactersContext, alignment, nsfw, lang, threeFacesContext);
     return callAIWithPrompt(prompts.system, prompts.user, { temperature: 0.85, presetMode: 'force', max_tokens: 12000 });
   }, [lang]);
 
@@ -168,18 +169,29 @@ export function useAIGenerate() {
     otherCharactersContext?: string,
     alignment?: string,
     nsfw?: boolean,
+    threeFacesContext?: string,
   ) => {
-    const text = await generateCharacter(characterName, hint, otherCharactersContext, alignment, nsfw);
+    const text = await generateCharacter(characterName, hint, otherCharactersContext, alignment, nsfw, threeFacesContext);
     const parsed = parseAIJson(text) as AIGeneratedCharacter | null;
 
     if (!parsed) {
       const descMatch = text.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)/);
       if (descMatch?.[1]) {
         const extracted = descMatch[1]
-          .replace(/\\n/g, '\n')
-          .replace(/\\t/g, '\t')
-          .replace(/\\"/g, '"')
-          .replace(/\\\\/g, '\\')
+          .replace(/\\(?:u([0-9a-fA-F]{4})|(.))/g, (_, hex, ch) => {
+            if (hex) return String.fromCharCode(parseInt(hex, 16));
+            switch (ch) {
+              case 'n': return '\n';
+              case 't': return '\t';
+              case 'r': return '\r';
+              case '"': return '"';
+              case '\\': return '\\';
+              case '/': return '/';
+              case 'b': return '\b';
+              case 'f': return '\f';
+              default: return '\\' + ch;
+            }
+          })
           .trim();
         if (extracted.length > 20) {
           return sanitizeCharacterResult(characterName, { description: extracted });
@@ -217,10 +229,20 @@ export function useAIGenerate() {
       if (descMatch?.[1]) {
         // 反转义 JSON 字符串中的常见转义序列
         const extracted = descMatch[1]
-          .replace(/\\n/g, '\n')
-          .replace(/\\t/g, '\t')
-          .replace(/\\"/g, '"')
-          .replace(/\\\\/g, '\\')
+          .replace(/\\(?:u([0-9a-fA-F]{4})|(.))/g, (_, hex, ch) => {
+            if (hex) return String.fromCharCode(parseInt(hex, 16));
+            switch (ch) {
+              case 'n': return '\n';
+              case 't': return '\t';
+              case 'r': return '\r';
+              case '"': return '"';
+              case '\\': return '\\';
+              case '/': return '/';
+              case 'b': return '\b';
+              case 'f': return '\f';
+              default: return '\\' + ch;
+            }
+          })
           .trim();
         if (extracted.length > 20) {
           return sanitizeCharacterResult(characterName, { description: extracted });

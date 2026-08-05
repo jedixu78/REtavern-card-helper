@@ -183,8 +183,8 @@ const CHECK_ITEMS: CheckItem[] = [
       for (const c of d.characters || []) {
         if (!c.description?.trim()) continue;
         const desc = c.description;
-        // 检查是否有性格调色盘结构（底色/主色调/点缀/衍生）
-        const hasPaletteStructure = /底色|主色调|点缀|衍生[一二三1-3]/.test(desc);
+        // 检查是否有性格调色盘结构（底色/主色调/点缀/衍生）或三面性结构
+        const hasPaletteStructure = /底色|主色调|点缀|衍生[一二三1-3]|三面性|日常面|压力面|隐藏面/.test(desc);
         // 检查是否只有抽象标签而没有行为衍生
         const foundLabels = ABSTRACT_LABELS.filter(label => desc.includes(label));
         // 如果有抽象标签但没有调色盘结构，说明可能只是标签化描述
@@ -258,6 +258,43 @@ const CHECK_ITEMS: CheckItem[] = [
         passed,
         actual: issues.length === 0 ? '有动机描述' : `${issues.join('、')}缺少`,
         fixHint: passed ? '' : `${issues.join('、')}的NSFW描述建议补充心理动机层：不是写"ta喜欢做什么"，而是写"ta为什么这样做"——把行为和人格连接。例如："她需要通过主导来获得安全感，因为成长环境让她相信失控等于危险"`,
+      };
+    },
+  },
+  {
+    // 三面性检查：角色描述是否包含独立的"## 三面性"章节，含日常面/压力面/隐藏面
+    // 参考三明月教程：角色在不同压力下展现不同面貌，需要结构化呈现
+    id: 'threeFaces',
+    category: 'character',
+    label: '三面性',
+    weight: 5,
+    severity: 'suggestion',
+    jumpStep: 3,
+    optimizeFields: ['firstMessage'],
+    threshold: '角色描述含三面性章节',
+    applicable: (d) => (d.characters || []).some((c) => c.description?.trim()),
+    check: (d) => {
+      const issues: string[] = [];
+      for (const c of d.characters || []) {
+        if (!c.description?.trim()) continue;
+        const desc = c.description;
+        // 检测是否有三面性章节（## 三面性 或类似标题）
+        const hasThreeFacesSection = /#{1,3}\s*三面性/.test(desc);
+        // 检测是否有三面性的三个面（日常面/压力面/隐藏面）
+        const facesCount = [
+          /日常面|日常.*面|安全.*面/.test(desc),
+          /压力面|压力.*面|冲突.*面/.test(desc),
+          /隐藏面|隐藏.*面|真实.*面/.test(desc),
+        ].filter(Boolean).length;
+        if (!hasThreeFacesSection && facesCount < 2) {
+          issues.push(c.name || '角色');
+        }
+      }
+      const passed = issues.length === 0;
+      return {
+        passed,
+        actual: issues.length === 0 ? '有三面性章节' : `${issues.join('、')}缺少`,
+        fixHint: passed ? '' : `${issues.join('、')}的角色描述建议添加独立的"## 三面性"章节，包含：日常面(安全环境下的默认表现)、压力面(冲突/威胁下的反应转变)、隐藏面(特定条件下展现的隐藏特质)`,
       };
     },
   },
