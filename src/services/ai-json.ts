@@ -203,8 +203,26 @@ export function fixUnescapedQuotesInStrings(raw: string): string {
     while (j < raw.length && (raw[j] === ' ' || raw[j] === '\t' || raw[j] === '\n' || raw[j] === '\r')) j++;
 
     const nextSig = j < raw.length ? raw[j] : '';
-    // A legitimate string terminator is followed by: , } ] : or end of input
-    if (nextSig === ',' || nextSig === '}' || nextSig === ']' || nextSig === ':' || nextSig === '') {
+
+    if (nextSig === ',') {
+      // 深层 lookahead：逗号后应该是 JSON key（"..."）或闭合括号才算终止符。
+      // 否则可能是内容中未转义引号后跟逗号，如 `绰号"小白",因为...`
+      let k = j + 1;
+      while (k < raw.length && (raw[k] === ' ' || raw[k] === '\t' || raw[k] === '\n' || raw[k] === '\r')) k++;
+      const afterComma = k < raw.length ? raw[k] : '';
+      if (afterComma === '"' || afterComma === '}' || afterComma === ']' || afterComma === '') {
+        // Real end of string
+        result += ch;
+        inString = false;
+      } else {
+        // Unescaped quote inside string content — escape it
+        result += '\\"';
+      }
+      continue;
+    }
+
+    // A legitimate string terminator is followed by: } ] : or end of input
+    if (nextSig === '}' || nextSig === ']' || nextSig === ':' || nextSig === '') {
       // Real end of string
       result += ch;
       inString = false;
@@ -282,7 +300,21 @@ export function extractStringFieldFromRaw(text: string, fieldName: string): stri
       while (j < text.length && /\s/.test(text[j])) j++;
       const nextSig = j < text.length ? text[j] : '';
 
-      if (nextSig === ',' || nextSig === '}' || nextSig === ']' || nextSig === '') {
+      if (nextSig === ',') {
+        // 深层 lookahead：逗号后应该是 JSON key（"..."）或闭合括号才算终止符。
+        // 否则可能是内容中未转义引号后跟逗号，如 `绰号"小白",因为...`
+        let k = j + 1;
+        while (k < text.length && /\s/.test(text[k])) k++;
+        const afterComma = k < text.length ? text[k] : '';
+        if (afterComma === '"' || afterComma === '}' || afterComma === ']' || afterComma === '') {
+          return value.trim();
+        }
+        // 不是合法终止符 — 视为内容中的未转义引号
+        value += '"';
+        continue;
+      }
+
+      if (nextSig === '}' || nextSig === ']' || nextSig === '') {
         // Legitimate end of string
         return value.trim();
       }
