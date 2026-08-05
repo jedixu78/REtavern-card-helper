@@ -173,7 +173,7 @@ export function useAIGenerate() {
     const parsed = parseAIJson(text) as AIGeneratedCharacter | null;
 
     if (!parsed) {
-      const descMatch = text.match(/"description"\s*:\s*"([\s\S]*?)(?:"|$)/);
+      const descMatch = text.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)/);
       if (descMatch?.[1]) {
         const extracted = descMatch[1]
           .replace(/\\n/g, '\n')
@@ -213,7 +213,7 @@ export function useAIGenerate() {
 
     if (!parsed) {
       // JSON 被截断且续写后仍不完整时，尝试从截断文本中提取 description 字段值
-      const descMatch = text.match(/"description"\s*:\s*"([\s\S]*?)(?:"|$)/);
+      const descMatch = text.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)/);
       if (descMatch?.[1]) {
         // 反转义 JSON 字符串中的常见转义序列
         const extracted = descMatch[1]
