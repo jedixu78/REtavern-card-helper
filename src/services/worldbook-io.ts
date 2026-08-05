@@ -116,6 +116,13 @@ export function worldInfoEntryToLorebookEntry(raw: Record<string, unknown>): Lor
     if (typeof b === 'boolean') return b;
     return def;
   };
+  const boolOrNull = (a: unknown, b: unknown, def: boolean | null = false): boolean | null => {
+    if (typeof a === 'boolean') return a;
+    if (a === null) return null;
+    if (typeof b === 'boolean') return b;
+    if (b === null) return null;
+    return def;
+  };
   return {
     ...base,
     id: generateId(),
@@ -145,7 +152,7 @@ export function worldInfoEntryToLorebookEntry(raw: Record<string, unknown>): Lor
     cooldown: num(raw.cooldown, ext.cooldown, 0),
     delay: num(raw.delay, ext.delay, 0),
     use_regex: bool(raw.useRegex, raw.use_regex, false),
-    match_whole_words: bool(raw.matchWholeWords, bool(raw.match_whole_words, ext.match_whole_words, true), true),
+    match_whole_words: boolOrNull(raw.matchWholeWords, boolOrNull(raw.match_whole_words, ext.match_whole_words, true), true),
     case_sensitive: bool(raw.caseSensitive, bool(raw.case_sensitive, ext.case_sensitive, false), false),
     ignore_budget: bool(raw.ignoreBudget, bool(raw.ignore_budget, ext.ignore_budget, false)),
   };

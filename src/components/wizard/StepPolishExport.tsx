@@ -14,6 +14,8 @@
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Button } from '../shared/Button';
+import { Badge } from '../shared/Badge';
+import { StepHeader } from '../shared/StepHeader';
 import { useToast } from '../shared/Toast';
 import { exportAsJson, exportAsPng, assembleCard } from '../../services/card-exporter';
 import { findStagedLorebookEntryIndices, isProtectedLorebookEntry } from '../../services/lorebook-predicates';
@@ -375,11 +377,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-xl font-bold text-[var(--text-color)]">美化 & 导出</h2>
-        </div>
-      </div>
+      <StepHeader title="美化 & 导出" />
 
       {/* ── Export Section ────────────────────────────────────────────────── */}
       <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-status-success)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-status-success)_20%,transparent)] p-4 mb-4">
@@ -401,12 +399,12 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
                   className="absolute inset-0 w-full h-full object-cover"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-[color-mix(in_srgb,var(--color-surface-base)_75%,transparent)] via-transparent to-transparent" />
-                <div className="absolute inset-0 bg-[color-mix(in_srgb,var(--color-surface-base)_45%,transparent)] opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 text-sm text-[var(--text-color)]">
+                <div className="absolute inset-0 bg-[color-mix(in_srgb,var(--color-surface-base)_45%,transparent)] opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 text-sm text-themed">
                   <Upload size={16} />
                   更换封面
                 </div>
                 <span className="absolute right-3 top-3 w-6 h-6 rounded-full bg-[var(--color-status-success)] border border-[color-mix(in_srgb,var(--text-color)_30%,transparent)] flex items-center justify-center shadow-lg">
-                  <Check size={13} className="text-[var(--text-color)]" />
+                  <Check size={13} className="text-themed" />
                 </span>
               </>
             ) : (
@@ -418,7 +416,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
                   <ImageIcon size={24} className="text-[var(--color-status-success)]" />
                 </div>
                 <div className="text-center">
-                  <p className="text-sm font-medium text-[var(--text-color)]">卡片封面</p>
+                  <p className="text-sm font-medium text-themed">卡片封面</p>
                   <p className="text-xs text-[var(--color-text-muted)] mt-1">点击上传长图封面</p>
                 </div>
               </div>
@@ -433,7 +431,7 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
           <div className="rounded-2xl border border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-surface-base)_35%,transparent)] p-4 flex flex-col justify-between gap-4">
             <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-status-success)_20%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_60%,transparent)] p-3">
               <p className="text-[10px] text-[var(--color-text-muted)] mb-1">作品名</p>
-              <p className="text-sm font-semibold text-[var(--text-color)] truncate" title={cardName || '未命名卡片'}>{cardName || '未命名卡片'}</p>
+              <p className="text-sm font-semibold text-themed truncate" title={cardName || '未命名卡片'}>{cardName || '未命名卡片'}</p>
               <div className="mt-2 flex items-center gap-2 min-w-0">
                 <span className="shrink-0 text-[10px] text-[var(--color-text-muted)]">卡片标签</span>
                 <span className="min-w-0 truncate rounded-full border border-[color-mix(in_srgb,var(--color-status-success)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-status-success)_10%,transparent)] px-2 py-0.5 text-[10px] text-[var(--color-status-success)]" title={cardTagLabel}>
@@ -463,12 +461,12 @@ export function StepPolishExport({ draft, cardName, characterDescriptions, world
 
             <div className="rounded-xl border border-[color-mix(in_srgb,var(--color-status-success)_20%,transparent)] bg-[color-mix(in_srgb,var(--color-status-success)_20%,transparent)] px-3 py-2 flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-medium text-[var(--text-color)]">封面状态</p>
+                <p className="text-xs font-medium text-themed">封面状态</p>
                 <p className="text-[11px] text-[var(--color-text-muted)] truncate">{coverPreviewUrl ? '已选择 PNG 封面图片' : '未上传封面，PNG 会使用默认图'}</p>
               </div>
-              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${coverPreviewUrl ? 'bg-[color-mix(in_srgb,var(--color-status-success)_20%,transparent)] text-[var(--color-status-success)]' : 'bg-[color-mix(in_srgb,var(--color-surface-raised)_60%,transparent)] text-[var(--color-text-secondary)]'}`}>
+              <Badge variant={coverPreviewUrl ? 'success' : 'default'} className="shrink-0">
                 {coverPreviewUrl ? '已就绪' : '可选'}
-              </span>
+              </Badge>
             </div>
 
             <div className="space-y-2">

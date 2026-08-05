@@ -212,8 +212,8 @@ function componentHtml(v: ReflectedVar): string {
 
 /** 为单个变量生成填充 JS 片段 */
 function populateJsForVar(v: ReflectedVar): string {
-  const def = JSON.stringify(v.defaultVal);
-  const get = `sbGet(all, ${JSON.stringify(v.jsPath)}, ${def})`;
+  const def = JSON.stringify(v.defaultVal).replace(/<\/script/gi, '<\\/script');
+  const get = `sbGet(all, ${JSON.stringify(v.jsPath).replace(/<\/script/gi, '<\\/script')}, ${def})`;
   switch (v.kind) {
     case 'bar': {
       const min = v.min ?? 0;

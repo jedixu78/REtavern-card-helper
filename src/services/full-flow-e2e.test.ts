@@ -173,7 +173,7 @@ const WORLD_ANCHOR_TEXT = `类型：${WORLD_ANCHOR.type}
 
 const CHARACTER_CONSTRAINT = '继姐，冷萌大学生，与{{user}}同住';
 
-describe('End-to-End Full Flow Simulation (Step 1-9)', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('End-to-End Full Flow Simulation (Step 1-9)', () => {
   let draft: WizardDraft;
   let finalCard: any;
 

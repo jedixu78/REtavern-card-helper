@@ -7,6 +7,8 @@ import { CharacterEditor } from './CharacterEditor';
 import type { StreamingChunkMap } from './CharacterEditor';
 import { TextArea } from '../shared/TextArea';
 import { Button } from '../shared/Button';
+import { Badge } from '../shared/Badge';
+import { StepHeader } from '../shared/StepHeader';
 import { useTranslation } from '../../i18n/I18nContext';
 import type { WizardCharacter, LorebookEntry } from '../../constants/defaults';
 import type { CharacterVersion } from '../../pages/WizardPage';
@@ -75,15 +77,9 @@ export function StepCharacters({
     onEntriesUpdate(updated);
   }, [entries, onEntriesUpdate]);
 
-  const mutedText = 'color-mix(in srgb, var(--text-color) 60%, transparent)';
-  const faintText = 'color-mix(in srgb, var(--text-color) 40%, transparent)';
-
   return (
     <div>
-      <div className="mb-4">
-        <h2 className="text-xl font-bold" style={{ color: 'var(--text-color)' }}>{t('characters.title')}</h2>
-        <p className="text-sm mt-1" style={{ color: mutedText }}>{t('characters.subtitle')}</p>
-      </div>
+      <StepHeader title={t('characters.title')} subtitle={t('characters.subtitle')} />
 
       {/* Character list */}
       <div className="space-y-4">
@@ -123,11 +119,9 @@ export function StepCharacters({
         <div className="mt-8">
           <div className="flex items-center gap-2 mb-3">
             <h3 className="text-lg font-semibold text-primary-bright">{t('characters.generatedResultsTitle')}</h3>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary-tint-light text-primary-muted border border-primary-tint-light">
-              {t('characters.autoInjectBadge')}
-            </span>
+            <Badge variant="primary" size="sm">{t('characters.autoInjectBadge')}</Badge>
           </div>
-          <p className="text-xs mb-4" style={{ color: faintText }}>{t('characters.generatedResultsHint')}</p>
+          <p className="text-xs mb-4 text-themed-faint">{t('characters.generatedResultsHint')}</p>
           <div className="space-y-3">
             {linkedEntries.map((entry) => (
               <details
@@ -136,9 +130,9 @@ export function StepCharacters({
                 style={{ backgroundColor: 'rgba(var(--card-bg-r), var(--card-bg-g), var(--card-bg-b), 0.5)' }}
               >
                 <summary className="flex items-center gap-2 cursor-pointer select-none list-none">
-                  <span className="text-[10px] transition-transform group-open:rotate-90" style={{ color: faintText }}>&#x25B6;</span>
+                  <span className="text-[10px] transition-transform group-open:rotate-90 text-themed-faint">&#x25B6;</span>
                   <span className="text-sm">{entry.constant ? '\uD83D\uDD35' : '\uD83D\uDFE2'}</span>
-                  <h4 className="text-sm font-medium min-w-0 truncate" style={{ color: 'var(--text-color)' }}>{entry.name}</h4>
+                  <h4 className="text-sm font-medium min-w-0 truncate text-themed">{entry.name}</h4>
                   <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ backgroundColor: 'var(--color-surface-raised)', color: 'var(--color-text-secondary)' }}>
                     {t('characters.priorityLabel', { value: String(entry.priority) })}
                   </span>

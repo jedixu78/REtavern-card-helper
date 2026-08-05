@@ -1,5 +1,5 @@
 /**
- * StepMvuVariables — MVU 变量系统步骤（向导第 5 步）
+ * StepMvuVariables - MVU 变量系统步骤（向导第 5 步）
  *
  * MVU（变量追踪系统）三段式架构：
  *   - Model（模型）：在此定义变量 schema（含技能/功法等游戏元素）
@@ -12,6 +12,8 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { Button } from '../shared/Button';
 import { TextInput } from '../shared/TextInput';
 import { TextArea } from '../shared/TextArea';
+import { Badge } from '../shared/Badge';
+import { StepHeader } from '../shared/StepHeader';
 import type { MvuConfig, MvuSchemaSection, MvuVariable, MvuUpdateRule, MvuPrefix } from '../../constants/defaults';
 import { createEmptyMvuConfig } from '../../constants/defaults';
 import { buildSchemaTs, buildInitvarYaml, buildUpdateRulesYaml, buildEjsPreprocess } from '../../services/mvu-builder';
@@ -19,7 +21,7 @@ import { BeginnerModePanel } from './BeginnerModePanel';
 import { StatusBarConfigPanel } from './StatusBarConfigPanel';
 
 // ════════════════════════════════════════════════════════════════════════════
-// 游戏元素模型（技能 / 功法）—— 映射为 MVU record 变量
+// 游戏元素模型（技能 / 功法）-- 映射为 MVU record 变量
 // ════════════════════════════════════════════════════════════════════════════
 
 interface GameElement {
@@ -126,9 +128,8 @@ interface StepMvuVariablesProps {
   worldbookContext?: string;
 }
 
-const inputCls = 'w-full rounded-lg border border-[var(--input-border)] bg-[var(--color-surface-raised)] px-2.5 py-1.5 text-sm text-[var(--text-color)] focus:border-[var(--color-border-focus)] focus:outline-none';
-const labelCls = 'text-xs font-medium text-[var(--color-text-secondary)] mb-1 block';
-const cardCls = 'rounded-xl border border-[color-mix(in_srgb,var(--color-border-default)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-surface-raised)_40%,transparent)] p-3';
+const inputCls = 'w-full rounded-lg border border-[var(--input-border)] bg-[var(--color-surface-raised)] px-2.5 py-1.5 text-sm text-themed focus:border-[var(--color-border-focus)] focus:outline-none';
+const labelCls = 'text-sm font-medium text-themed-secondary mb-1 block';
 
 // Module-level constant: avoids creating a new empty config object on every render
 const EMPTY_MVU_CONFIG = createEmptyMvuConfig();
@@ -193,7 +194,7 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
     const existingSections = mvu.schemaSections.filter(s => s.name !== cat.sectionName);
     const existingVars = (mvu.schemaSections.find(s => s.name === cat.sectionName)?.variables ?? []).filter(v => v.path !== cat.varPath);
     const gameVar: MvuVariable = {
-      path: cat.varPath, zodType: cat.zodType, description: `${cat.label}列表（名称 → 图标/等级/描述）`,
+      path: cat.varPath, zodType: cat.zodType, description: `${cat.label}列表（名称 -> 图标/等级/描述）`,
       prefix: '', initialValue: record,
     };
     const section: MvuSchemaSection = { name: cat.sectionName, variables: [...existingVars, gameVar] };
@@ -218,26 +219,25 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
   return (
     <div className="space-y-4">
       {/* 头部 */}
-      <div className="mobile-stack-header flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-xl font-bold text-[var(--text-color)]">MVU 变量系统</h2>
-          <p className="text-sm text-[var(--color-text-secondary)] mt-1">
-            定义角色卡追踪的变量（Model），配合状态栏展示（View）与更新规则（Update）。共 {totalVars} 个变量。
-          </p>
-        </div>
-        <Button variant={mvu.enabled ? 'secondary' : 'ghost'} size="sm" onClick={() => onChange({ ...mvu, enabled: !mvu.enabled })}>
-          {mvu.enabled ? '✓ 已启用' : '启用 MVU'}
-        </Button>
-      </div>
+      <StepHeader
+        className="mobile-stack-header"
+        title="MVU 变量系统"
+        subtitle={`定义角色卡追踪的变量（Model），配合状态栏展示（View）与更新规则（Update）。共 ${totalVars} 个变量。`}
+        actions={
+          <Button variant={mvu.enabled ? 'secondary' : 'ghost'} size="sm" onClick={() => onChange({ ...mvu, enabled: !mvu.enabled })}>
+            {mvu.enabled ? '✓ 已启用' : '启用 MVU'}
+          </Button>
+        }
+      />
 
       {/* 模式切换：新手 / 专家 */}
-      <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)] p-1 w-fit">
+      <div className="flex items-center gap-1 rounded-lg border border-themed bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)] p-1 w-fit">
         <button
           onClick={() => onChange({ ...mvu, mode: 'beginner' })}
           className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
             mode === 'beginner'
               ? 'bg-[var(--color-primary)] text-white shadow-sm'
-              : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+              : 'text-themed-muted hover:text-themed-secondary'
           }`}
         >
           🎯 新手模式
@@ -247,7 +247,7 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
           className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
             mode === 'expert'
               ? 'bg-[var(--color-primary)] text-white shadow-sm'
-              : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+              : 'text-themed-muted hover:text-themed-secondary'
           }`}
         >
           🔧 专家模式
@@ -262,7 +262,7 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
       {/* ── 专家模式 ── */}
       {mode === 'expert' && (<>
       {/* Tab 切换 */}
-      <div className="flex gap-2 border-b border-[var(--color-border-default)]">
+      <div className="flex gap-2 border-b border-themed">
         {([['variables', '📊 变量分区'], ['elements', '🎮 游戏元素'], ['rules', '📝 更新规则'], ['statusBar', '🖥️ 状态栏']] as const).map(([key, label]) => (
           <button
             key={key}
@@ -270,7 +270,7 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
             className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
               activeTab === key
                 ? 'border-[var(--color-primary)] text-[var(--color-primary)]'
-                : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+                : 'border-transparent text-themed-muted hover:text-themed-secondary'
             }`}
           >
             {label}
@@ -287,10 +287,10 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
       {activeTab === 'variables' && (
         <div className="space-y-3">
           {mvu.schemaSections.map((section, sIdx) => (
-            <div key={sIdx} className={cardCls}>
+            <div key={sIdx} className="card-themed p-3">
               <div className="flex items-center gap-2 mb-2">
                 <TextInput value={section.name} onChange={(e) => updateSectionName(sIdx, e.target.value)} className={`${inputCls} max-w-[180px] font-semibold`} />
-                <span className="text-xs text-[var(--color-text-muted)]">{section.variables.length} 个变量</span>
+                <Badge variant="default" size="sm">{section.variables.length} 个变量</Badge>
                 <div className="flex-1" />
                 <Button variant="danger" size="sm" onClick={() => removeSection(sIdx)}>删除分区</Button>
               </div>
@@ -399,7 +399,7 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
       {/* ── Tab 2: 游戏元素（技能/功法）── */}
       {activeTab === 'elements' && (
         <div className="space-y-4">
-          <p className="text-xs text-[var(--color-text-secondary)]">
+          <p className="text-xs text-themed-secondary">
             以可视化方式管理技能、功法等游戏元素，自动映射为 MVU 记录变量，可在状态栏中展示并由 AI 追踪更新。
           </p>
           {GAME_ELEMENT_CATEGORIES.map(cat => (
@@ -416,9 +416,9 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
       {/* ── Tab 3: 更新规则 ── */}
       {activeTab === 'rules' && (
         <div className="space-y-3">
-          <p className="text-xs text-[var(--color-text-secondary)]">告诉 AI 如何更新变量。自明变量（名称即说明更新方式）可不写规则。</p>
+          <p className="text-xs text-themed-secondary">告诉 AI 如何更新变量。自明变量（名称即说明更新方式）可不写规则。</p>
           {mvu.updateRules.map((rule, idx) => (
-            <div key={idx} className={cardCls}>
+            <div key={idx} className="card-themed p-3">
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
                 <div className="sm:col-span-3">
                   <label className={labelCls}>变量路径</label>
@@ -466,7 +466,7 @@ export function StepMvuVariables({ mvu: mvuProp, onChange, cardName, characterCo
       {/* ── Tab 4: 状态栏 ── */}
       {activeTab === 'statusBar' && (
         <div className="space-y-3">
-          <p className="text-xs text-[var(--color-text-secondary)]">
+          <p className="text-xs text-themed-secondary">
             基于当前变量分区生成实时状态栏，配置与新手模式共用，支持模板、主题与实时预览。
           </p>
           <StatusBarConfigPanel mvu={mvu} onChange={onChange} />
@@ -504,17 +504,17 @@ function GameElementEditor({ category, elements, onChange }: {
   };
 
   return (
-    <div className={cardCls}>
+    <div className="card-themed p-3">
       <div className="flex items-center gap-2 mb-3">
         <span className="text-lg">{category.icon}</span>
-        <h3 className="text-sm font-bold text-[var(--text-color)]">{category.label}</h3>
-        <span className="text-xs text-[var(--color-text-muted)]">{elements.length} 项</span>
+        <h3 className="text-sm font-bold text-themed">{category.label}</h3>
+        <Badge variant="default" size="sm">{elements.length} 项</Badge>
         <div className="flex-1" />
         <Button variant="secondary" size="sm" onClick={addElement}>+ 添加{category.label}</Button>
       </div>
 
       {elements.length === 0 && (
-        <p className="text-xs text-[var(--color-text-muted)] py-2">暂无{category.label}，点击右上添加。</p>
+        <p className="text-xs text-themed-muted py-2">暂无{category.label}，点击右上添加。</p>
       )}
 
       <div className="space-y-2">
@@ -556,10 +556,10 @@ function GameElementEditor({ category, elements, onChange }: {
                 <span className="text-2xl leading-none w-8 text-center">{el.icon || category.icon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-[var(--text-color)]">{el.name || '（未命名）'}</span>
+                    <span className="text-sm font-semibold text-themed">{el.name || '（未命名）'}</span>
                     {el.level && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[color-mix(in_srgb,var(--color-primary)_20%,transparent)] text-[var(--color-primary)]">{el.level}</span>}
                   </div>
-                  {el.description && <p className="text-xs text-[var(--color-text-muted)] mt-0.5 truncate">{el.description}</p>}
+                  {el.description && <p className="text-xs text-themed-muted mt-0.5 truncate">{el.description}</p>}
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => setEditingIdx(idx)}>编辑</Button>
                 <Button variant="danger" size="sm" onClick={() => removeElement(idx)}>删除</Button>

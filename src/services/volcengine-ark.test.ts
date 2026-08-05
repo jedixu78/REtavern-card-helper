@@ -30,7 +30,7 @@ async function callVolcengineArk(messages: Array<{ role: string; content: string
   return response.json();
 }
 
-describe('Volcengine Ark API - deepseek-v4-flash', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('Volcengine Ark API - deepseek-v4-flash', () => {
   it('应该能成功调用聊天接口并返回响应', async () => {
     const result = await callVolcengineArk([
       { role: 'user', content: 'Say "test passed" in English.' },

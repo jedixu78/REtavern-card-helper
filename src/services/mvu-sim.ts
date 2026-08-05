@@ -883,7 +883,7 @@ export function applyUpdateBlocks(statData: StatData, aiReply: string): MvuApply
           // 这里限定对象，保住 StatData 的类型不被打穿
           const previous = oldValue;
           for (const key of Object.keys(data)) delete data[key];
-          Object.assign(data, newValue);
+          for (const key of Object.keys(newValue)) writeKey(data, key, (newValue as Record<string, unknown>)[key]);
           changes.push({ op: 'set', path, from: previous, to: deepClone(newValue), reason, ok: true });
         } else {
           fail('根路径替换仅支持对象值（真实 MVU 允许任意值，这里刻意收紧）', oldValue);

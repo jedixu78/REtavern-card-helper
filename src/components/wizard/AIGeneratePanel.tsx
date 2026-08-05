@@ -6,6 +6,9 @@
  */
 import { TextInput } from '../shared/TextInput';
 import { TextArea } from '../shared/TextArea';
+import { Toggle } from '../shared/Toggle';
+import { Button } from '../shared/Button';
+import { ChipGroup } from '../shared/ChipGroup';
 import { useTranslation } from '../../i18n/I18nContext';
 
 interface AIGeneratePanelProps {
@@ -39,31 +42,17 @@ export function AIGeneratePanel({
 }: AIGeneratePanelProps) {
   const { t } = useTranslation();
 
-  const faintText = 'color-mix(in srgb, var(--text-color) 40%, transparent)';
-  const C = {
-    text: 'var(--text-color)',
-    inputBg: 'var(--input-bg)',
-  } as const;
-
   return (
     <div className="mb-6 rounded-xl border border-primary-tint-light bg-primary-tint-light p-4 space-y-3">
       {/* NSFW toggle */}
       <div className="flex items-center gap-3 pb-2 border-b border-primary-tint-light">
-        <label className="relative inline-flex items-center cursor-pointer">
-          <input
-            type="checkbox"
-            checked={nsfw ?? false}
-            onChange={(e) => onNsfwChange?.(e.target.checked)}
-            className="sr-only peer"
-          />
-          <div className="w-9 h-5 bg-[var(--input-bg)] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-[var(--text-color)] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[var(--text-color)] after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[var(--color-status-danger)]" />
-        </label>
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs" style={{ color: 'color-mix(in srgb, var(--text-color) 80%, transparent)' }}>{t('common.nsfw')}</span>
-          <span className="text-[10px]" style={{ color: faintText }}>
-            {nsfw ? t('aiPanel.nsfwAllowed') : t('aiPanel.nsfwDisabled')}
-          </span>
-        </div>
+        <Toggle
+          checked={nsfw ?? false}
+          onChange={(checked) => onNsfwChange?.(checked)}
+          label={t('common.nsfw')}
+          description={nsfw ? t('aiPanel.nsfwAllowed') : t('aiPanel.nsfwDisabled')}
+          colorOn="danger"
+        />
       </div>
 
       <div>
@@ -85,11 +74,11 @@ export function AIGeneratePanel({
           max={20}
           onChange={(e) => onBatchCountChange(Math.max(minBatchCount, Math.min(20, parseInt(e.target.value) || 8)))}
           className="w-14 text-center rounded border border-primary-tint-light px-2 py-1 text-sm font-semibold text-primary-bright"
-          style={{ backgroundColor: C.inputBg }}
+          style={{ backgroundColor: 'var(--input-bg)' }}
         />
         {onMinBatchCountChange && (
           <>
-            <span className="text-[11px]" style={{ color: faintText }}>{t('aiPanel.minBatchCountLabel')}</span>
+            <span className="text-[11px] text-themed-faint">{t('aiPanel.minBatchCountLabel')}</span>
             <input
               type="number"
               value={minBatchCount}
@@ -97,32 +86,24 @@ export function AIGeneratePanel({
               max={batchCount}
               onChange={(e) => onMinBatchCountChange(Math.max(1, Math.min(batchCount, parseInt(e.target.value) || 4)))}
               className="w-14 text-center rounded border border-primary-tint-light px-2 py-1 text-sm font-semibold text-primary-bright"
-              style={{ backgroundColor: C.inputBg }}
+              style={{ backgroundColor: 'var(--input-bg)' }}
             />
-          </>
-        )}
-        <div className="flex gap-1.5">
-          {[1, 4, 8, 12, 16].map((n) => (
-            <button
-              key={n}
-              onClick={() => onBatchCountChange(n)}
-              className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${
-                batchCount === n
-                  ? 'border-primary-tint bg-primary-tint text-primary-bright'
-                  : 'border-[var(--color-border-default)] bg-[color-mix(in_srgb,var(--color-surface-raised)_50%,transparent)] text-[var(--color-text-secondary)] hover:border-[var(--color-primary)] hover:text-primary-muted'
-              }`}
-            >
-              {n}{t('common.countUnit')}
-            </button>
-          ))}
-        </div>
+        </>
+      )}
+        <ChipGroup
+          options={[1, 4, 8, 12, 16].map(n => ({ value: n, label: `${n}${t('common.countUnit')}` }))}
+          value={batchCount}
+          onChange={onBatchCountChange}
+          color="primary"
+          size="sm"
+        />
       </div>
 
       <div>
         <div className="flex items-start justify-between gap-2 mb-1">
           <label className="text-sm font-medium text-primary-bright min-w-0">
             {t('aiPanel.rulesLabel')}
-            <span className="text-xs font-normal ml-2" style={{ color: faintText }}>{t('aiPanel.rulesHint')}</span>
+            <span className="text-xs font-normal ml-2 text-themed-faint">{t('aiPanel.rulesHint')}</span>
           </label>
         </div>
         <TextArea
@@ -131,25 +112,21 @@ export function AIGeneratePanel({
           placeholder={t('aiPanel.rulesPlaceholder')}
           rows={6}
         />
-        <p className="text-[10px] mt-1" style={{ color: faintText }}>
+        <p className="text-[10px] mt-1 text-themed-faint">
           {t('aiPanel.rulesHelp')}
         </p>
       </div>
 
       <div className="flex items-center gap-2 pt-1">
-        <button
+        <Button
+          variant="success"
           onClick={onGenerate}
           disabled={generating}
-          className="inline-flex items-center justify-center gap-2 rounded-lg font-medium px-5 py-2 text-sm
-            bg-gradient-success
-            text-[var(--text-color)] shadow-lg shadow-[0_10px_15px_-3px_color-mix(in_srgb,var(--color-status-success)_25%,transparent),0_4px_6px_-4px_color-mix(in_srgb,var(--color-status-success)_25%,transparent)] hover:shadow-[0_10px_15px_-3px_color-mix(in_srgb,var(--color-status-success)_40%,transparent),0_4px_6px_-4px_color-mix(in_srgb,var(--color-status-success)_40%,transparent)]
-            transition-all duration-200 hover:scale-105 active:scale-95
-            disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 cursor-pointer"
         >
           {generating ? `\u23F3 ${t('common.generating')}` : `\uD83D\uDE80 ${t('aiPanel.generateButton')}`}
-        </button>
+        </Button>
         {(topic || worldRules) && (
-          <span className="text-[10px] ml-auto" style={{ color: faintText }}>
+          <span className="text-[10px] ml-auto text-themed-faint">
             {topic && `${t('aiPanel.topicSummary')}: ${topic.slice(0, 30) + (topic.length > 30 ? '...' : '')}`}
             {topic && worldRules && ' · '}
             {worldRules && t('aiPanel.rulesSummary', { count: String(worldRules.length) })}

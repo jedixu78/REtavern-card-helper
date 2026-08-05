@@ -409,7 +409,7 @@ export function StepWorldBook({
   };
 
   // ── AI Expand single entry ──────────────────────────────────────────
-  const handleExpandEntry = async (index: number) => {
+  const handleExpandEntry = async (index: number, instruction?: string) => {
     const entry = entries[index];
     if (!entry) return;
 
@@ -426,7 +426,7 @@ export function StepWorldBook({
         effectiveExistingContext
           ? `${effectiveCharacterContext}\n\n${t('worldBook.existingWorldbookHeaderBrief')}\n${effectiveExistingContext}`
           : effectiveCharacterContext,
-        undefined,
+        instruction,
         entry.expandNsfw,
         formatWorldAnchorForPrompt(worldAnchor) || undefined,
       );
@@ -672,7 +672,7 @@ export function StepWorldBook({
           expandLevel={expandLevels.get(entry.id) ?? 'collapsed'}
           onSetLevel={(level) => setEntryLevel(entry.id, level)}
           expanding={expandingIndex === index}
-          onAiExpand={() => handleExpandEntry(index)}
+          onAiExpand={(instruction) => handleExpandEntry(index, instruction)}
         />
       </div>
     );

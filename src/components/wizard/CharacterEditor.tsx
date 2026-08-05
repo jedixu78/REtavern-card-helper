@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CharacterEditor - Single character editor panel used in Step 2.
  * Uses CSS variables for consistent theming.
  */
@@ -6,6 +6,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { TextInput } from '../shared/TextInput';
 import { TextArea } from '../shared/TextArea';
 import { Button } from '../shared/Button';
+import { Toggle } from '../shared/Toggle';
 import { CHARACTER_ALIGNMENTS } from '../../constants/defaults';
 import { useTranslation } from '../../i18n/I18nContext';
 import { themeAlpha } from '../../constants/theme';
@@ -33,7 +34,7 @@ interface CharacterEditorProps {
   streamingReasoningCallbackRef?: StreamingChunkMap;
 }
 
-/** Map of character index → streaming chunk callback.
+/** Map of character index -> streaming chunk callback.
  *  Each CharacterEditor registers its own callback (keyed by index) so that both
  *  single generation (via wrappedOnGenerate) and batch generation (which bypasses
  *  it) can route streaming chunks to the correct editor's preview. */
@@ -179,45 +180,22 @@ export function CharacterEditor({
     setSelection(null);
   };
 
-  const borderColor = 'var(--color-border-default)';
-  const surfaceBg = 'rgba(var(--card-bg-r), var(--card-bg-g), var(--card-bg-b), 0.5)';
-  const mutedText = 'color-mix(in srgb, var(--text-color) 60%, transparent)';
-  const faintText = 'color-mix(in srgb, var(--text-color) 40%, transparent)';
-  const C = {
-    text: 'var(--text-color)',
-    secondary: 'var(--color-text-secondary)',
-    muted: 'var(--color-text-muted)',
-    border: borderColor,
-    surface: 'var(--color-surface-raised)',
-    inputBg: 'var(--input-bg)',
-    primary: 'var(--color-primary)',
-    info: 'var(--color-info)',
-    success: 'var(--color-status-success)',
-    warning: 'var(--color-status-warning)',
-    danger: 'var(--color-status-danger)',
-  } as const;
-  const surfaceA = (n: number) => `color-mix(in srgb, ${C.surface} ${n}%, transparent)`;
-
   return (
-    <div className="rounded-xl border p-5 space-y-4" style={{ borderColor, backgroundColor: surfaceBg }}>
+    <div className="card-themed p-5 space-y-4">
       {/* Header */}
       <div className="mobile-stack-header flex items-center justify-between gap-2">
-        <h3 className="text-base font-semibold min-w-0 truncate" style={{ color: 'var(--text-color)' }}>
+        <h3 className="text-base font-semibold min-w-0 truncate text-themed">
           {t('characters.characterIndex', { index: String(index + 1) })}{localName ? `: ${localName}` : ''}
         </h3>
         <div className="flex items-center gap-2 flex-wrap justify-end">
-          <label className="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs cursor-pointer" style={{ borderColor: themeAlpha('danger', 25), backgroundColor: themeAlpha('danger', 10) }} title={character.nsfw ? t('characterEditor.nsfwAllowed') : t('characterEditor.nsfwDisabled')}>
-            <span style={{ color: C.danger }}>{t('characterEditor.nsfwContent')}</span>
-            <span className="relative inline-flex items-center">
-              <input
-                type="checkbox"
-                checked={character.nsfw ?? false}
-                onChange={(e) => onUpdate({ nsfw: e.target.checked })}
-                className="sr-only peer"
-              />
-              <span className="w-8 h-4 bg-[var(--input-bg)] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-[var(--text-color)] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[var(--text-color)] after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-[var(--color-status-danger)]" />
-            </span>
-          </label>
+          <div className="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs" style={{ borderColor: themeAlpha('danger', 25), backgroundColor: themeAlpha('danger', 10) }} title={character.nsfw ? t('characterEditor.nsfwAllowed') : t('characterEditor.nsfwDisabled')}>
+            <span style={{ color: 'var(--color-status-danger)' }}>{t('characterEditor.nsfwContent')}</span>
+            <Toggle
+              checked={character.nsfw ?? false}
+              onChange={(checked) => onUpdate({ nsfw: checked })}
+              colorOn="danger"
+            />
+          </div>
           {hasName && (
             <Button variant="secondary" size="sm" onClick={wrappedOnGenerate} disabled={isGenerating}>
               {isGenerating ? t('characterEditor.generating') : t('characterEditor.generate')}
@@ -245,22 +223,17 @@ export function CharacterEditor({
         <button
           type="button"
           onClick={() => onUpdate({ constant: !(character.constant ?? true) })}
-          className="flex items-center gap-1.5 text-[11px] py-1 px-2 rounded border transition-colors"
-          style={{
-            borderColor: 'var(--color-border-default)',
-            backgroundColor: 'color-mix(in srgb, var(--color-surface-raised) 50%, transparent)',
-            color: 'var(--text-color)',
-          }}
+          className="flex items-center gap-1.5 text-[11px] py-1 px-2 rounded border transition-colors border-themed surface-themed text-themed"
           title={character.constant === false
             ? '绿灯（关键词触发）：对话中提到角色名时才注入设定，省 token。点击切换为蓝灯。'
             : '蓝灯（常驻）：设定始终占用上下文 token。点击切换为绿灯。'}
         >
           <span>{character.constant === false ? '🟢' : '🔵'}</span>
-          <span style={{ color: mutedText }}>
+          <span className="text-themed-muted">
             {character.constant === false ? '绿灯·关键词触发' : '蓝灯·常驻上下文'}
           </span>
         </button>
-        <span className="text-[10px]" style={{ color: faintText }}>
+        <span className="text-[10px] text-themed-faint">
           {character.constant === false
             ? '配角模式：提到名字才加载设定'
             : '主角/重要配角：设定始终在场'}
@@ -269,10 +242,10 @@ export function CharacterEditor({
 
       {/* Alignment selector */}
       <details className="group">
-        <summary className="flex items-center gap-2 cursor-pointer select-none text-xs font-medium mb-1.5 transition-colors hover:text-[var(--text-color)]" style={{ color: mutedText }}>
+        <summary className="flex items-center gap-2 cursor-pointer select-none text-xs font-medium mb-1.5 transition-colors hover:text-[var(--text-color)] text-themed-muted">
           <span className="transition-transform group-open:rotate-90">&#x25B6;</span>
           {t('characterEditor.alignment')}
-          <span style={{ color: faintText }}>{t('characterEditor.alignmentHint')}</span>
+          <span className="text-themed-faint">{t('characterEditor.alignmentHint')}</span>
           {character.alignment && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary-tint text-primary-bright border border-primary-tint-light">
               {CHARACTER_ALIGNMENTS.find(a => a.value === character.alignment)?.label || character.alignment}
@@ -322,21 +295,20 @@ export function CharacterEditor({
         {/* Selected text indicator */}
         {selection && hasDescription && (
           <div className="mt-1.5 flex items-center gap-2">
-            <span className="text-[10px] px-2 py-0.5 rounded border" style={{ color: C.warning, backgroundColor: themeAlpha('warning', 20), borderColor: themeAlpha('warning', 30) }}>
+            <span className="text-[10px] px-2 py-0.5 rounded border" style={{ color: 'var(--color-status-warning)', backgroundColor: themeAlpha('warning', 20), borderColor: themeAlpha('warning', 30) }}>
               {t('characterEditor.selectedChars', { count: String(selection.text.length) })}
             </span>
             <button
               onClick={handlePolishSelection}
               disabled={isModifying}
               className="text-[10px] px-2 py-0.5 rounded transition-colors disabled:opacity-40 hover:bg-[color-mix(in_srgb,var(--color-status-warning)_40%,transparent)]"
-              style={{ backgroundColor: themeAlpha('warning', 30), color: C.warning }}
+              style={{ backgroundColor: themeAlpha('warning', 30), color: 'var(--color-status-warning)' }}
             >
               {isModifying ? t('characterEditor.polishing') : t('characterEditor.polishSelected')}
             </button>
             <button
               onClick={() => setSelection(null)}
-              className="text-[10px] hover:text-[var(--text-color)] transition-colors"
-              style={{ color: faintText }}
+              className="text-[10px] hover:text-[var(--text-color)] transition-colors text-themed-faint"
             >
               {t('characterEditor.cancelSelection')}
             </button>
@@ -348,30 +320,30 @@ export function CharacterEditor({
       {(isGenerating || streamingText) && (
         <div className="rounded-lg border p-3" style={{ borderColor: themeAlpha('info', 40), backgroundColor: themeAlpha('info', 10) }}>
           <div className="flex items-center justify-between mb-2">
-            <h4 className="text-xs font-semibold flex items-center gap-2" style={{ color: C.info }}>
+            <h4 className="text-xs font-semibold flex items-center gap-2" style={{ color: 'var(--color-info)' }}>
               {isGenerating && (
-                <span className="inline-block w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: C.info }} />
+                <span className="inline-block w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'var(--color-info)' }} />
               )}
               {t('characterEditor.streamingOutputTitle')}
             </h4>
-            <span className="text-[10px]" style={{ color: faintText }}>{streamingText.length} {t('common.words')}</span>
+            <span className="text-[10px] text-themed-faint">{streamingText.length} {t('common.words')}</span>
           </div>
           <div
             ref={streamPreviewRef}
-            className="max-h-[300px] overflow-y-auto rounded p-3 border"
-            style={{ borderColor: C.border, backgroundColor: surfaceA(60), willChange: 'contents' }}
+            className="max-h-[300px] overflow-y-auto rounded p-3 border border-themed surface-themed-raised"
+            style={{ willChange: 'contents' }}
           >
             {streamingText ? (
               <pre className="text-[11px] font-mono whitespace-pre-wrap leading-relaxed" style={{ color: 'color-mix(in srgb, var(--color-info) 80%, transparent)' }}>
                 {streamingText}
               </pre>
             ) : (
-              <p className="text-[11px] italic" style={{ color: faintText }}>
+              <p className="text-[11px] italic text-themed-faint">
                 {isThinking ? t('characterEditor.streamingThinking') : t('characterEditor.streamingWaiting')}
               </p>
             )}
           </div>
-          <p className="text-[10px] mt-2" style={{ color: faintText }}>{t('characterEditor.streamingHint')}</p>
+          <p className="text-[10px] mt-2 text-themed-faint">{t('characterEditor.streamingHint')}</p>
         </div>
       )}
 
@@ -380,8 +352,7 @@ export function CharacterEditor({
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={handleSaveCurrentAsVersion}
-            className="text-[11px] px-2.5 py-1 rounded border transition-colors hover:text-[var(--text-color)] hover:border-[var(--color-border-default)]"
-            style={{ borderColor, color: mutedText }}
+            className="text-[11px] px-2.5 py-1 rounded border transition-colors hover:text-[var(--text-color)] hover:border-[var(--color-border-default)] border-themed text-themed-muted"
           >
             {t('characterEditor.saveAsVersion')}
           </button>
@@ -410,18 +381,16 @@ export function CharacterEditor({
       {showModifyPanel && hasDescription && (
         <div className="rounded-lg border p-3 space-y-2.5" style={{ borderColor: themeAlpha('info', 40), backgroundColor: themeAlpha('info', 15) }}>
           <div className="flex items-center justify-between">
-            <h4 className="text-xs font-semibold" style={{ color: C.info }}>{t('characterEditor.modifyTitle')}</h4>
-            <span className="text-[10px]" style={{ color: faintText }}>{t('characterEditor.modifyHint')}</span>
+            <h4 className="text-xs font-semibold" style={{ color: 'var(--color-info)' }}>{t('characterEditor.modifyTitle')}</h4>
+            <span className="text-[10px] text-themed-faint">{t('characterEditor.modifyHint')}</span>
           </div>
           <textarea
             value={modifyInstruction}
             onChange={(e) => setModifyInstruction(e.target.value)}
             placeholder={t('characterEditor.modifyPlaceholder')}
-            className="w-full h-16 rounded-lg border px-3 py-2 text-xs resize-y focus:outline-none focus:ring-1 focus:ring-[var(--color-info)]"
+            className="w-full h-16 rounded-lg border px-3 py-2 text-xs resize-y focus:outline-none focus:ring-1 focus:ring-[var(--color-info)] border-themed text-themed"
             style={{
-              borderColor,
               backgroundColor: 'var(--input-bg)',
-              color: 'var(--text-color)',
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -434,20 +403,20 @@ export function CharacterEditor({
             <Button size="sm" variant="secondary" onClick={handleModify} disabled={!modifyInstruction.trim() || isModifying}>
               {isModifying ? t('characterEditor.modifying') : t('characterEditor.modifyButton')}
             </Button>
-            <span className="text-[10px]" style={{ color: faintText }}>{t('characterEditor.modifyShortcut')}</span>
+            <span className="text-[10px] text-themed-faint">{t('characterEditor.modifyShortcut')}</span>
           </div>
-          <p className="text-[10px] leading-relaxed" style={{ color: faintText }}>{t('characterEditor.modifyDesc')}</p>
+          <p className="text-[10px] leading-relaxed text-themed-faint">{t('characterEditor.modifyDesc')}</p>
         </div>
       )}
 
       {/* Version History Panel */}
       {showHistory && hasHistory && (
-        <div className="rounded-lg border p-3 space-y-2" style={{ borderColor, backgroundColor: surfaceA(50) }}>
+        <div className="rounded-lg border p-3 space-y-2 border-themed surface-themed">
           <div className="flex items-center justify-between mb-1">
-            <h4 className="text-xs font-semibold" style={{ color: 'color-mix(in srgb, var(--text-color) 80%, transparent)' }}>
+            <h4 className="text-xs font-semibold text-themed-secondary">
               {t('characterEditor.versionHistory')}
             </h4>
-            <span className="text-[10px]" style={{ color: faintText }}>{t('characterEditor.versionHistoryHint')}</span>
+            <span className="text-[10px] text-themed-faint">{t('characterEditor.versionHistoryHint')}</span>
           </div>
 
           <div className="space-y-1.5">
@@ -478,14 +447,13 @@ export function CharacterEditor({
                       <span className={`text-xs truncate ${isActive ? 'text-primary-bright' : 'text-[var(--color-text-secondary)]'}`}>
                         {version.content.slice(0, 60)}{version.content.length > 60 ? '...' : ''}
                       </span>
-                      <span className="text-[10px] shrink-0 ml-auto" style={{ color: faintText }}>
+                      <span className="text-[10px] shrink-0 ml-auto text-themed-faint">
                         {formatTime(version.timestamp)}
                       </span>
                     </button>
                     <button
                       onClick={() => setExpandedVersionId(isExpanded ? null : version.id)}
-                      className="text-[10px] shrink-0 px-1 hover:text-[var(--text-color)] transition-colors"
-                      style={{ color: faintText }}
+                      className="text-[10px] shrink-0 px-1 hover:text-[var(--text-color)] transition-colors text-themed-faint"
                       title={t('characterEditor.expandPreview')}
                     >
                       {isExpanded ? '\u25B2' : '\u25BC'}
@@ -504,8 +472,8 @@ export function CharacterEditor({
 
                   {isExpanded && (
                     <div className="px-3 pb-2">
-                      <div className="max-h-[200px] overflow-y-auto rounded p-2 border" style={{ borderColor: C.border, backgroundColor: surfaceA(50) }}>
-                        <pre className="text-[11px] font-mono whitespace-pre-wrap leading-relaxed" style={{ color: C.secondary }}>
+                      <div className="max-h-[200px] overflow-y-auto rounded p-2 border border-themed surface-themed">
+                        <pre className="text-[11px] font-mono whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
                           {version.content}
                         </pre>
                       </div>

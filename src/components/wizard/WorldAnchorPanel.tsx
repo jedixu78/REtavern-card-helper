@@ -1,5 +1,5 @@
 /**
- * WorldAnchorPanel — 锚定世界观步骤的核心面板（Step 2）.
+ * WorldAnchorPanel - 锚定世界观步骤的核心面板（Step 2）.
  *
  * 用户按从大到小提供 5 个结构化字段（类型 / 时代·年份 / 文化背景 / 人文细节 / 硬性约束），
  * 点击「AI 锚定生成」后调用 generateWorldAnchorEntriesStreaming，
@@ -13,6 +13,8 @@ import { useState } from 'react';
 import { useTranslation } from '../../i18n/I18nContext';
 import { useToast } from '../shared/Toast';
 import { AIProgressPanel, type AIProgressStatus } from '../shared/AIProgressPanel';
+import { Badge } from '../shared/Badge';
+import { ChipGroup } from '../shared/ChipGroup';
 import { LorebookReviewDialog } from './LorebookReviewDialog';
 import { useAIGenerate } from '../../hooks/useAIGenerate';
 import { themeAlpha } from '../../constants/theme';
@@ -69,17 +71,6 @@ export function WorldAnchorPanel({
     constraints: rawAnchor?.constraints ?? '',
   };
 
-  const C = {
-    text: 'var(--text-color)',
-    secondary: 'var(--color-text-secondary)',
-    muted: 'var(--color-text-muted)',
-    border: 'var(--color-border-default)',
-    inputBg: 'var(--input-bg)',
-    inputBorder: 'var(--input-border)',
-    primary: 'var(--color-primary)',
-    warning: 'var(--color-status-warning)',
-  } as const;
-
   const update = (field: keyof WorldAnchor, value: string) => {
     onChange({ ...anchor, [field]: value });
   };
@@ -89,9 +80,9 @@ export function WorldAnchorPanel({
     minHeight: '60px',
     padding: '8px 10px',
     borderRadius: '8px',
-    border: `1px solid ${C.inputBorder}`,
-    background: C.inputBg,
-    color: C.text,
+    border: '1px solid var(--input-border)',
+    background: 'var(--input-bg)',
+    color: 'var(--text-color)',
     fontSize: '13px',
     lineHeight: '1.5',
     resize: 'vertical',
@@ -102,7 +93,6 @@ export function WorldAnchorPanel({
     display: 'block',
     fontSize: '12px',
     fontWeight: 600,
-    color: C.secondary,
     marginBottom: '4px',
   };
 
@@ -117,7 +107,7 @@ export function WorldAnchorPanel({
     borderRadius: '50%',
     fontSize: '10px',
     fontWeight: 700,
-    color: C.primary,
+    color: 'var(--color-primary)',
     border: `1px solid ${themeAlpha('primary', 45)}`,
     background: themeAlpha('primary', 12),
     verticalAlign: 'middle',
@@ -130,27 +120,14 @@ export function WorldAnchorPanel({
     placeholder: string,
   ) => (
     <div>
-      <div className="flex flex-wrap gap-1.5 mb-2">
-        {chips.map((chip) => {
-          const active = anchor[field] === chip;
-          return (
-            <button
-              key={chip}
-              type="button"
-              onClick={() => update(field, chip)}
-              className="px-2.5 py-1 rounded-full text-xs cursor-pointer transition-colors"
-              style={{
-                border: `1px solid ${active ? C.primary : C.border}`,
-                background: active ? themeAlpha('primary', 15) : 'transparent',
-                color: active ? C.primary : C.secondary,
-                fontWeight: active ? 600 : 400,
-              }}
-            >
-              {chip}
-            </button>
-          );
-        })}
-      </div>
+      <ChipGroup
+        options={chips.map((chip) => ({ value: chip, label: chip }))}
+        value={anchor[field]}
+        onChange={(v) => update(field, v)}
+        color="primary"
+        size="sm"
+        className="mb-2"
+      />
       <input
         type="text"
         value={anchor[field]}
@@ -158,9 +135,9 @@ export function WorldAnchorPanel({
         placeholder={placeholder}
         className="w-full px-2.5 py-1.5 rounded-lg text-sm"
         style={{
-          border: `1px solid ${C.inputBorder}`,
-          background: C.inputBg,
-          color: C.text,
+          border: '1px solid var(--input-border)',
+          background: 'var(--input-bg)',
+          color: 'var(--text-color)',
           outline: 'none',
         }}
       />
@@ -335,19 +312,16 @@ export function WorldAnchorPanel({
         style={{ background: 'transparent', border: 'none', textAlign: 'left' }}
       >
         <span style={{ fontSize: '16px' }}>⚓</span>
-        <span style={{ fontSize: '14px', fontWeight: 700, color: C.text }}>{t('worldAnchor.title')}</span>
-        <span style={{ fontSize: '11px', color: C.muted, marginLeft: '4px' }}>
+        <span style={{ fontSize: '14px', fontWeight: 700 }} className="text-themed">{t('worldAnchor.title')}</span>
+        <span style={{ fontSize: '11px', marginLeft: '4px' }} className="text-themed-muted">
           {t('worldAnchor.subtitle')}
         </span>
         {anchorEntryCount > 0 && (
-          <span
-            className="rounded-full border px-2 py-0.5 text-[10px] ml-1"
-            style={{ borderColor: themeAlpha('warning', 35), backgroundColor: themeAlpha('warning', 10), color: C.warning }}
-          >
+          <Badge variant="warning" className="ml-1">
             {t('worldAnchor.entriesCount', { count: String(anchorEntryCount) })}
-          </span>
+          </Badge>
         )}
-        <span style={{ marginLeft: 'auto', fontSize: '12px', color: C.muted }}>
+        <span style={{ marginLeft: 'auto', fontSize: '12px' }} className="text-themed-muted">
           {expanded ? '▼' : '▶'}
         </span>
       </button>
@@ -366,8 +340,8 @@ export function WorldAnchorPanel({
               <div className="w-9 h-5 bg-[var(--input-bg)] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-[var(--text-color)] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[var(--text-color)] after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[var(--color-status-danger)]" />
             </label>
             <div className="flex items-center gap-1.5">
-              <span className="text-xs" style={{ color: C.secondary }}>{t('common.nsfw')}</span>
-              <span className="text-[10px]" style={{ color: C.muted }}>
+              <span className="text-xs text-themed-secondary">{t('common.nsfw')}</span>
+              <span className="text-[10px] text-themed-muted">
                 {nsfw ? t('aiPanel.nsfwAllowed') : t('aiPanel.nsfwDisabled')}
               </span>
             </div>
@@ -375,25 +349,25 @@ export function WorldAnchorPanel({
 
           {/* ① 类型（最宏观） */}
           <div>
-            <label style={labelStyle}><span style={stepBadge}>1</span>{t('worldAnchor.typeLabel')}</label>
+            <label style={labelStyle} className="text-themed-secondary"><span style={stepBadge}>1</span>{t('worldAnchor.typeLabel')}</label>
             {renderChipsAndInput('type', TYPE_CHIPS, t('worldAnchor.typePlaceholder'))}
           </div>
 
           {/* ② 时代/年份 */}
           <div>
-            <label style={labelStyle}><span style={stepBadge}>2</span>{t('worldAnchor.eraLabel')}</label>
+            <label style={labelStyle} className="text-themed-secondary"><span style={stepBadge}>2</span>{t('worldAnchor.eraLabel')}</label>
             {renderChipsAndInput('era', ERA_CHIPS, t('worldAnchor.eraPlaceholder'))}
           </div>
 
           {/* ③ 文化背景 */}
           <div>
-            <label style={labelStyle}><span style={stepBadge}>3</span>{t('worldAnchor.cultureLabel')}</label>
+            <label style={labelStyle} className="text-themed-secondary"><span style={stepBadge}>3</span>{t('worldAnchor.cultureLabel')}</label>
             {renderChipsAndInput('culture', CULTURE_CHIPS, t('worldAnchor.culturePlaceholder'))}
           </div>
 
           {/* ④ 人文细节 */}
           <div>
-            <label style={labelStyle}><span style={stepBadge}>4</span>{t('worldAnchor.humanityLabel')}</label>
+            <label style={labelStyle} className="text-themed-secondary"><span style={stepBadge}>4</span>{t('worldAnchor.humanityLabel')}</label>
             <textarea
               value={anchor.humanity}
               onChange={(e) => update('humanity', e.target.value)}
@@ -405,7 +379,7 @@ export function WorldAnchorPanel({
 
           {/* ⑤ 硬性约束 */}
           <div>
-            <label style={labelStyle}><span style={stepBadge}>5</span>{t('worldAnchor.constraintsLabel')}</label>
+            <label style={labelStyle} className="text-themed-secondary"><span style={stepBadge}>5</span>{t('worldAnchor.constraintsLabel')}</label>
             <textarea
               value={anchor.constraints}
               onChange={(e) => update('constraints', e.target.value)}
@@ -433,7 +407,7 @@ export function WorldAnchorPanel({
             >
               {generating ? `⏳ ${t('worldAnchor.generating')}` : `🚀 ${t('worldAnchor.generateButton')}`}
             </button>
-            <span className="text-[10px]" style={{ color: C.muted }}>
+            <span className="text-[10px] text-themed-muted">
               {t('worldAnchor.generateHint', { bookName })}
             </span>
           </div>
@@ -465,7 +439,7 @@ export function WorldAnchorPanel({
           )}
 
           {/* Hint text */}
-          <p style={{ fontSize: '11px', color: C.muted, margin: 0, lineHeight: '1.4' }}>
+          <p style={{ fontSize: '11px', margin: 0, lineHeight: '1.4' }} className="text-themed-muted">
             {t('worldAnchor.hint')}
           </p>
         </div>

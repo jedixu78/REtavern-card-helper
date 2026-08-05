@@ -39,7 +39,7 @@ describe.skip('Step 1: AI 设置配置 (IndexedDB 需要浏览器环境)', () =>
 });
 
 // ── 步骤 2: 测试模型列表获取（SettingsPage 的 fetchModels 功能）────────────────
-describe('Step 2: 模型列表获取', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('Step 2: 模型列表获取', () => {
   it('应该能通过 /models 接口获取可用模型列表', async () => {
     // 注意：Volcengine Ark 的 /coding/v3/models 返回的是所有历史模型，大部分已关停
     // 这里只验证接口能通，不要求有 Active 状态的模型
@@ -59,7 +59,7 @@ describe('Step 2: 模型列表获取', () => {
 });
 
 // ── 步骤 3: 测试非流式聊天调用（callAI）─────────────────────────────────────────
-describe('Step 3: 非流式聊天调用', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('Step 3: 非流式聊天调用', () => {
   async function callAI(messages: Array<{ role: string; content: string }>, maxTokens = 500) {
     const response = await fetch(`${VOLCENGINE_BASE_URL}/chat/completions`, {
       method: 'POST',
@@ -102,7 +102,7 @@ describe('Step 3: 非流式聊天调用', () => {
 });
 
 // ── 步骤 4: 测试流式聊天调用（callAIStreaming）─────────────────────────────────
-describe('Step 4: 流式聊天调用', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('Step 4: 流式聊天调用', () => {
   async function* streamAI(messages: Array<{ role: string; content: string }>, maxTokens = 500) {
     const response = await fetch(`${VOLCENGINE_BASE_URL}/chat/completions`, {
       method: 'POST',
@@ -169,7 +169,7 @@ describe('Step 4: 流式聊天调用', () => {
 });
 
 // ── 步骤 5: 测试长文本生成与续写（自动 continuation）────────────────────────────
-describe('Step 5: 长文本生成与续写', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('Step 5: 长文本生成与续写', () => {
   async function callAIWithContinuation(prompt: string, maxRounds = 3) {
     let fullContent = '';
     for (let round = 0; round < maxRounds; round++) {
@@ -218,7 +218,7 @@ describe('Step 5: 长文本生成与续写', () => {
 });
 
 // ── 步骤 6: 测试 JSON 格式输出（用于结构化数据如世界书、MVU 变量）────────────────
-describe('Step 6: JSON 格式输出', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('Step 6: JSON 格式输出', () => {
   it('应该能生成合法的 JSON 对象', async () => {
     const response = await fetch(`${VOLCENGINE_BASE_URL}/chat/completions`, {
       method: 'POST',
@@ -250,7 +250,7 @@ describe('Step 6: JSON 格式输出', () => {
 });
 
 // ── 步骤 7: 测试错误处理（无效 Key、网络超时等）──────────────────────────────────
-describe('Step 7: 错误处理', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('Step 7: 错误处理', () => {
   it('应该能正确处理无效的 API Key', async () => {
     const response = await fetch(`${VOLCENGINE_BASE_URL}/chat/completions`, {
       method: 'POST',

@@ -695,6 +695,7 @@ export function createEmptyMvuConfig(): MvuConfig {
     statusBarHtml: '',
     statusBarStyle: 'compact-panel',
     statusBarShowIcons: false,
+    statusBarOptions: {},
   };
 }
 

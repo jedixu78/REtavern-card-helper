@@ -2,7 +2,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
+  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'success';
   size?: 'sm' | 'md' | 'lg';
   loading?: boolean;
   children: ReactNode;
@@ -13,6 +13,7 @@ const variantClasses: Record<string, string> = {
   secondary: 'btn-secondary',
   danger: 'btn-danger',
   ghost: 'btn-ghost',
+  success: 'btn-success',
 };
 
 const sizeClasses: Record<string, string> = {

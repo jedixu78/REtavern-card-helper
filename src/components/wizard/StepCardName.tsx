@@ -5,6 +5,7 @@
  */
 import { TextInput } from '../shared/TextInput';
 import { TagInput } from '../shared/TagInput';
+import { StepHeader } from '../shared/StepHeader';
 import { useTranslation } from '../../i18n/I18nContext';
 
 interface StepCardNameProps {
@@ -19,10 +20,7 @@ export function StepCardName({ cardName, tags, onNameChange, onTagsChange }: Ste
   return (
     <div className="space-y-8">
       <div>
-        <h2 className="text-xl font-bold text-[var(--text-color)] mb-2">{t('cardName.title')}</h2>
-        <p className="text-sm text-[var(--color-text-muted)] mb-6">
-          {t('cardName.description')}
-        </p>
+        <StepHeader title={t('cardName.title')} subtitle={t('cardName.description')} />
         <TextInput
           label={t('cardName.nameLabel')}
           value={cardName}
@@ -33,8 +31,8 @@ export function StepCardName({ cardName, tags, onNameChange, onTagsChange }: Ste
       </div>
 
       <div className="border-t border-[color-mix(in_srgb,var(--text-color)_5%,transparent)] pt-6">
-        <h3 className="text-lg font-semibold text-[var(--text-color)] mb-2">{t('cardName.tagsTitle')}</h3>
-        <p className="text-xs text-[var(--color-text-muted)] mb-2">
+        <h3 className="text-lg font-semibold text-themed mb-2">{t('cardName.tagsTitle')}</h3>
+        <p className="text-xs text-themed-muted mb-2">
           {t('cardName.tagsDesc')}
         </p>
         <TagInput

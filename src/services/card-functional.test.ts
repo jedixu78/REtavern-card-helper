@@ -10,8 +10,8 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { createEmptyDraft, createEmptyLorebookEntry, generateId, resolveBookName } from '../constants/defaults';
-import type { WizardDraft, LorebookEntry, MvuSchemaSection, MvuUpdateRule } from '../constants/defaults';
+import { createEmptyDraft, resolveBookName } from '../constants/defaults';
+import type { WizardDraft } from '../constants/defaults';
 import { getBeginnerTemplateById } from '../constants/beginner-templates';
 import { buildMvuScriptBundle } from './mvu-builder';
 import { buildStagedLorebookEntries, buildDispatcherContent, parseDispatcherContent } from './staged-lorebook-builder';
@@ -218,7 +218,7 @@ describe('Functional Tests - Card Features Validation', () => {
     let bundle: ReturnType<typeof buildMvuScriptBundle>;
 
     beforeAll(() => {
-      bundle = buildMvuScriptBundle(draft.mvu);
+      bundle = buildMvuScriptBundle(draft.mvu!);
     });
 
     it('1.1 MVU bundle 所有产物非空', () => {
@@ -289,7 +289,7 @@ describe('Functional Tests - Card Features Validation', () => {
       // 使用 character-panel 模板生成状态栏 HTML
       const html = generateStatusBarHtml(
         'character-panel',
-        draft.mvu.schemaSections,
+        draft.mvu!.schemaSections,
         {
           themeId: 'terminal',
           title: '生活手账',
@@ -328,12 +328,12 @@ describe('Functional Tests - Card Features Validation', () => {
       // 生成状态栏 HTML
       const statusBarHtml = generateStatusBarHtml(
         'character-panel',
-        draft.mvu.schemaSections,
+        draft.mvu!.schemaSections,
         { themeId: 'terminal', title: '生活手账' },
       );
 
       // 设置到 draft 以便 assembleCard 生成正则脚本
-      draft.mvu.statusBarHtml = statusBarHtml;
+      draft.mvu!.statusBarHtml = statusBarHtml;
       const testCard = assembleCard(draft);
 
       const regexScripts = testCard.data.extensions.regex_scripts as any[];
@@ -752,8 +752,6 @@ describe('Functional Tests - Card Features Validation', () => {
       const nonConstantEntries = entries.filter(e => !e.constant);
 
       if (constantEntries.length > 0 && nonConstantEntries.length > 0) {
-        const maxConstantOrder = Math.max(...constantEntries.map(e => e.insertion_order));
-        const minNonConstantOrder = Math.min(...nonConstantEntries.map(e => e.insertion_order));
         // constant 条目应该排在前面（insertion_order 更小或相等）
         // 注意：这不是绝对的，因为不同条目可能有不同的 insertion_order
         console.log(`✓ Entry ordering: ${constantEntries.length} constant, ${nonConstantEntries.length} non-constant`);

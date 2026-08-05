@@ -6,6 +6,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { TextArea } from '../shared/TextArea';
 import { Button } from '../shared/Button';
+import { StepHeader } from '../shared/StepHeader';
 import { AIProgressPanel, type AIProgressStatus } from '../shared/AIProgressPanel';
 import { useAIGenerate } from '../../hooks/useAIGenerate';
 import { useTranslation } from '../../i18n/I18nContext';
@@ -181,15 +182,8 @@ export function StepFirstMessage({
 
   return (
     <div>
-      <div className="flex flex-col gap-4 mb-4">
-        <div className="mobile-stack-header flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-xl font-bold text-[var(--text-color)]">{t('firstMessage.title')}</h2>
-            <p className="text-sm text-[var(--color-text-secondary)] mt-1">
-              {t('firstMessage.subtitle')}
-            </p>
-          </div>
-        </div>
+      <div className="flex flex-col mb-4">
+        <StepHeader title={t('firstMessage.title')} subtitle={t('firstMessage.subtitle')} className="mobile-stack-header" />
 
         {/* Tabs */}
         <div className="flex flex-wrap items-center gap-2">
@@ -252,7 +246,7 @@ export function StepFirstMessage({
           value={writingRequirements}
           onChange={(e) => setWritingRequirements(e.target.value)}
           placeholder={t('firstMessage.writingReqPlaceholder')}
-          className="w-full h-32 rounded-lg border border-[color-mix(in_srgb,var(--color-status-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_80%,transparent)] px-3 py-2 text-xs text-[var(--text-color)] placeholder-[var(--color-text-muted)] resize-y focus:border-[var(--color-status-warning)] focus:outline-none"
+          className="w-full h-32 rounded-lg border border-[color-mix(in_srgb,var(--color-status-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--input-bg)_80%,transparent)] px-3 py-2 text-xs text-themed placeholder-[var(--color-text-muted)] resize-y focus:border-[var(--color-status-warning)] focus:outline-none"
         />
         <div className="flex items-center justify-between">
           <p className="text-[11px] text-[var(--color-text-muted)]">
@@ -374,7 +368,7 @@ export function StepFirstMessage({
       {/* 对话示例（mes_example）：V2/V3 规范字段，此前全链路缺失，现补上编辑入口 */}
       {onMesExampleChange && (
         <details className="mt-4 rounded-lg border border-[var(--color-border-default)] p-3">
-          <summary className="cursor-pointer text-sm font-medium" style={{ color: 'var(--text-color)' }}>
+          <summary className="cursor-pointer text-sm font-medium text-themed">
             {t('firstMessage.mesExample')}
             {mesExample?.trim() && (
               <span className="ml-2 text-xs text-[var(--color-text-muted)]">

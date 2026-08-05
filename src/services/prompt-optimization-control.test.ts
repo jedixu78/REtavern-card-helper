@@ -104,7 +104,7 @@ function extractReferenceMetrics(filePath: string): ReferenceMetrics {
   };
 }
 
-describe('Prompt Optimization - Control Variable Tests', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('Prompt Optimization - Control Variable Tests', () => {
   let referenceMetrics: ReferenceMetrics;
   
   beforeAll(() => {

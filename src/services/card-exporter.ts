@@ -1674,8 +1674,8 @@ export function cardToDraft(card: Record<string, unknown>): WizardDraft {
         const entryPassthrough = collectEntryPassthrough(e, ext);
         return {
           id: String(e.id ?? '') || generateId(),
-          keys: (e.keys as string[]) || [],
-          secondary_keys: (e.secondary_keys as string[]) || [],
+          keys: Array.isArray(e.keys) ? (e.keys as unknown[]).map(String) : [],
+          secondary_keys: Array.isArray(e.secondary_keys) ? (e.secondary_keys as unknown[]).map(String) : [],
           content: (e.content as string) || '',
           name: (e.name as string) || `Entry ${i + 1}`,
           enabled: (e.enabled as boolean) ?? true,

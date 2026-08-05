@@ -55,6 +55,7 @@ function normalizeDraft(raw: Partial<DraftState>): DraftState {
     mvu: raw.mvu ? { ...defaults.mvu, ...raw.mvu } : defaults.mvu,
     liveStreamChat: raw.liveStreamChat ? { ...defaults.liveStreamChat, ...raw.liveStreamChat } : defaults.liveStreamChat,
     worldAnchor: raw.worldAnchor ? { ...defaults.worldAnchor, ...raw.worldAnchor } : defaults.worldAnchor,
+    stagedMode: raw.stagedMode ? { ...defaults.stagedMode, ...raw.stagedMode } : defaults.stagedMode,
     // Shared UI state — fall back to defaults for old drafts
     worldbookBatchCount: raw.worldbookBatchCount ?? defaults.worldbookBatchCount,
   };

@@ -11,6 +11,7 @@ import { useWizardState } from '../hooks/useWizardState';
 import { useAIGenerate } from '../hooks/useAIGenerate';
 import { useToast } from '../components/shared/Toast';
 import { WizardShell } from '../components/wizard/WizardShell';
+import { Spinner } from '../components/shared/Spinner';
 
 // Each wizard step is a heavy component (some 600-900+ lines) but only one is
 // mounted at a time. Lazy-load them so the initial WizardPage chunk stays small;
@@ -33,9 +34,6 @@ import { consumeWorkshopLorebookImport, mergeVariableBlueprintsIntoMvu } from '.
 import { escapeEjsDoubleQuoted } from '../services/staged-lorebook-builder';
 import { useTranslation } from '../i18n/I18nContext';
 import { logger } from '../services/logger';
-
-const textPrimaryStyle = { color: 'var(--text-color)' };
-const textMutedStyle = { color: 'var(--color-text-muted)' };
 
 /** A single version in the character generation history */
 export interface CharacterVersion {
@@ -670,7 +668,7 @@ ${e.content || ''}`)
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="animate-spin w-8 h-8 border-3 border-[var(--color-primary)] border-t-transparent rounded-full" />
+        <Spinner size="md" />
       </div>
     );
   }
@@ -854,10 +852,10 @@ ${e.content || ''}`)
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <h1 className="hidden md:block text-2xl font-bold mb-1 shrink-0" style={textPrimaryStyle}>
+      <h1 className="hidden md:block text-2xl font-bold mb-1 shrink-0 text-themed">
         {isEditMode ? t('wizard.titleEdit') : t('wizard.titleCreate')}
       </h1>
-      <p className="hidden md:block text-sm mb-6 shrink-0" style={textMutedStyle}>
+      <p className="hidden md:block text-sm mb-6 shrink-0 text-themed-muted">
         {isEditMode ? t('wizard.subtitleEdit') : t('wizard.subtitleCreate')}
       </p>
 
@@ -876,7 +874,7 @@ ${e.content || ''}`)
         <Suspense
           fallback={
             <div className="flex items-center justify-center py-20">
-              <div className="animate-spin w-8 h-8 border-3 border-[var(--color-primary)] border-t-transparent rounded-full" />
+              <Spinner size="md" />
             </div>
           }
         >

@@ -271,7 +271,7 @@ function compareQuality(generated: QualityMetrics, reference: QualityMetrics): {
   return { gaps, strengths };
 }
 
-describe('Character Card Generation - Full Workflow', () => {
+describe.skipIf(!VOLCENGINE_API_KEY)('Character Card Generation - Full Workflow', () => {
   let referenceCard: ReferenceCard;
   let referenceMetrics: QualityMetrics;
 

@@ -2,10 +2,12 @@
  * LorebookEntryEditor - Single lorebook entry editor panel.
  * Density-aware editor: compact summary + explicit preview/edit actions
  */
+import { useState } from 'react';
 import { TextInput } from '../shared/TextInput';
 import { TextArea } from '../shared/TextArea';
 import { TagInput } from '../shared/TagInput';
 import { Button } from '../shared/Button';
+import { Modal } from '../shared/Modal';
 import { useTranslation } from '../../i18n/I18nContext';
 import {
   LOREBOOK_POSITION_OPTIONS,
@@ -35,11 +37,14 @@ interface LorebookEntryEditorProps {
   expandLevel?: EntryExpandLevel;
   onSetLevel?: (level: EntryExpandLevel) => void;
   expanding?: boolean;
-  onAiExpand?: () => void;
+  /** 触发 AI 修改/扩写当前条目；可传入用户自定义修改指令（留空则直接扩写） */
+  onAiExpand?: (instruction?: string) => void;
 }
 
 export function LorebookEntryEditor({ entry, index, onUpdate, onRemove, expandLevel, onSetLevel, expanding, onAiExpand }: LorebookEntryEditorProps) {
   const { t } = useTranslation();
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  const [aiInstruction, setAiInstruction] = useState('');
   const badge = getStrategyBadge(entry, t);
   const isCollapsed = expandLevel === 'collapsed' || expandLevel === undefined;
   const isPreview = expandLevel === 'preview';
@@ -113,7 +118,10 @@ export function LorebookEntryEditor({ entry, index, onUpdate, onRemove, expandLe
           )}
           {onAiExpand && isCollapsed && entry.content.length > 0 && (
             <button
-              onClick={onAiExpand}
+              onClick={() => {
+                setAiInstruction('');
+                setAiModalOpen(true);
+              }}
               disabled={expanding}
               className="text-[10px] px-2 py-0.5 rounded bg-gradient-success text-inverse font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
@@ -415,6 +423,48 @@ export function LorebookEntryEditor({ entry, index, onUpdate, onRemove, expandLe
           </details>
         </div>
       )}
+
+      {/* AI 修改指令 Modal：让用户对单条条目指定自定义修改要求 */}
+      <Modal
+        isOpen={aiModalOpen}
+        onClose={() => setAiModalOpen(false)}
+        title={t('lorebook.aiModifyTitle')}
+        maxWidth="max-w-md"
+      >
+        <div className="space-y-3">
+          <div className="rounded-lg border p-2.5 text-xs space-y-1" style={{ backgroundColor: 'color-mix(in srgb, var(--color-surface-base) 40%, transparent)', borderColor: 'color-mix(in srgb, var(--color-border-default) 40%, transparent)' }}>
+            <div className="font-medium text-themed truncate">
+              {badge.icon} {entry.name || entry.comment || t('lorebook.entryFallback', { index: String(index + 1) })}
+            </div>
+            <div className="text-themed-faint line-clamp-2">{entry.content.slice(0, 120)}{entry.content.length > 120 ? '...' : ''}</div>
+          </div>
+          <TextArea
+            label={t('lorebook.aiModifyInstructionLabel')}
+            value={aiInstruction}
+            onChange={(e) => setAiInstruction(e.target.value)}
+            placeholder={t('lorebook.aiModifyPlaceholder')}
+            rows={4}
+          />
+          <p className="text-[10px] text-themed-faint">{t('lorebook.aiModifyHint')}</p>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <Button variant="ghost" size="sm" onClick={() => setAiModalOpen(false)}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="success"
+              size="sm"
+              loading={expanding}
+              onClick={() => {
+                const instruction = aiInstruction.trim();
+                setAiModalOpen(false);
+                onAiExpand?.(instruction || undefined);
+              }}
+            >
+              {t('lorebook.aiModifyConfirm')}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
