@@ -57,6 +57,14 @@ export function buildWorkshopContextText(title: string, analysis: NovelAnalysisR
       if (c.relationships?.length) {
         lines.push(`- 关系：${c.relationships.map((r) => `${r.target}（${r.type}，${r.dynamic}）`).join('；')}`);
       }
+      if (c.threeFaces) {
+        const tf = c.threeFaces;
+        const faceParts: string[] = [];
+        if (tf.daily) faceParts.push(`日常面：${tf.daily}`);
+        if (tf.pressure) faceParts.push(`压力面：${tf.pressure}`);
+        if (tf.hidden) faceParts.push(`隐藏面：${tf.hidden}`);
+        if (faceParts.length) lines.push(`- 三面性：${faceParts.join('；')}`);
+      }
       if (c.evidence) lines.push(`- 文本证据：${c.evidence}`);
       parts.push(lines.join('\n'));
     });
